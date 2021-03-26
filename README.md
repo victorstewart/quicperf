@@ -30,8 +30,6 @@ the client will print the results....
 #### **current limitations**
 
 1) Linux only
-2) the tool is at a beta stage of stability
-3) the syscall networking appears to be stable. the io_uring networking works sometimes, fails others... theorize that the operation pressure might be exposing a bug with io_uring... will investigate further.
-4) at the moment these can only be run over loopback
-5) the only implementations currently supported are Picoquic and Lsquic, but more will be added (any that offer BYO-Networking can be easily).
-6) no GRO or GSO but will be added
+2) at the moment these can only be run over loopback
+3) the only implementations currently supported are Picoquic and Lsquic, but more will be added (any that offer BYO-Networking can be easily).
+4) no GRO or GSO but will be added
