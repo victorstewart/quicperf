@@ -27,6 +27,10 @@ the client will print the results....
      1.804000 seconds
      4.434590 Gb/s
 
+     root@clr-df9e289c0de04eb2a0cfc75803a0b93e~/quicperf # ./picoperf client iouring
+     2.012000 seconds
+     3.976143 Gb/s
+
 #### **current limitations**
 
 1) Linux only
