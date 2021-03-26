@@ -247,7 +247,7 @@ public:
 
 	NetworkHub<mode> *networkHub;
 
-	virtual void instanceSetup(uint16_t localPort, uint32_t batchSize = 0) = 0;
+	virtual void instanceSetup(uint16_t localPort, int argc, char *argv[]) = 0;
 
 	virtual void connect(struct sockaddr *address) = 0;
 	virtual void openStream(void) = 0;
@@ -271,13 +271,12 @@ private:
 
 public:
 
-	uint32_t batchSize;
 	uint8_t junk[94 * 1024];
 
    UDPSocket socket;
    Pool<MultiUDPContext> sendPool;
 
-   NetworkHub(uint16_t port, uint32_t _batchSize = 0) : socket(port), recvTimeout(), sendPool(50), recvPool(25)
+   NetworkHub(uint16_t port) : socket(port), recvTimeout(), sendPool(50), recvPool(25)
    {
       int cpu_pin = sched_getcpu();
 
@@ -287,7 +286,6 @@ public:
 
       if constexpr (mode & Mode::server)
       {
-      	batchSize = _batchSize;
       	RAND_bytes(junk, sizeof(junk));
       }
 

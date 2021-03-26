@@ -300,9 +300,9 @@ public:
 		}
 	}
 
-	void instanceSetup(uint16_t localPort, uint32_t batchSize = 0)
+	void instanceSetup(uint16_t localPort, int argc, char *argv[])
 	{
-		networkHub = new NetworkHub<mode>(localPort, batchSize);
+		networkHub = new NetworkHub<mode>(localPort);
 
 		//printf("lsquic %s: setup\n", modeToString(mode));
 

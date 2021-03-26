@@ -209,11 +209,11 @@ private:
 
 public:
 
-	void instanceSetup(uint16_t localPort, uint32_t batchSize = 0)
+	void instanceSetup(uint16_t localPort, int argc, char *argv[])
 	{
 		//printf("picoquic %s: instanceSetup\n", modeToString(mode));
 
-		networkHub = new NetworkHub<mode>(localPort, batchSize);
+		networkHub = new NetworkHub<mode>(localPort);
 
 		engine = picoquic_create(1000, tls_cert, tls_key, tls_chain, "perf", datain, this, NULL, NULL, NULL, timeNowUs(), NULL, NULL, NULL, 0);
 
