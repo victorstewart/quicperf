@@ -384,6 +384,8 @@ public:
 			void *callbackBuffer;
 			int op;
 			int result;
+			uint32_t head;
+			uint32_t count;
 
 			// printf("unconsumed cqes = %ld\n", io_uring_cq_ready(&ring));
 			// printf("unsubmitted sqes = %ld\n", io_uring_sq_ready(&ring));
@@ -394,13 +396,10 @@ public:
 
 			recvTimeout.setTimeout(timeoutus);
 			if (io_uring_wait_cqe_timeout(&ring, &cqe, &recvTimeout.timeout) < 0) return;
-			
-			cqe = &ring.cq.cqes[*ring.cq.khead & *ring.cq.kring_mask];
-			uint32_t cqesAvailable = io_uring_cq_ready(&ring);
-			struct io_uring_cqe *terminal = cqe + cqesAvailable;
 
-			do
+			io_uring_for_each_cqe(&ring, head, cqe)
 			{
+				++count;
 				user_data = (uint64_t)io_uring_cqe_get_data(cqe);
 				op = user_data >> 48;
 				callbackBuffer = (void *)((user_data << 16) >> 16);
@@ -410,7 +409,7 @@ public:
 				{
 					case IORING_OP_RECVMSG:
 					{
-						if (result < 0) printf("IORING_OP_RECVMSG, result = %d\n", result);
+						//if (result < 0) printf("IORING_OP_RECVMSG, result = %d\n", result);
 
 						if (result > 0)
 						{
@@ -424,7 +423,7 @@ public:
 					}
 					case IORING_OP_SENDMSG:
 					{
-						if (result < 0) printf("IORING_OP_SENDMMSG, result = %d\n", result);
+						//if (result < 0) printf("IORING_OP_SENDMMSG, result = %d\n", result);
 
 						if (callbackBuffer)
 						{
@@ -438,17 +437,19 @@ public:
 					default:
 						if (result < 0) 
 						{
-							printf("IORING_OP_SENDMSG, result = %d\n", result);
-							printf("unconsumed cqes = %ld\n", io_uring_cq_ready(&ring));
-							printf("unsubmitted sqes = %ld\n", io_uring_sq_ready(&ring));
-							printf("cqe space left = %ld\n", *(ring.cq.kring_entries) - io_uring_cq_ready(&ring));
-							printf("sqe space left = %ld\n", *(ring.sq.kring_entries) - io_uring_sq_ready(&ring));
+							// printf("IORING_OP_SENDMSG, result = %d\n", result);
+							// printf("unconsumed cqes = %ld\n", io_uring_cq_ready(&ring));
+							// printf("unsubmitted sqes = %ld\n", io_uring_sq_ready(&ring));
+							// printf("cqe space left = %ld\n", *(ring.cq.kring_entries) - io_uring_cq_ready(&ring));
+							// printf("sqe space left = %ld\n", *(ring.sq.kring_entries) - io_uring_sq_ready(&ring));
 						}
 						break;
 				}
-			} while (++cqe < terminal);
+			}
 
-			io_uring_cq_advance(&ring, cqesAvailable);
+			// uint32_t cqesAvailable = io_uring_cq_ready(&ring);
+			
+			io_uring_cq_advance(&ring, count);
 		}
    }
 };

@@ -156,7 +156,7 @@ private:
 
 		if constexpr (mode & Mode::iouring)
 		{
-			batchSize = 10;
+			batchSize = 125;
 		}
 
 		do
