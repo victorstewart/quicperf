@@ -29,7 +29,8 @@ ExternalProject_Add(zlib
 )
 
 # you'll need to have the go executable on your system
-find_program(GO_EXECUTABLE go)
+find_program(GO_EXECUTABLE go REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 ExternalProject_Add(boringssl
 	DEPENDS zlib 
@@ -72,17 +73,17 @@ ExternalProject_Add(liburing
 add_dependencies(lsperf liburing)
 add_dependencies(picoperf liburing)
 
-ExternalProject_Add(openssl
-	URL https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1k.tar.gz
-	DOWNLOAD_NAME openssl.tar.gz
-	CONFIGURE_COMMAND ${3rdParty_SDIR}/openssl/config
-	BUILD_COMMAND make -j4 
-	INSTALL_COMMAND ""
-)
+# ExternalProject_Add(openssl
+# 	URL https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1k.tar.gz
+# 	DOWNLOAD_NAME openssl.tar.gz
+# 	CONFIGURE_COMMAND ${3rdParty_SDIR}/openssl/config
+# 	BUILD_COMMAND make -j4 
+# 	INSTALL_COMMAND ""
+# )
 
 # at the moment picotls is still finding the system openssl...
 ExternalProject_Add(picotls
-	DEPENDS openssl 
+	#DEPENDS openssl 
 
 	GIT_REPOSITORY https://github.com/h2o/picotls.git
 	GIT_TAG master
@@ -136,10 +137,8 @@ target_link_libraries(lsperf 	pthread
 
 target_link_libraries(picoperf 	pthread
 											dl
-										 # 	${3rdParty_BDIR}/openssl/libcrypto.a
-											# ${3rdParty_BDIR}/openssl/libssl.a
-											/usr/lib64/libcrypto.so
-											/usr/lib64/libssl.so
+											OpenSSL::Crypto
+											OpenSSL::SSL
 											${3rdParty_BDIR}/picotls/libpicotls-core.a
 											${3rdParty_BDIR}/picotls/libpicotls-fusion.a
 											${3rdParty_BDIR}/picotls/libpicotls-openssl.a
