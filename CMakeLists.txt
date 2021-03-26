@@ -73,7 +73,7 @@ add_dependencies(lsperf liburing)
 add_dependencies(picoperf liburing)
 
 ExternalProject_Add(openssl
-	URL https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1j.tar.gz
+	URL https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1k.tar.gz
 	DOWNLOAD_NAME openssl.tar.gz
 	CONFIGURE_COMMAND ${3rdParty_SDIR}/openssl/config
 	BUILD_COMMAND make -j4 
@@ -84,13 +84,12 @@ ExternalProject_Add(openssl
 ExternalProject_Add(picotls
 	DEPENDS openssl 
 
-	#GIT_REPOSITORY https://github.com/h2o/picotls.git
-	# GIT_REPOSITORY https://github.com/victorstewart/picotls.git
-	# GIT_TAG master
-	# GIT_SHALLOW ON
+	GIT_REPOSITORY https://github.com/h2o/picotls.git
+	GIT_TAG master
+	GIT_SHALLOW ON
 
-	SOURCE_DIR /root/dev/picotls
-	BUILD_ALWAYS ON
+	# SOURCE_DIR /root/dev/picotls
+	# BUILD_ALWAYS ON
 
 	BUILD_COMMAND make -j4 
 	INSTALL_COMMAND ""
@@ -99,13 +98,12 @@ ExternalProject_Add(picotls
 ExternalProject_Add(picoquic
 	DEPENDS picotls 
 
-	# GIT_REPOSITORY https://github.com/private-octopus/picoquic.git
-	# GIT_REPOSITORY https://github.com/victorstewart/picoquic.git
-	# GIT_TAG master
-	# GIT_SHALLOW ON
+	GIT_REPOSITORY https://github.com/private-octopus/picoquic.git
+	GIT_TAG master
+	GIT_SHALLOW ON
 
-	SOURCE_DIR /root/dev/picoquic
-	BUILD_ALWAYS ON
+	# SOURCE_DIR /root/dev/picoquic
+	# BUILD_ALWAYS ON
 
 	CMAKE_ARGS
 		-DPTLS_INCLUDE_DIR=/root/picotls/include
@@ -118,18 +116,14 @@ target_compile_options(lsperf PUBLIC -DLSPERF -w -mavx2 -flto -Ofast -frename-re
 target_compile_options(picoperf PUBLIC -DPICOPERF -w -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
 
 
-target_include_directories(lsperf PUBLIC  /root/nametag/base
-														${3rdParty_SDIR}/boringssl/include
+target_include_directories(lsperf PUBLIC  ${3rdParty_SDIR}/boringssl/include
 														${3rdParty_SDIR}/liburing/src/include
 														${3rdParty_SDIR}/lsquic/include
 													)
 
-target_include_directories(picoperf PUBLIC /root/nametag/base
-														 ${3rdParty_SDIR}/liburing/src/include
+target_include_directories(picoperf PUBLIC ${3rdParty_SDIR}/liburing/src/include
 														 ${3rdParty_SDIR}/picoquic/picoquic
 														 ${3rdParty_SDIR}/picotls/include
-														 # /root/picotls/include
-														 # /root/picoquic/picoquic
 													)
 
 target_link_libraries(lsperf 	pthread
@@ -142,10 +136,10 @@ target_link_libraries(lsperf 	pthread
 
 target_link_libraries(picoperf 	pthread
 											dl
-										 	${3rdParty_BDIR}/openssl/libcrypto.a
-											${3rdParty_BDIR}/openssl/libssl.a
-											# /usr/lib64/libcrypto.so
-											# /usr/lib64/libssl.so
+										 # 	${3rdParty_BDIR}/openssl/libcrypto.a
+											# ${3rdParty_BDIR}/openssl/libssl.a
+											/usr/lib64/libcrypto.so
+											/usr/lib64/libssl.so
 											${3rdParty_BDIR}/picotls/libpicotls-core.a
 											${3rdParty_BDIR}/picotls/libpicotls-fusion.a
 											${3rdParty_BDIR}/picotls/libpicotls-openssl.a
