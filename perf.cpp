@@ -24,7 +24,7 @@ int main (int argc, char *argv[])
 
 		auto runServerTest = [&] <Mode mode> (QuicLibrary<mode> *server) -> void {
 
-			server->instanceSetup(443, argc - 3, argv + 3);
+			server->instanceSetup(4433, argc - 3, argv + 3);
 			server->startPerfTest();
 		};
 
@@ -58,7 +58,7 @@ int main (int argc, char *argv[])
 		struct sockaddr_in6 *server_in6 = (struct sockaddr_in6 *)calloc(1, sizeof(struct sockaddr_in6));
    	server_in6->sin6_family = AF_INET6;
    	server_in6->sin6_flowinfo = 0;
-   	server_in6->sin6_port = htons(443);
+   	server_in6->sin6_port = htons(4433);
    	server_in6->sin6_addr = in6addr_loopback;
 
 		auto runClientTest = [=] <Mode mode> (QuicLibrary<mode> *client, uint16_t threadIndex, std::atomic<uint16_t>& clientsReady, double *seconds) -> void {
