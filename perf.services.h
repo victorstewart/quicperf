@@ -20,6 +20,11 @@ static const char * modeToString(Mode mode)
 	#include "perf.quiche.h"
 #endif
 
+#ifdef NGTCP2PERF
+	#include "perf.tls.h"
+	#include "perf.ngtcp2.h"
+#endif
+
 template <Mode mode>
 static void globalSetup(void)
 {
@@ -41,5 +46,9 @@ static QuicLibrary<mode>* libraryForChoice(void)
 
 #ifdef QUICHEPERF
 	return new Quiche<mode>();
+#endif
+
+#ifdef NGTCP2PERF
+        return new Ngtcp2<mode>();
 #endif
 }

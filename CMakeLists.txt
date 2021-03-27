@@ -11,6 +11,7 @@ set(CMAKE_CXX_EXTENSIONS ON) # gnu
 add_executable(lsperf perf.cpp)
 add_executable(picoperf perf.cpp)
 add_executable(quicheperf perf.cpp)
+add_executable(ngtcp2perf perf.cpp)
 
 include(ExternalProject)
 
@@ -106,6 +107,20 @@ ExternalProject_Add(quiche
 
 add_dependencies(quicheperf quiche)
 
+set(boringssl_libs "-L${3rdParty_BDIR}/boringssl/ssl -lssl -L${3rdParty_BDIR}/boringssl/crypto -lcrypto -pthread")
+ExternalProject_Add(ngtcp2
+	DEPENDS boringssl
+	GIT_REPOSITORY https://github.com/ngtcp2/ngtcp2.git
+	GIT_TAG main
+	GIT_SHALLOW ON
+
+	CMAKE_ARGS
+		-DBORINGSSL_LIBRARIES=${boringssl_libs}
+		-DBORINGSSL_INCLUDE_DIR=${3rdParty_SDIR}/boringssl/include
+	INSTALL_COMMAND ""
+)
+add_dependencies(ngtcp2perf ngtcp2)
+
 ExternalProject_Add(liburing
 	GIT_REPOSITORY https://github.com/axboe/liburing.git
 	GIT_TAG master
@@ -118,10 +133,14 @@ ExternalProject_Add(liburing
 add_dependencies(lsperf liburing)
 add_dependencies(picoperf liburing)
 add_dependencies(quicheperf liburing)
+add_dependencies(ngtcp2perf liburing)
 
 target_compile_options(lsperf PUBLIC -DLSPERF -w -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
 target_compile_options(picoperf PUBLIC -DPICOPERF -w -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
 target_compile_options(quicheperf PUBLIC -DQUICHEPERF -w -g -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
+target_compile_options(ngtcp2perf PUBLIC -DNGTCP2PERF -w -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
+
+
 
 target_include_directories(lsperf PUBLIC  ${3rdParty_SDIR}/boringssl/include
 														${3rdParty_SDIR}/liburing/src/include
@@ -136,6 +155,13 @@ target_include_directories(picoperf PUBLIC ${3rdParty_SDIR}/liburing/src/include
 target_include_directories(quicheperf PUBLIC ${3rdParty_SDIR}/liburing/src/include
 														   ${3rdParty_SDIR}/boringssl/include
 														 	${3rdParty_SDIR}/quiche/include
+													)
+
+target_include_directories(ngtcp2perf PUBLIC ${3rdParty_SDIR}/boringssl/include
+														 ${3rdParty_SDIR}/liburing/src/include
+														 ${3rdParty_SDIR}/ngtcp2/lib/includes
+														 ${3rdParty_BDIR}/ngtcp2/lib/includes
+														 ${3rdParty_SDIR}/ngtcp2/crypto/includes
 													)
 
 target_link_libraries(lsperf 	pthread
@@ -163,6 +189,15 @@ target_link_libraries(quicheperf 	pthread
 												${3rdParty_SDIR}/liburing/src/liburing.a
 											)
 
+target_link_libraries(ngtcp2perf 	pthread
+										${3rdParty_BDIR}/boringssl/crypto/libcrypto.a
+										${3rdParty_BDIR}/boringssl/ssl/libssl.a
+										${3rdParty_BDIR}/zlib/libz.a
+										${3rdParty_BDIR}/ngtcp2/lib/libngtcp2.a
+										${3rdParty_BDIR}/ngtcp2/crypto/boringssl/libngtcp2_crypto_boringssl.a
+										${3rdParty_SDIR}/liburing/src/liburing.a
+									)
+
 add_custom_command(TARGET lsperf 
                    POST_BUILD
                    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:lsperf> ..)
@@ -174,3 +209,7 @@ add_custom_command(TARGET picoperf
 add_custom_command(TARGET quicheperf 
                    POST_BUILD
                    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:quicheperf> ..)
+
+add_custom_command(TARGET ngtcp2perf
+                   POST_BUILD
+                   COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:ngtcp2perf> ..)
