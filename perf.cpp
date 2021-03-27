@@ -24,7 +24,7 @@ int main (int argc, char *argv[])
 
 		auto runServerTest = [&] <Mode mode> (QuicLibrary<mode> *server) -> void {
 
-			server->instanceSetup(443, , argc - 3, argv + 3);
+			server->instanceSetup(443, argc - 3, argv + 3);
 			server->startPerfTest();
 		};
 
