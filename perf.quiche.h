@@ -23,8 +23,6 @@ private:
 
 	uint64_t flushPackets(void)
 	{
-		//printf("quiche flushPackets\n");
-
 		if (unlikely(conn == NULL)) return 0;
 
 		MultiUDPContext *packets = networkHub->sendPool.get();
@@ -32,15 +30,10 @@ private:
 
 		do
 	   {
-	   	// printf("packets = %p\n", packets ?: NULL);
-	   	// printf("packet = %p\n", packet ?: NULL);
-	   	// printf("packets->count = %lu\n", packets->count);
-
 	   	packet = &packets->msgs[packets->count];
 
 	   	ssize_t written = quiche_conn_send(conn, packet->buffer(), MAX_IPV6_UDP_PACKET_SIZE);
 
-	   	// printf("written = %lld\n", written);
 	      if (written == QUICHE_ERR_DONE) break;
 
 	      packet->setLength(written);
@@ -68,17 +61,11 @@ private:
 
 	void advance(int32_t count = 0)
 	{
-		//printf("quiche advance\n");
-
 		do
 		{
-			TLS::printErrorsIfAny();
-
 			uint64_t usTil = flushPackets();
 
 			bool timedout = networkHub->recvmsgWithTimeout(usTil, [&] (UDPContext *msg) -> void {
-
-				//printf("quiche received message\n");
 
 				if constexpr (mode & Mode::server)
 				{
@@ -105,15 +92,6 @@ private:
 					if constexpr (mode & Mode::client)
 					{
 						connected = true;
-
-						// static bool doOnce = true;
-
-						// if (doOnce)
-						// {
-						// 	doOnce = false;
-						// 	uint64_t swappedBytes = bswap_64(bytesInFlight);
-						// 	quiche_conn_stream_send(conn, 0, (const uint8_t *)&swappedBytes, 8, false);
-						// }
 					}
 
 					uint64_t streamID = 0;
@@ -121,8 +99,6 @@ private:
 
 					while (quiche_stream_iter_next(readable, &streamID)) 
 					{
-						//printf("quiche stream readable\n");
-
 						static uint8_t buf[65535];
 
 						bool fin = false;
@@ -133,13 +109,11 @@ private:
 							// throw bytes away
 							bytesInFlight -= recv_len;
 							//printf("received %.1f%%\n", 100.0 * (double)(_1GB - bytesInFlight)/(double)_1GB);
-							//printf("bytes left = %lld\n", bytesInFlight);
 						}
 						else
 						{
 							// receive the bytes in flight
 							bytesInFlight = bswap_64(*(uint64_t *)buf);
-							//printf("send these many bytes = %lld\n", bytesInFlight);
 						}
 					}
 
@@ -147,22 +121,14 @@ private:
 				}
 			});
 
-			//printf("quiche timedout = %s\n", timedout ? "yes" : "no");
-
 			if (timedout) quiche_conn_on_timeout(conn);
 
 			if constexpr (mode & Mode::server)
 			{
 				if (conn == NULL) continue;
 
-				//ssize_t bytesCanSend = quiche_conn_stream_capacity(conn, 0);
-
 				if (quiche_conn_stream_capacity(conn, 0) > 0)
 				{
-					//if (bytesCanSend > bytesInFlight) bytesCanSend = bytesInFlight;
-
-					//bytesInFlight -= bytesCanSend;
-
 					do
 					{
 						ssize_t sent = quiche_conn_stream_send(conn, 0, (const uint8_t *)networkHub->junk, bytesInFlight > sizeof(networkHub->junk) ? sizeof(networkHub->junk) : bytesInFlight, false);
@@ -172,29 +138,23 @@ private:
 
 					} while (true);
 
-					//printf("quiche server bytesInFlight = %lld\n", bytesInFlight);
-
 					// one last send
 					if (bytesInFlight == 0) flushPackets();
 				}
 			}
-
-			//printf("bytesInFlight = %lld\n", bytesInFlight);
 		
 		} while (bytesInFlight != 0 && (count == 0 || --count > 0));
 	}
 
 public:
 
-	static void log(const char *line, void *argp)
-	{
-		printf("%s\n", line);
-	}
+	// static void log(const char *line, void *argp)
+	// {
+	// 	printf("%s\n", line);
+	// }
 
 	void instanceSetup(uint16_t localPort, int argc, char *argv[])
 	{
-		//printf("quichequic %s: instanceSetup\n", modeToString(mode));
-
 		networkHub = new NetworkHub<mode>(localPort);
 
 		config = quiche_config_new(QUICHE_PROTOCOL_VERSION);
@@ -218,17 +178,12 @@ public:
 
 	void connect(struct sockaddr *address)
 	{
-		//printf("quichequic %s: connect\n", modeToString(mode));
-
 		peerAddress = (struct sockaddr_in6 *)address;
 
 		uint8_t scid[8]; 
 		RAND_bytes(scid, sizeof(scid));
 
-		uint8_t dcid[16]; 
-		RAND_bytes(dcid, sizeof(dcid));
-
-		conn = quiche_conn_new_with_tls((const uint8_t *)scid, sizeof(scid), (const uint8_t *)dcid, sizeof(dcid), config, SSL_new(TLS::getTLSCtx()), false);
+		conn = quiche_conn_new_with_tls((const uint8_t *)scid, sizeof(scid), NULL, 0, config, SSL_new(TLS::getTLSCtx()), false);
 
 		do
 		{
@@ -239,8 +194,6 @@ public:
 
 	void openStream(void)
 	{
-		//printf("quichequic %s: openStream\n", modeToString(mode));
-
 		// just nop this for now
 
 		// do
@@ -252,13 +205,9 @@ public:
 
 	void startPerfTest(uint64_t nBytes)
 	{
-		printf("quichequic %s: startPerfTest\n", modeToString(mode));
-		
 		if constexpr (mode & Mode::client)
 		{
 			bytesInFlight = nBytes;
-
-			printf("send these many bytes = %lld\n", bytesInFlight);
 
 			uint64_t swappedBytes = bswap_64(bytesInFlight);
 			quiche_conn_stream_send(conn, 0, (const uint8_t *)&swappedBytes, 8, false);
