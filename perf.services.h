@@ -7,11 +7,17 @@ static const char * modeToString(Mode mode)
 }
 
 #ifdef LSPERF
+	#include "perf.tls.h"
 	#include "perf.lsquic.h"
 #endif
 
 #ifdef PICOPERF
 	#include "perf.picoquic.h"
+#endif
+
+#ifdef QUICHEPERF
+	#include "perf.tls.h"
+	#include "perf.quiche.h"
 #endif
 
 template <Mode mode>
@@ -31,5 +37,9 @@ static QuicLibrary<mode>* libraryForChoice(void)
 
 #ifdef PICOPERF
 	return new Picoquic<mode>();
+#endif
+
+#ifdef QUICHEPERF
+	return new Quiche<mode>();
 #endif
 }

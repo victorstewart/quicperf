@@ -10,6 +10,7 @@ set(CMAKE_CXX_EXTENSIONS ON) # gnu
 
 add_executable(lsperf perf.cpp)
 add_executable(picoperf perf.cpp)
+add_executable(quicheperf perf.cpp)
 
 include(ExternalProject)
 
@@ -62,6 +63,49 @@ ExternalProject_Add(lsquic
 )
 add_dependencies(lsperf lsquic)
 
+# at the moment picotls is still finding the system openssl...
+ExternalProject_Add(picotls
+
+	GIT_REPOSITORY https://github.com/h2o/picotls.git
+	GIT_TAG master
+	GIT_SHALLOW ON
+	BUILD_COMMAND make -j4 
+	INSTALL_COMMAND ""
+)
+
+ExternalProject_Add(picoquic
+	DEPENDS picotls 
+
+	GIT_REPOSITORY https://github.com/private-octopus/picoquic.git
+	GIT_TAG master
+	GIT_SHALLOW ON
+	CMAKE_ARGS
+		-DPTLS_INCLUDE_DIR=${3rdParty_SDIR}/picotls/include
+		-DPTLS_LIBRARIES=${3rdParty_BDIR}/picotls
+	INSTALL_COMMAND ""
+)
+add_dependencies(picoperf picoquic)
+
+ExternalProject_Add(rust
+	URL https://static.rust-lang.org/dist/rust-1.51.0-x86_64-unknown-linux-gnu.tar.gz 
+	DOWNLOAD_NAME rust
+	CONFIGURE_COMMAND ""
+	BUILD_COMMAND ""
+	INSTALL_COMMAND ""
+)
+
+ExternalProject_Add(quiche
+   GIT_REPOSITORY https://github.com/cloudflare/quiche.git
+	GIT_TAG master
+	GIT_SHALLOW ON
+	CONFIGURE_COMMAND ""
+	BUILD_IN_SOURCE ON
+   BUILD_COMMAND ${CMAKE_COMMAND} -E env RUSTC=${3rdParty_SDIR}/rust/rustc/bin/rustc ${CMAKE_COMMAND} -E env RUSTFLAGS=-L${3rdParty_SDIR}/rust/rust-std-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib ${3rdParty_SDIR}/rust/cargo/bin/cargo build --features ffi --release
+   INSTALL_COMMAND ""
+)
+
+add_dependencies(quicheperf quiche)
+
 ExternalProject_Add(liburing
 	GIT_REPOSITORY https://github.com/axboe/liburing.git
 	GIT_TAG master
@@ -73,50 +117,11 @@ ExternalProject_Add(liburing
 )
 add_dependencies(lsperf liburing)
 add_dependencies(picoperf liburing)
-
-# ExternalProject_Add(openssl
-# 	URL https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1k.tar.gz
-# 	DOWNLOAD_NAME openssl.tar.gz
-# 	CONFIGURE_COMMAND ${3rdParty_SDIR}/openssl/config
-# 	BUILD_COMMAND make -j4 
-# 	INSTALL_COMMAND ""
-# )
-
-# at the moment picotls is still finding the system openssl...
-ExternalProject_Add(picotls
-	#DEPENDS openssl 
-
-	GIT_REPOSITORY https://github.com/h2o/picotls.git
-	GIT_TAG master
-	GIT_SHALLOW ON
-
-	# SOURCE_DIR /root/dev/picotls
-	# BUILD_ALWAYS ON
-
-	BUILD_COMMAND make -j4 
-	INSTALL_COMMAND ""
-)
-
-ExternalProject_Add(picoquic
-	DEPENDS picotls 
-
-	GIT_REPOSITORY https://github.com/private-octopus/picoquic.git
-	GIT_TAG master
-	GIT_SHALLOW ON
-
-	# SOURCE_DIR /root/dev/picoquic
-	# BUILD_ALWAYS ON
-
-	CMAKE_ARGS
-		-DPTLS_INCLUDE_DIR=${3rdParty_SDIR}/picotls/include
-		-DPTLS_LIBRARIES=${3rdParty_BDIR}/picotls
-	INSTALL_COMMAND ""
-)
-add_dependencies(picoperf picoquic)
+add_dependencies(quicheperf liburing)
 
 target_compile_options(lsperf PUBLIC -DLSPERF -w -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
 target_compile_options(picoperf PUBLIC -DPICOPERF -w -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
-
+target_compile_options(quicheperf PUBLIC -DQUICHEPERF -w -g -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
 
 target_include_directories(lsperf PUBLIC  ${3rdParty_SDIR}/boringssl/include
 														${3rdParty_SDIR}/liburing/src/include
@@ -126,6 +131,11 @@ target_include_directories(lsperf PUBLIC  ${3rdParty_SDIR}/boringssl/include
 target_include_directories(picoperf PUBLIC ${3rdParty_SDIR}/liburing/src/include
 														 ${3rdParty_SDIR}/picoquic/picoquic
 														 ${3rdParty_SDIR}/picotls/include
+													)
+
+target_include_directories(quicheperf PUBLIC ${3rdParty_SDIR}/liburing/src/include
+														   ${3rdParty_SDIR}/boringssl/include
+														 	${3rdParty_SDIR}/quiche/include
 													)
 
 target_link_libraries(lsperf 	pthread
@@ -147,6 +157,12 @@ target_link_libraries(picoperf 	pthread
 											${3rdParty_SDIR}/liburing/src/liburing.a
 										)
 
+target_link_libraries(quicheperf 	pthread
+												dl
+												${3rdParty_SDIR}/quiche/target/release/libquiche.a
+												${3rdParty_SDIR}/liburing/src/liburing.a
+											)
+
 add_custom_command(TARGET lsperf 
                    POST_BUILD
                    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:lsperf> ..)
@@ -154,3 +170,7 @@ add_custom_command(TARGET lsperf
 add_custom_command(TARGET picoperf 
                    POST_BUILD
                    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:picoperf> ..)
+
+add_custom_command(TARGET quicheperf 
+                   POST_BUILD
+                   COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:quicheperf> ..)

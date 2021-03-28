@@ -159,6 +159,7 @@ struct UDPContext {
 	void setLength(uint16_t length)
 	{
 		msg_hdr.msg_iov[0].iov_len = length;
+		msg_len = length;
 	}
 
 	void reset(void)
@@ -191,6 +192,11 @@ struct MultiUDPContext {
 	UDPContext* nextPacket(void)
 	{
 		return (count < batchSize ? &msgs[count++] : NULL);
+	}
+
+	bool isFull(void)
+	{
+		return (count == batchSize);
 	}
 
 	void reset(void)
@@ -340,7 +346,7 @@ public:
    }
 
    template <typename Consumer>
-   void recvmsgWithTimeout(int64_t timeoutus, Consumer&& msgConsumer) // timeout in microseconds
+   bool recvmsgWithTimeout(int64_t timeoutus, Consumer&& msgConsumer) // timeout in microseconds
    {
    	if constexpr (mode & Mode::syscall)
    	{
@@ -352,7 +358,7 @@ public:
    			FD_ZERO(&read_fds);
    			FD_SET(socket.fd, &read_fds);
 
-   			if (select(socket.fd + 1, &read_fds, NULL, NULL, &t) == 0) return;
+   			if (select(socket.fd + 1, &read_fds, NULL, NULL, &t) == 0) return true;
    		}
 
    		int result = recvmmsg(socket.fd, (struct mmsghdr *)recvContext.msgs, 150, MSG_WAITFORONE,  NULL);
@@ -396,7 +402,7 @@ public:
 			io_uring_submit(&ring);
 
 			recvTimeout.setTimeout(timeoutus);
-			if (io_uring_wait_cqe_timeout(&ring, &cqe, &recvTimeout.timeout) < 0) return;
+			if (io_uring_wait_cqe_timeout(&ring, &cqe, &recvTimeout.timeout) < 0) return true;
 
 			io_uring_for_each_cqe(&ring, head, cqe)
 			{
@@ -452,5 +458,7 @@ public:
 			
 			io_uring_cq_advance(&ring, count);
 		}
+
+		return false;
    }
 };
