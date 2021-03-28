@@ -6,7 +6,7 @@ this project is meant to facilitate quic server performance research and to esta
 
      cd quicperf && cmake -S . -B build && cmake --build build
      
-this will create a build folder in the project directory then download and compile all dependencies and finally compile and link two executables `picoperf` and `lsperf` and copy them into the project directory
+this will create a build folder in the project directory then download and compile all dependencies and finally compile and link the binaries (lsperf, picoperf, quicheperf) and copy them into the project directory
 
 #### **running**
      
@@ -35,5 +35,4 @@ the client will print the results....
 
 1) Linux only
 2) at the moment these can only be run over loopback
-3) the only implementations currently supported are Picoquic and Lsquic, but more will be added (any that offer BYO-Networking can be easily).
-4) no GRO or GSO but will be added
+3) no GRO or GSO but will be added
