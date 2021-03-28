@@ -92,6 +92,9 @@ public:
 
    	setsockopt(fd, SOL_SOCKET, SO_SNDBUF, (const uint32_t[]){ 10'000 * 1500 }, sizeof(uint32_t));
    	setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (const uint32_t[]){ 10'000 * 1500 }, sizeof(uint32_t));
+   	auto val = 1;
+   	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val,
+                   static_cast<socklen_t>(sizeof(val)));
 
    	addressLen = sizeof(struct sockaddr_in6);
 
