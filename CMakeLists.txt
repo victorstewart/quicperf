@@ -57,6 +57,7 @@ ExternalProject_Add(lsquic
 	CMAKE_ARGS
 		-DCMAKE_BUILD_TYPE=Release
 		-DBORINGSSL_INCLUDE=${3rdParty_SDIR}/boringssl/include
+		-DBORINGSSL_DIR=${3rdParty_BDIR}/boringssl
 	INSTALL_COMMAND ""
 )
 add_dependencies(lsperf lsquic)
@@ -107,7 +108,7 @@ ExternalProject_Add(picoquic
 	# BUILD_ALWAYS ON
 
 	CMAKE_ARGS
-		-DPTLS_INCLUDE_DIR=/root/picotls/include
+		-DPTLS_INCLUDE_DIR=${3rdParty_SDIR}/picotls/include
 		-DPTLS_LIBRARIES=${3rdParty_BDIR}/picotls
 	INSTALL_COMMAND ""
 )
