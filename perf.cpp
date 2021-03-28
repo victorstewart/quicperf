@@ -63,7 +63,7 @@ int main (int argc, char *argv[])
 
 		auto runClientTest = [=] <Mode mode> (QuicLibrary<mode> *client, uint16_t threadIndex, std::atomic<uint16_t>& clientsReady, double *seconds) -> void {
 
-			client->instanceSetup(111 + threadIndex, argc - 3, argv + 3);
+			client->instanceSetup(1111 + threadIndex, argc - 3, argv + 3);
 
 			client->connect((struct sockaddr *)server_in6);
 			client->openStream();

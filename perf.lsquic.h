@@ -207,7 +207,7 @@ private:
 			int64_t& bytesToSend = ((Lsquic<mode> *)context)->bytesInFlight;
 
 			// send more junk to the client
-			bytesToSend -= lsquic_stream_write(stream, networkHub->junk, (MultiUDPContext::batchSize > bytesToSend ? bytesToSend : MultiUDPContext::batchSize));
+			bytesToSend -= lsquic_stream_write(stream, networkHub->junk, (sizeof(networkHub->junk) > bytesToSend ? bytesToSend : sizeof(networkHub->junk)));
 
 			if (unlikely(bytesToSend == 0))
 			{
