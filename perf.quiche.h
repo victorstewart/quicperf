@@ -16,6 +16,8 @@ private:
 	using QuicLibrary<mode>::networkHub;
 
 	int64_t bytesInFlight = -1;
+	int64_t bytesSent = -1;
+	int64_t lingeringBytes = -1;
 	quiche_config *config;
 	quiche_conn *conn;
 	struct sockaddr_in6 *peerAddress;
@@ -65,6 +67,8 @@ private:
 		{
 			uint64_t usTil = flushPackets();
 
+			if (usTil == UINT64_MAX/1'000) break;
+			
 			bool timedout = networkHub->recvmsgWithTimeout(usTil, [&] (UDPContext *msg) -> void {
 
 				if constexpr (mode & Mode::server)
@@ -138,12 +142,14 @@ private:
 
 					} while (true);
 
-					// one last send
-					if (bytesInFlight == 0) flushPackets();
+					if (bytesInFlight == 0) 
+					{
+						count += 2;
+					}
 				}
 			}
 		
-		} while (bytesInFlight != 0 && (count == 0 || --count > 0));
+		} while (bytesInFlight != 0 || (count == 0 || --count > 0));
 	}
 
 public:
