@@ -96,6 +96,7 @@ ExternalProject_Add(rust
 )
 
 ExternalProject_Add(quiche
+	DEPENDS rust 
    GIT_REPOSITORY https://github.com/cloudflare/quiche.git
 	GIT_TAG its-the-final-saltdown
 	GIT_SHALLOW ON
