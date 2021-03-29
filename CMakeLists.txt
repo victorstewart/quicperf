@@ -39,8 +39,6 @@ ExternalProject_Add(boringssl
   	GIT_REPOSITORY https://github.com/google/boringssl.git
   	GIT_TAG master
   	GIT_SHALLOW ON
- #  	DOWNLOAD_COMMAND ""
-	# SOURCE_DIR ${3rdParty_SDIR}/boringssl
   	BUILD_COMMAND cmake --build . --config Release -- -j 4
   	UPDATE_COMMAND ""
   	CMAKE_ARGS
@@ -50,11 +48,10 @@ ExternalProject_Add(boringssl
 )
 ExternalProject_Add(lsquic
 	DEPENDS boringssl 
-	GIT_REPOSITORY https://github.com/litespeedtech/lsquic.git
+	#GIT_REPOSITORY https://github.com/litespeedtech/lsquic.git
+	GIT_REPOSITORY https://github.com/victorstewart/lsquic.git
 	GIT_TAG master
 	GIT_SHALLOW ON
-	# DOWNLOAD_COMMAND ""
-	# SOURCE_DIR ${3rdParty_SDIR}/lsquic
 	BUILD_IN_SOURCE ON
 	CMAKE_ARGS
 		-DCMAKE_BUILD_TYPE=Release
