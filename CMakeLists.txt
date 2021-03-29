@@ -97,7 +97,7 @@ ExternalProject_Add(rust
 
 ExternalProject_Add(quiche
    GIT_REPOSITORY https://github.com/cloudflare/quiche.git
-	GIT_TAG master
+	GIT_TAG its-the-final-saltdown
 	GIT_SHALLOW ON
 	CONFIGURE_COMMAND ""
 	BUILD_IN_SOURCE ON
@@ -137,9 +137,8 @@ add_dependencies(ngtcp2perf liburing)
 
 target_compile_options(lsperf PUBLIC -DLSPERF -w -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
 target_compile_options(picoperf PUBLIC -DPICOPERF -w -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
-target_compile_options(quicheperf PUBLIC -DQUICHEPERF -w -g -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
+target_compile_options(quicheperf PUBLIC -DQUICHEPERF -w -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
 target_compile_options(ngtcp2perf PUBLIC -DNGTCP2PERF -w -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
-
 
 
 target_include_directories(lsperf PUBLIC  ${3rdParty_SDIR}/boringssl/include
