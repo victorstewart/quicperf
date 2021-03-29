@@ -66,8 +66,6 @@ private:
 		do
 		{
 			uint64_t usTil = flushPackets();
-
-			if (usTil == UINT64_MAX/1'000) break;
 			
 			bool timedout = networkHub->recvmsgWithTimeout(usTil, [&] (UDPContext *msg) -> void {
 
@@ -142,14 +140,11 @@ private:
 
 					} while (true);
 
-					if (bytesInFlight == 0) 
-					{
-						count += 2;
-					}
+					if (bytesInFlight == 0) flushPackets();
 				}
 			}
 		
-		} while (bytesInFlight != 0 || (count == 0 || --count > 0));
+		} while (bytesInFlight != 0 && (count == 0 || --count > 0));
 	}
 
 public:
@@ -174,10 +169,11 @@ public:
 		quiche_config_set_initial_max_stream_data_uni(config, 10000);
 		quiche_config_set_initial_max_streams_bidi(config, 10);
 		quiche_config_set_initial_max_streams_uni(config, 10);
-		// quiche_config_set_ack_delay_exponent(config, 100);
-		// quiche_config_set_max_ack_delay(config, 10000);
+		// quiche_config_set_ack_delay_exponent(config, 5);
+		// quiche_config_set_max_ack_delay(config, 50);
 		// quiche_config_set_disable_active_migration(config, true);
-		// quiche_config_set_cc_algorithm(config, QUICHE_CC_RENO);
+		//quiche_config_set_cc_algorithm(config, QUICHE_CC_RENO);
+		//quiche_config_enable_hystart(config, true);
 
 		//quiche_enable_debug_logging(log, NULL);
 	}
