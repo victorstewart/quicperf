@@ -6,7 +6,7 @@ this project is meant to facilitate quic server performance research and to esta
 
      cd quicperf && cmake -S . -B build && cmake --build build
      
-this will create a build folder in the project directory then download and compile all dependencies and finally compile and link the binaries (lsperf, picoperf, quicheperf) and copy them into the project directory
+this will create a build folder in the project directory then download and compile all dependencies and finally compile and link the binaries (**lsperf**, **picoperf**, **quicheperf**, **ngtcp2perf**) and copy them into the project directory
 
 #### **running**
      
