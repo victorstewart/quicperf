@@ -12,6 +12,7 @@ add_executable(lsperf perf.cpp)
 add_executable(picoperf perf.cpp)
 add_executable(quicheperf perf.cpp)
 add_executable(ngtcp2perf perf.cpp)
+add_executable(tcpperf perf.cpp)
 
 include(ExternalProject)
 
@@ -46,6 +47,8 @@ ExternalProject_Add(boringssl
 		-DGO_EXECUTABLE:FILEPATH=${GO_EXECUTABLE}
 	INSTALL_COMMAND ""
 )
+add_dependencies(tcpperf boringssl)
+
 ExternalProject_Add(lsquic
 	DEPENDS boringssl 
 	#GIT_REPOSITORY https://github.com/litespeedtech/lsquic.git
@@ -137,7 +140,7 @@ target_compile_options(lsperf PUBLIC -DLSPERF -w -mavx2 -flto -Ofast -frename-re
 target_compile_options(picoperf PUBLIC -DPICOPERF -w -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
 target_compile_options(quicheperf PUBLIC -DQUICHEPERF -w -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
 target_compile_options(ngtcp2perf PUBLIC -DNGTCP2PERF -w -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
-
+target_compile_options(tcpperf PUBLIC -DTCPPERF -w -mavx2 -flto -Ofast -frename-registers -fno-signed-zeros -fno-trapping-math)
 
 target_include_directories(lsperf PUBLIC  ${3rdParty_SDIR}/boringssl/include
 														${3rdParty_SDIR}/liburing/src/include
@@ -160,6 +163,8 @@ target_include_directories(ngtcp2perf PUBLIC ${3rdParty_SDIR}/boringssl/include
 														 ${3rdParty_BDIR}/ngtcp2/lib/includes
 														 ${3rdParty_SDIR}/ngtcp2/crypto/includes
 													)
+
+target_include_directories(tcpperf PUBLIC ${3rdParty_SDIR}/boringssl/include )
 
 target_link_libraries(lsperf 	pthread
 										${3rdParty_BDIR}/boringssl/crypto/libcrypto.a
@@ -195,6 +200,11 @@ target_link_libraries(ngtcp2perf 	pthread
 										${3rdParty_SDIR}/liburing/src/liburing.a
 									)
 
+target_link_libraries(tcpperf pthread
+										${3rdParty_BDIR}/boringssl/crypto/libcrypto.a
+										${3rdParty_BDIR}/boringssl/ssl/libssl.a
+									)
+
 add_custom_command(TARGET lsperf 
                    POST_BUILD
                    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:lsperf> ..)
@@ -210,3 +220,7 @@ add_custom_command(TARGET quicheperf
 add_custom_command(TARGET ngtcp2perf
                    POST_BUILD
                    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:ngtcp2perf> ..)
+
+add_custom_command(TARGET tcpperf
+                   POST_BUILD
+                   COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:tcpperf> ..)
