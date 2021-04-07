@@ -1,13 +1,8 @@
 #include "liburing.h"
-#include <netinet/in.h>
 #include <openssl/rand.h>
-#include <byteswap.h>
 #include <vector>
 #include <stdlib.h>
 #include <cstdlib>
-#include <cstring>
-#include <string>
-#include <chrono>
 
 #pragma once
 
@@ -90,7 +85,6 @@ public:
    {
       fd = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
 
-   	setsockopt(fd, SOL_SOCKET, SO_SNDBUF, (const uint32_t[]){ 10'000 * 1500 }, sizeof(uint32_t));
    	setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (const uint32_t[]){ 10'000 * 1500 }, sizeof(uint32_t));
    	auto val = 1;
    	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val,
@@ -102,7 +96,7 @@ public:
 	   address6->sin6_family = AF_INET6;
 	   address6->sin6_flowinfo = 0;
 	   address6->sin6_port = htons(port);
-	   address6->sin6_addr = in6addr_loopback; // in6addr_any
+	   address6->sin6_addr = serverAddress;
 
       bind(fd, (struct sockaddr *)address6, addressLen);
     }
@@ -229,40 +223,6 @@ struct Timeout {
 	}
 };
 
-enum class Mode : uint16_t {
-
-	client 		 = 0b0000'0000'0000'0001,
-	server 		 = 0b0000'0000'0000'0010,
-	iouring 		 = 0b0000'0000'0000'0100,
-	syscall 		 = 0b0000'0000'0000'1000
-};
-
-constexpr bool operator &(Mode lhs, Mode rhs)
-{
-   return static_cast<bool>((static_cast<uint8_t>(lhs) & static_cast<uint8_t>(rhs)) == static_cast<uint8_t>(rhs));
-}
-
-constexpr Mode operator |(Mode lhs, Mode rhs)  
-{
-   return static_cast<Mode> (static_cast<uint8_t>(lhs) | static_cast<uint8_t>(rhs));
-}
-
-template <Mode mode>
-class NetworkHub;
-
-template <Mode mode>
-class QuicLibrary {
-public:
-
-	NetworkHub<mode> *networkHub;
-
-	virtual void instanceSetup(uint16_t localPort, int argc, char *argv[]) = 0;
-
-	virtual void connect(struct sockaddr *address) = 0;
-	virtual void openStream(void) = 0;
-	virtual void startPerfTest(uint64_t nBytes = 0) = 0;
-};
-
 template <Mode mode>
 class NetworkHub {
 private:
@@ -287,12 +247,6 @@ public:
 
    NetworkHub(uint16_t port) : socket(port), recvTimeout(), sendPool(50), recvPool(25)
    {
-      int cpu_pin = sched_getcpu();
-
-      cpu_set_t affinity;
-      CPU_SET(cpu_pin, &affinity);
-      sched_setaffinity(0, sizeof(affinity), &affinity);
-
       if constexpr (mode & Mode::server)
       {
       	RAND_bytes(junk, sizeof(junk));

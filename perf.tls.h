@@ -63,10 +63,10 @@ public:
 
 		//SSL_CTX_set_custom_verify(context, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, customVerifyCallback);
 
-		SSL_CTX_load_verify_locations(context, tls_chain, NULL);
-
 		SSL_CTX_use_certificate_file(context, tls_cert, SSL_FILETYPE_PEM);
 		SSL_CTX_use_PrivateKey_file(context, tls_key, SSL_FILETYPE_PEM);
+
+		SSL_CTX_load_verify_locations(context, tls_chain, NULL);
 		
 		static const int X25519Only = NID_X25519;
 		SSL_CTX_set1_curves(context, &X25519Only, 1);

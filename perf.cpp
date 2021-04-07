@@ -1,18 +1,32 @@
 #define _1GB (1 * 1024 * 1024 * 1024)
 
+#include <arpa/inet.h>
+
 static const char *tls_cert;
 static const char *tls_key;
 static const char *tls_chain;
+static struct in6_addr serverAddress = {};
 
-#include "perf.networking.h"
 #include <thread>
-
 #include "perf.services.h"
 
-// mode (client or server) networking (iouring or syscall)
+// mode (client or server) networking (iouring or syscall) serverIpAddress (any, loopback, or ipv6)
 int main (int argc, char *argv[]) 
 {
 	constexpr uint32_t bytesForTest = _1GB;
+	
+	if (strcmp(argv[3], "any") == 0)
+	{
+		serverAddress = in6addr_any;
+	}
+	else if (strcmp(argv[3], "loopback") == 0)
+	{
+		serverAddress = in6addr_loopback;
+	}
+	else
+	{
+		inet_pton(AF_INET6, argv[3], &serverAddress);
+	}
 
 	if (strcmp(argv[1], "server") == 0)
 	{
@@ -24,7 +38,7 @@ int main (int argc, char *argv[])
 
 		auto runServerTest = [&] <Mode mode> (QuicLibrary<mode> *server) -> void {
 
-			server->instanceSetup(4433, argc - 3, argv + 3);
+			server->instanceSetup(4433, argc - 4, argv + 4);
 			server->startPerfTest();
 		};
 
@@ -59,13 +73,13 @@ int main (int argc, char *argv[])
    	server_in6->sin6_family = AF_INET6;
    	server_in6->sin6_flowinfo = 0;
    	server_in6->sin6_port = htons(4433);
-   	server_in6->sin6_addr = in6addr_loopback;
+   	server_in6->sin6_addr = serverAddress;
 
 		auto runClientTest = [=] <Mode mode> (QuicLibrary<mode> *client, uint16_t threadIndex, std::atomic<uint16_t>& clientsReady, double *seconds) -> void {
 
-			client->instanceSetup(1111 + threadIndex, argc - 3, argv + 3);
+			client->instanceSetup(1111 + threadIndex, argc - 4, argv + 4);
 
-			client->connect((struct sockaddr *)server_in6);
+			client->connectToServer((struct sockaddr *)server_in6);
 			client->openStream();
 			// signal we're ready and wait for other clients
 			clientsReady += 1;
