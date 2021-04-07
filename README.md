@@ -6,18 +6,18 @@ this project is meant to facilitate quic server performance research and to esta
 
      cd quicperf && cmake -S . -B build && cmake --build build
      
-this will create a build folder in the project directory then download and compile all dependencies and finally compile and link the binaries (**lsperf**, **picoperf**, **quicheperf**, **ngtcp2perf**) and copy them into the project directory
+this will create a build folder in the project directory then download and compile all dependencies and finally compile and link the binaries (**lsperf**, **picoperf**, **quicheperf**, **ngtcp2perf**, **tcpperf**) and copy them into the project directory
 
 #### **running**
      
 first run a server instance, then run a client instance. the binaries follow the below pattern:
      
-     ./binary mode (client or server) networking (syscall or iouring)
+     ./binary mode (client or server) networking (iouring or syscall) serverIpAddress (any, loopback, or ipv6)
      
 for example...
      
-     ./picoperf server syscall
-     ./picoperf client syscall
+     ./picoperf server syscall loopback
+     ./picoperf client syscall loopback
      
 #### **results**
 
@@ -34,5 +34,5 @@ the client will print the results....
 #### **current limitations**
 
 1) Linux only
-2) at the moment these can only be run over loopback
+2) tcp+tls performance is 30% higher when letting boringssl manage the socket IO and BIOs than when doing so manually. suspect they might be avoiding copies. 
 3) no GRO or GSO but will be added
