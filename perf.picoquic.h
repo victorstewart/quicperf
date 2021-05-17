@@ -247,7 +247,7 @@ public:
 		//picoquic_set_client_authentication(engine, 1);
 	}
 
-	void connect(struct sockaddr *address)
+	void connectToServer(struct sockaddr *address)
 	{
 		//printf("picoquic %s: connect\n", modeToString(mode));
 

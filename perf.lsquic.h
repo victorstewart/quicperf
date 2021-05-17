@@ -266,7 +266,7 @@ public:
 		}
 	}
 
-	void connect(struct sockaddr *address)
+	void connectToServer(struct sockaddr *address)
 	{
 		//printf("lsquic %s: connect\n", modeToString(mode));
 

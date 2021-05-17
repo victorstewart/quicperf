@@ -43,6 +43,7 @@ ExternalProject_Add(boringssl
   	BUILD_COMMAND cmake --build . --config Release -- -j 4
   	UPDATE_COMMAND ""
   	CMAKE_ARGS
+  		-DCMAKE_C_FLAGS="-w"
 		-DCMAKE_BUILD_TYPE=Release
 		-DGO_EXECUTABLE:FILEPATH=${GO_EXECUTABLE}
 	INSTALL_COMMAND ""
@@ -98,7 +99,8 @@ ExternalProject_Add(rust
 ExternalProject_Add(quiche
 	DEPENDS rust 
    GIT_REPOSITORY https://github.com/cloudflare/quiche.git
-	GIT_TAG its-the-final-saltdown
+	#GIT_TAG its-the-final-saltdown
+	GIT_TAG master
 	GIT_SHALLOW ON
 	CONFIGURE_COMMAND ""
 	BUILD_IN_SOURCE ON

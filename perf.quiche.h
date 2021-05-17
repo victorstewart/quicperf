@@ -178,7 +178,7 @@ public:
 		//quiche_enable_debug_logging(log, NULL);
 	}
 
-	void connect(struct sockaddr *address)
+	void connectToServer(struct sockaddr *address)
 	{
 		peerAddress = (struct sockaddr_in6 *)address;
 

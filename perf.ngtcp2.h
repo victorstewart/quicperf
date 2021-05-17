@@ -576,7 +576,7 @@ public:
     SSL_CTX_set_quic_method(ssl_ctx, &quic_method);
   }
 
-  void connect(struct sockaddr *address) { init_conn_client(address); }
+  void connectToServer(struct sockaddr *address) { init_conn_client(address); }
 
   void openStream(void) {}
 
