@@ -8,31 +8,56 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON) # gnu
 
-if(NOT DEFINED BUILD_PICOPERF)
-	set(BUILD_PICOPERF 1)
-	add_executable(picoperf perf.cpp)
-endif()
+if(NOT DEFINED BUILD_PICOPERF OR BUILD_LSPERF OR BUILD_QUICHEPERF OR BUILD_NGTCP2PERF OR BUILD_TCPPERF)
+	if(NOT DEFINED BUILD_PICOPERF)
+		set(BUILD_PICOPERF 1)
+		add_executable(picoperf perf.cpp)
+	endif()
 
-if(NOT DEFINED BUILD_LSPERF)
-	set(BUILD_LSPERF 1)
-	add_executable(lsperf perf.cpp)
-endif()
+	if(NOT DEFINED BUILD_LSPERF)
+		set(BUILD_LSPERF 1)
+		add_executable(lsperf perf.cpp)
+	endif()
 
-if(NOT DEFINED BUILD_QUICHEPERF)
-	set(BUILD_QUICHEPERF 1)
-	add_executable(quicheperf perf.cpp)
-endif()
+	if(NOT DEFINED BUILD_QUICHEPERF)
+		set(BUILD_QUICHEPERF 1)
+		add_executable(quicheperf perf.cpp)
+	endif()
 
-set(BUILD_NGTCP2PERF 0) # main is broken right now 
+	set(BUILD_NGTCP2PERF 0) # main is broken right now 
 
-if(NOT DEFINED BUILD_NGTCP2PERF)
-	set(BUILD_NGTCP2PERF 1)
-	add_executable(ngtcp2perf perf.cpp)
-endif()
+	if(NOT DEFINED BUILD_NGTCP2PERF)
+		set(BUILD_NGTCP2PERF 1)
+		add_executable(ngtcp2perf perf.cpp)
+	endif()
 
-if(NOT DEFINED BUILD_TCPPERF)
-	set(BUILD_TCPPERF 1)
-	add_executable(tcpperf perf.cpp)
+	if(NOT DEFINED BUILD_TCPPERF)
+		set(BUILD_TCPPERF 1)
+		add_executable(tcpperf perf.cpp)
+	endif()
+else()
+
+	if(BUILD_PICOPERF)
+		add_executable(picoperf perf.cpp)
+	endif()
+
+	if(BUILD_LSPERF)
+		add_executable(lsperf perf.cpp)
+	endif()
+
+	if(BUILD_QUICHEPERF)
+		add_executable(quicheperf perf.cpp)
+	endif()
+
+	set(BUILD_NGTCP2PERF 0) # main is broken right now 
+
+	if(BUILD_NGTCP2PERF)
+		add_executable(ngtcp2perf perf.cpp)
+	endif()
+
+	if(BUILD_TCPPERF)
+		add_executable(tcpperf perf.cpp)
+	endif()
 endif()
 
 include(ExternalProject)
