@@ -24,8 +24,6 @@ if(NOT DEFINED BUILD_PICOPERF OR BUILD_LSPERF OR BUILD_QUICHEPERF OR BUILD_NGTCP
 		add_executable(quicheperf perf.cpp)
 	endif()
 
-	set(BUILD_NGTCP2PERF 0) # main is broken right now 
-
 	if(NOT DEFINED BUILD_NGTCP2PERF)
 		set(BUILD_NGTCP2PERF 1)
 		add_executable(ngtcp2perf perf.cpp)
@@ -48,8 +46,6 @@ else()
 	if(BUILD_QUICHEPERF)
 		add_executable(quicheperf perf.cpp)
 	endif()
-
-	set(BUILD_NGTCP2PERF 0) # main is broken right now 
 
 	if(BUILD_NGTCP2PERF)
 		add_executable(ngtcp2perf perf.cpp)
