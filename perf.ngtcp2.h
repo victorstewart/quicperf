@@ -16,8 +16,6 @@ private:
   SSL_CTX *ssl_ctx = nullptr;
   SSL *ssl = nullptr;
   ngtcp2_conn *conn = nullptr;
-  std::array<uint8_t, 4092> cryptobuf;
-  size_t cryptobuflen = 0;
   uint8_t alert = 0;
   int64_t bytesInFlight = -1;
   bool data_ready = false;
@@ -60,15 +58,8 @@ private:
                                 const uint8_t *data, size_t len) {
     auto c = static_cast<Ngtcp2<mode> *>(SSL_get_app_data(ssl));
     auto level = ngtcp2_crypto_boringssl_from_ssl_encryption_level(ssl_level);
-    auto offset = c->cryptobuflen;
 
-    assert(c->cryptobuflen + len <= c->cryptobuf.size());
-
-    std::copy_n(data, len, std::begin(c->cryptobuf) + offset);
-    c->cryptobuflen += len;
-
-    if (auto rv = ngtcp2_conn_submit_crypto_data(c->conn, level,
-                                                 &c->cryptobuf[offset], len);
+    if (auto rv = ngtcp2_conn_submit_crypto_data(c->conn, level, data, len);
         rv != 0)
     {
       std::cerr << "ngtcp2_conn_submit_crypto_data: " << ngtcp2_strerror(rv)
@@ -96,10 +87,9 @@ private:
       flush_flight,    send_alert,
   };
 
-  static int rand(uint8_t *dest, size_t destlen,
-                  const ngtcp2_rand_ctx *rand_ctx, ngtcp2_rand_usage usage) {
+  static void rand(uint8_t *dest, size_t destlen,
+                   const ngtcp2_rand_ctx *rand_ctx) {
     RAND_bytes(dest, static_cast<int>(destlen));
-    return 0;
   }
 
   static int extend_max_stream_data_server(ngtcp2_conn *conn, int64_t stream_id,
@@ -223,7 +213,6 @@ private:
         ngtcp2_crypto_decrypt_cb,
         ngtcp2_crypto_hp_mask_cb,
         recv_stream_data_server,
-        nullptr, // acked_crypto_offset
         nullptr, // acked_stream_data_offset
         nullptr, // stream_open
         nullptr, // stream_close
@@ -249,6 +238,7 @@ private:
         nullptr, // recv_datagram
         nullptr, // ack_datagram
         nullptr, // lost_datagram
+        ngtcp2_crypto_get_path_challenge_data_cb,
     };
 
     ngtcp2_settings settings;
@@ -256,6 +246,8 @@ private:
     settings.initial_ts = timeNowUs() * NGTCP2_MICROSECONDS;
     settings.max_stream_window = 8 * 1024 * 1024;
     settings.max_window = 8 * 1024 * 1024;
+    settings.max_udp_payload_size = MAX_IPV6_UDP_PACKET_SIZE;
+    settings.no_udp_payload_size_shaping = 1;
 
     ngtcp2_transport_params params;
     ngtcp2_transport_params_default(&params);
@@ -302,7 +294,6 @@ private:
         ngtcp2_crypto_decrypt_cb,
         ngtcp2_crypto_hp_mask_cb,
         recv_stream_data_client,
-        nullptr, // acked_crypto_offset
         nullptr, // acked_stream_data_offset
         nullptr, // stream_open
         nullptr, // stream_close
@@ -328,6 +319,7 @@ private:
         nullptr, // recv_datagram
         nullptr, // ack_datagram
         nullptr, // lost_datagram
+        ngtcp2_crypto_get_path_challenge_data_cb,
     };
 
     ngtcp2_settings settings;
@@ -335,6 +327,8 @@ private:
     settings.initial_ts = timeNowUs() * NGTCP2_MICROSECONDS;
     settings.max_stream_window = 8 * 1024 * 1024;
     settings.max_window = 8 * 1024 * 1024;
+    settings.max_udp_payload_size = MAX_IPV6_UDP_PACKET_SIZE;
+    settings.no_udp_payload_size_shaping = 1;
 
     ngtcp2_transport_params params;
     ngtcp2_transport_params_default(&params);
