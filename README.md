@@ -1,3 +1,5 @@
+# *** will fix build errors + update all libraries to current versions soon ***
+
 # quicperf
 
 this project is meant to facilitate quic server performance research and to establish absolute benchmarks of performance amongst implementations.
