@@ -1,0 +1,19 @@
+NAME glog
+VERSION 0.7.1-quicperf2
+SYSTEM_LIBS ALLOW
+DEPENDS gflags VERSION 2.3.0-quicperf2
+SOURCE URL https://github.com/google/glog/archive/refs/tags/v0.7.1.tar.gz
+BUILD_SYSTEM CMAKE
+CMAKE_ARG "-DCMAKE_PREFIX_PATH=${dep:gflags}"
+CMAKE_DEFINE BUILD_SHARED_LIBS=OFF
+CMAKE_DEFINE BUILD_TESTING=OFF
+CMAKE_DEFINE WITH_GFLAGS=ON
+CMAKE_INSTALL_SH <<'EOF'
+cmake --install "${DEPO_BUILD_DIR}" --prefix "${DEPO_PREFIX}"
+mkdir -p "${DEPO_BUILD_DIR}/cmake-install-config"
+cp -a "${DEPO_PREFIX}/lib/cmake/glog" "${DEPO_BUILD_DIR}/cmake-install-config/glog"
+EOF
+STAGE_TREE BUILD cmake-install-config/glog lib/cmake/glog
+TARGET glog::cmake INTERFACE lib/cmake/glog
+TARGET glog::glog STATIC lib/libglog.a INTERFACE include
+LINK glog::glog gflags::gflags pthread

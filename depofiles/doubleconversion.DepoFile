@@ -1,0 +1,8 @@
+NAME doubleconversion
+VERSION 3.4.0
+SYSTEM_LIBS ALLOW
+SOURCE URL https://github.com/google/double-conversion/archive/refs/tags/v3.4.0.tar.gz
+BUILD_SYSTEM CMAKE
+CMAKE_DEFINE BUILD_SHARED_LIBS=OFF
+CMAKE_DEFINE BUILD_TESTING=OFF
+TARGET double-conversion::double-conversion STATIC lib/libdouble-conversion.a INTERFACE include

@@ -1,5 +1,6 @@
 #include <openssl/ssl.h>
 #include <openssl/bio.h>
+#include <openssl/err.h>
 
 #pragma once
 
@@ -10,7 +11,7 @@ private:
 
 	static int boringSSLPrintError(const char *str, size_t len, void *ctx)
 	{
-		printf("boringSSLPrintError -> %.*s\n", len ,str);
+		printf("boringSSLPrintError -> %.*s\n", (int)len, str);
 		return 1;
 	}
 
@@ -38,7 +39,7 @@ private:
 		return 1;
 	}
 
-	static ssl_verify_result_t customVerifyCallback(SSL *ssl, uint8_t *out_alert)
+	static enum ssl_verify_result_t customVerifyCallback(SSL *ssl, uint8_t *out_alert)
 	{
 		//printf("customVerifyCallback\n");
 		return ssl_verify_ok;
@@ -49,17 +50,19 @@ public:
 	static int verifyCert(void *verify_ctx, struct stack_st_X509 *chain)
 	{
 		//printf("lstls %s: verifyCert\n");
+		return 0;
 	}
 
-	static struct ssl_ctx_st* getTLSCtx(void *peer_ctx = NULL, const struct sockaddr *address = NULL)
-	{
-		struct ssl_ctx_st *context = SSL_CTX_new(TLS_method());
-		SSL_CTX_set_min_proto_version(context, TLS1_3_VERSION);
+		static struct ssl_ctx_st* getTLSCtx(void *peer_ctx = NULL, const struct sockaddr *address = NULL)
+		{
+			struct ssl_ctx_st *context = SSL_CTX_new(TLS_method());
+			SSL_CTX_set_min_proto_version(context, TLS1_3_VERSION);
 
-		//SSL_CTX_set_verify(context, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, verifyCallback);
-		//SSL_CTX_set_verify(context, SSL_VERIFY_NONE, verifyCallback);
+			SSL_CTX_set_verify(context,
+				benchmarkTlsVerifyPeer() ? SSL_VERIFY_PEER : SSL_VERIFY_NONE,
+				benchmarkTlsVerifyPeer() ? verifyCallback : nullptr);
 
-		//SSL_CTX_set_cert_verify_callback(context, certVerifyCallback, NULL);
+			//SSL_CTX_set_cert_verify_callback(context, certVerifyCallback, NULL);
 
 		//SSL_CTX_set_custom_verify(context, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, customVerifyCallback);
 
@@ -67,13 +70,12 @@ public:
 		SSL_CTX_use_PrivateKey_file(context, tls_key, SSL_FILETYPE_PEM);
 
 		SSL_CTX_load_verify_locations(context, tls_chain, NULL);
-		
-		static const int X25519Only = NID_X25519;
-		SSL_CTX_set1_curves(context, &X25519Only, 1);
 
-		static const uint16_t ED25519Only = SSL_SIGN_ED25519;
-		SSL_CTX_set_signing_algorithm_prefs(context, &ED25519Only, 1);
-		SSL_CTX_set_verify_algorithm_prefs(context, &ED25519Only, 1);
+		if (SSL_CTX_set1_sigalgs_list(context, "ed25519:ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256") != 1)
+		{
+			printErrorsIfAny();
+			abort();
+		}
 		
 		SSL_CTX_set_alpn_protos(context, alpn, sizeof(alpn));
 	 	SSL_CTX_set_alpn_select_cb(context, select_alpn, NULL);

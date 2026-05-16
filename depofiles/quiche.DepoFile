@@ -1,0 +1,12 @@
+NAME quiche
+VERSION 0.28.0
+SYSTEM_LIBS ALLOW
+SOURCE GIT https://github.com/cloudflare/quiche.git a9cb314563a5c13791bd7e5a1e32821e53114e75
+GIT_SUBMODULES RECURSIVE
+BUILD_SYSTEM CARGO
+CARGO_BUILD env CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo build --release --features ffi --target-dir "${DEPO_BUILD_DIR}/cargo-target" -p quiche
+STAGE_FILE BUILD cargo-target/release/libquiche.a lib/libquiche.a
+STAGE_TREE SOURCE quiche/include include
+STAGE_TREE SOURCE quiche/deps/boringssl/src/include boringssl/include
+TARGET quiche::quiche STATIC lib/libquiche.a INTERFACE include boringssl/include
+LINK quiche::quiche dl pthread m

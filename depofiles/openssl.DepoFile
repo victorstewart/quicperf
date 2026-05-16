@@ -1,0 +1,12 @@
+NAME openssl
+VERSION 4.0.0
+SYSTEM_LIBS ALLOW
+SOURCE URL https://www.openssl.org/source/openssl-4.0.0.tar.gz
+BUILD_SYSTEM AUTOCONF
+AUTOCONF_CONFIGURE ./Configure "linux-${DEPO_TARGET_ARCH}" --prefix="${DEPO_PREFIX}" --libdir=lib --openssldir="${DEPO_PREFIX}/ssl" no-quic no-tests no-docs no-shared
+AUTOCONF_BUILD make -j$(nproc) build_libs
+AUTOCONF_INSTALL make install_dev DESTDIR=
+TARGET openssl INTERFACE include
+TARGET openssl::crypto STATIC lib/libcrypto.a
+TARGET openssl::ssl STATIC lib/libssl.a
+LINK openssl openssl::ssl openssl::crypto

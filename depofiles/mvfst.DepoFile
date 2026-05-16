@@ -1,0 +1,29 @@
+NAME mvfst
+VERSION main-8d294bb-quicperf3
+SYSTEM_LIBS ALLOW
+DEPENDS boost VERSION 1.91.0-quicperf3
+DEPENDS fizz VERSION main-02fb0b5-quicperf7
+DEPENDS folly VERSION main-acd1060-quicperf7
+DEPENDS fmt VERSION 12.1.0-quicperf2
+DEPENDS gflags VERSION 2.3.0-quicperf2
+DEPENDS glog VERSION 0.7.1-quicperf2
+DEPENDS openssl VERSION 4.0.0
+SOURCE GIT https://github.com/facebook/mvfst.git 8d294bb4107d6eb0769ec44ef7d8e43494415562
+BUILD_SYSTEM CMAKE
+CMAKE_ARG "-DCMAKE_PREFIX_PATH=${dep:boost};${dep:fizz};${dep:folly};${dep:fmt};${dep:gflags};${dep:glog};${dep:openssl}"
+CMAKE_ARG "-DCMAKE_INCLUDE_PATH=${dep:boost}/include;${dep:openssl}/include"
+CMAKE_ARG "-DCMAKE_LIBRARY_PATH=${dep:openssl}/lib"
+CMAKE_DEFINE CMAKE_POLICY_DEFAULT_CMP0167=NEW
+CMAKE_DEFINE BUILD_SHARED_LIBS=OFF
+CMAKE_DEFINE BUILD_TESTS=OFF
+CMAKE_DEFINE BUILD_SAMPLES=OFF
+CMAKE_DEFINE BUILD_TOOLS=OFF
+CMAKE_INSTALL_SH <<'EOF'
+cmake --install "${DEPO_BUILD_DIR}" --prefix "${DEPO_PREFIX}"
+mkdir -p "${DEPO_BUILD_DIR}/cmake-install-config"
+cp -a "${DEPO_PREFIX}/lib/cmake/mvfst" "${DEPO_BUILD_DIR}/cmake-install-config/mvfst"
+EOF
+STAGE_TREE BUILD cmake-install-config/mvfst lib/cmake/mvfst
+TARGET mvfst::cmake INTERFACE lib/cmake/mvfst
+TARGET mvfst::mvfst STATIC lib/libmvfst.a INTERFACE include
+LINK mvfst::mvfst fizz::fizz folly::folly fmt::fmt gflags::gflags glog::glog openssl event event_pthreads dl pthread m rt

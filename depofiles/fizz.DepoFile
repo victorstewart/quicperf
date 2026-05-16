@@ -1,0 +1,41 @@
+NAME fizz
+VERSION main-02fb0b5-quicperf7
+SYSTEM_LIBS ALLOW
+DEPENDS boost VERSION 1.91.0-quicperf3
+DEPENDS folly VERSION main-acd1060-quicperf7
+DEPENDS fmt VERSION 12.1.0-quicperf2
+DEPENDS gflags VERSION 2.3.0-quicperf2
+DEPENDS glog VERSION 0.7.1-quicperf2
+DEPENDS libsodium VERSION 1.0.22-quicperf2
+DEPENDS openssl VERSION 4.0.0
+DEPENDS zlib VERSION 1.3.2
+DEPENDS zstd VERSION 1.5.7-quicperf2
+SOURCE GIT https://github.com/facebookincubator/fizz.git 02fb0b5751c63ac74539ac14a6778f49ae27ead3
+BUILD_SYSTEM CMAKE
+CMAKE_CONFIGURE_SH <<'EOF'
+cmake -S "${DEPO_SOURCE_DIR}/fizz" -B "${DEPO_BUILD_DIR}" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="${DEPO_PREFIX}" \
+  -DCMAKE_INSTALL_LIBDIR=lib \
+  "-DCMAKE_PREFIX_PATH=${dep:boost};${dep:folly};${dep:fmt};${dep:gflags};${dep:glog};${dep:libsodium};${dep:openssl};${dep:zlib};${dep:zstd}" \
+  "-DCMAKE_INCLUDE_PATH=${dep:boost}/include;${dep:libsodium}/include;${dep:openssl}/include;${dep:zlib}/include;${dep:zstd}/include" \
+  "-DCMAKE_LIBRARY_PATH=${dep:libsodium}/lib;${dep:openssl}/lib;${dep:zlib}/lib;${dep:zstd}/lib" \
+  -DCMAKE_POLICY_DEFAULT_CMP0167=NEW \
+  -DBUILD_SHARED_LIBS=OFF \
+  -DBUILD_TESTS=OFF \
+  -DBUILD_EXAMPLES=OFF
+EOF
+CMAKE_INSTALL_SH <<'EOF'
+cmake --install "${DEPO_BUILD_DIR}" --prefix "${DEPO_PREFIX}"
+mkdir -p "${DEPO_BUILD_DIR}/cmake-install-config"
+cp -a "${DEPO_PREFIX}/lib/cmake/fizz" "${DEPO_BUILD_DIR}/cmake-install-config/fizz"
+for targets in \
+  "${DEPO_PREFIX}/lib/cmake/fizz/fizz-targets.cmake" \
+  "${DEPO_BUILD_DIR}/cmake-install-config/fizz/fizz-targets.cmake"; do
+  perl -0pi -e 's/# Loop over all imported files and verify that they actually exist\nforeach\(_cmake_target IN LISTS _cmake_import_check_targets\).*?unset\(_cmake_import_check_targets\)\n/# quicperf uses fizz::fizz only; avoid eager validation of disabled optional archives.\nunset(_cmake_import_check_targets)\n/s' "$targets"
+done
+EOF
+STAGE_TREE BUILD cmake-install-config/fizz lib/cmake/fizz
+TARGET fizz::cmake INTERFACE lib/cmake/fizz
+TARGET fizz::fizz STATIC lib/libfizz.a INTERFACE include
+LINK fizz::fizz folly::folly fmt::fmt gflags::gflags glog::glog libsodium::libsodium openssl zlib::zlib zstd::zstd event event_pthreads dl pthread m rt

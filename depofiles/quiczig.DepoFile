@@ -1,0 +1,10 @@
+NAME quiczig
+VERSION quicperf-ed25519-tls-367495a
+SYSTEM_LIBS ALLOW
+SOURCE GIT https://github.com/victorstewart/quic-zig.git quicperf-ed25519-tls
+BUILD_SYSTEM MANUAL
+STAGE_FILE SOURCE build.zig share/quic-zig/build.zig
+STAGE_FILE SOURCE build.zig.zon share/quic-zig/build.zig.zon
+STAGE_FILE SOURCE LICENSE share/quic-zig/LICENSE
+STAGE_TREE SOURCE src share/quic-zig/src
+TARGET quiczig::source INTERFACE share/quic-zig

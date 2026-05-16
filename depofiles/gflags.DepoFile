@@ -1,0 +1,19 @@
+NAME gflags
+VERSION 2.3.0-quicperf2
+SYSTEM_LIBS ALLOW
+SOURCE URL https://github.com/gflags/gflags/archive/refs/tags/v2.3.0.tar.gz
+BUILD_SYSTEM CMAKE
+CMAKE_DEFINE BUILD_SHARED_LIBS=OFF
+CMAKE_DEFINE BUILD_TESTING=OFF
+CMAKE_DEFINE GFLAGS_BUILD_TESTING=OFF
+CMAKE_DEFINE GFLAGS_BUILD_gflags_LIB=ON
+CMAKE_DEFINE GFLAGS_BUILD_gflags_nothreads_LIB=OFF
+CMAKE_INSTALL_SH <<'EOF'
+cmake --install "${DEPO_BUILD_DIR}" --prefix "${DEPO_PREFIX}"
+mkdir -p "${DEPO_BUILD_DIR}/cmake-install-config"
+cp -a "${DEPO_PREFIX}/lib/cmake/gflags" "${DEPO_BUILD_DIR}/cmake-install-config/gflags"
+EOF
+STAGE_TREE BUILD cmake-install-config/gflags lib/cmake/gflags
+TARGET gflags::cmake INTERFACE lib/cmake/gflags
+TARGET gflags::gflags STATIC lib/libgflags.a INTERFACE include
+LINK gflags::gflags pthread

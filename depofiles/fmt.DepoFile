@@ -1,0 +1,16 @@
+NAME fmt
+VERSION 12.1.0-quicperf2
+SYSTEM_LIBS ALLOW
+SOURCE URL https://github.com/fmtlib/fmt/archive/refs/tags/12.1.0.tar.gz
+BUILD_SYSTEM CMAKE
+CMAKE_DEFINE BUILD_SHARED_LIBS=OFF
+CMAKE_DEFINE FMT_DOC=OFF
+CMAKE_DEFINE FMT_TEST=OFF
+CMAKE_INSTALL_SH <<'EOF'
+cmake --install "${DEPO_BUILD_DIR}" --prefix "${DEPO_PREFIX}"
+mkdir -p "${DEPO_BUILD_DIR}/cmake-install-config"
+cp -a "${DEPO_PREFIX}/lib/cmake/fmt" "${DEPO_BUILD_DIR}/cmake-install-config/fmt"
+EOF
+STAGE_TREE BUILD cmake-install-config/fmt lib/cmake/fmt
+TARGET fmt::cmake INTERFACE lib/cmake/fmt
+TARGET fmt::fmt STATIC lib/libfmt.a INTERFACE include

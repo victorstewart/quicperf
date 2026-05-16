@@ -1,5 +1,8 @@
 #include <cassert>
 #include <iostream>
+#include <memory>
+#include <unordered_map>
+#include <vector>
 
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>
@@ -23,6 +26,331 @@ private:
   size_t reqsizebuflen = 0;
   size_t reqsizebufoffset = 0;
   bool stream_opened = false;
+	  bool requestParsed = false;
+	  bool clientDone = false;
+	  bool uploadFinSent = false;
+	  uint32_t serverCompletedConnections = 0;
+
+	  enum class GenericPhase : uint8_t {
+	    sendRequest,
+	    readRequest,
+	    sendPayload,
+	    readPayload,
+	    sendResponse,
+	    readResponse,
+	    complete
+	  };
+
+	  enum class GenericSendKind : uint8_t {
+	    none,
+	    request,
+	    payload,
+	    done,
+	    response,
+	    ack
+	  };
+
+	  struct GenericStreamState {
+	    int64_t streamId = -1;
+	    GenericPhase phase = GenericPhase::sendRequest;
+	    std::array<uint8_t, sizeof(uint64_t)> requestBytes = {};
+	    uint64_t requestValue = 0;
+	    uint64_t requestBytesExpected = 0;
+	    uint64_t requestBytesRead = 0;
+	    uint64_t requestBytesWritten = 0;
+	    uint64_t payloadRemaining = 0;
+	    uint64_t responseRemaining = 0;
+	    size_t doneBytesRead = 0;
+	    size_t doneBytesWritten = 0;
+	    size_t ackBytesRead = 0;
+	    size_t ackBytesWritten = 0;
+	    bool complete = false;
+	  };
+
+	  struct ServerConnState {
+	    ngtcp2_conn *conn = nullptr;
+	    SSL *ssl = nullptr;
+	    uint8_t alert = 0;
+	    int64_t bytesInFlight = -1;
+	    bool data_ready = false;
+	    std::array<uint8_t, sizeof(int64_t)> reqsizebuf = {};
+	    size_t reqsizebuflen = 0;
+	    size_t reqsizebufoffset = 0;
+	    bool stream_opened = false;
+	    bool requestParsed = false;
+	    bool clientDone = false;
+	    bool uploadFinSent = false;
+	    bool complete = false;
+	    std::unordered_map<int64_t, std::unique_ptr<GenericStreamState>> genericStreams;
+	    uint64_t genericCompletedStreams = 0;
+	  };
+
+	  std::vector<std::unique_ptr<ServerConnState>> serverConns;
+	  std::unordered_map<std::string, ServerConnState *> serverConnsByPeer;
+	  ServerConnState *activeServerState = nullptr;
+	  std::vector<std::unique_ptr<GenericStreamState>> genericClientStreams;
+	  bool genericStarted = false;
+	  uint64_t genericClientBytes = 0;
+	  uint64_t genericRequestedStreams = 0;
+	  uint64_t genericOpenedStreams = 0;
+	  uint64_t genericCompletedStreams = 0;
+	  GenericStreamState *activeGenericSend = nullptr;
+	  GenericSendKind activeGenericSendKind = GenericSendKind::none;
+
+	  bool perfComplete() const {
+	    if constexpr (mode & Mode::server)
+	    {
+	      return serverCompletedConnections >= benchmarkServerTargetConnections;
+	    }
+	    else if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
+	    {
+	      return genericCompletedStreams >= benchmarkGenericStreamsPerConnection();
+	    }
+	    else if (benchmarkIsUpload())
+	    {
+	      return clientDone;
+	    }
+
+	    return bytesInFlight == 0;
+	  }
+
+	  void loadServerState(ServerConnState& state)
+	  {
+	    activeServerState = &state;
+	    conn = state.conn;
+	    ssl = state.ssl;
+	    alert = state.alert;
+	    bytesInFlight = state.bytesInFlight;
+	    data_ready = state.data_ready;
+	    reqsizebuf = state.reqsizebuf;
+	    reqsizebuflen = state.reqsizebuflen;
+	    reqsizebufoffset = state.reqsizebufoffset;
+	    stream_opened = state.stream_opened;
+	    requestParsed = state.requestParsed;
+	    clientDone = state.clientDone;
+	    uploadFinSent = state.uploadFinSent;
+	  }
+
+	  void saveServerState(ServerConnState& state)
+	  {
+	    state.conn = conn;
+	    state.ssl = ssl;
+	    state.alert = alert;
+	    state.bytesInFlight = bytesInFlight;
+	    state.data_ready = data_ready;
+	    state.reqsizebuf = reqsizebuf;
+	    state.reqsizebuflen = reqsizebuflen;
+	    state.reqsizebufoffset = reqsizebufoffset;
+	    state.stream_opened = stream_opened;
+	    state.requestParsed = requestParsed;
+	    state.clientDone = clientDone;
+	    state.uploadFinSent = uploadFinSent;
+	  }
+
+	  void markServerStateComplete(ServerConnState& state)
+	  {
+	    if (state.complete)
+	    {
+	      return;
+	    }
+	    if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
+	    {
+	      if (state.genericCompletedStreams < benchmarkGenericStreamsPerConnection())
+	      {
+	        return;
+	      }
+	      state.complete = true;
+	      ++serverCompletedConnections;
+	      return;
+	    }
+	    if (benchmarkIsUpload())
+	    {
+	      if (!state.uploadFinSent)
+	      {
+	        return;
+	      }
+	    }
+	    else if (benchmarkIsLossRecovery() && !state.clientDone)
+	    {
+	      return;
+	    }
+	    else if (state.bytesInFlight != 0)
+	    {
+	      return;
+	    }
+	    state.complete = true;
+	    ++serverCompletedConnections;
+	  }
+
+	  ServerConnState& serverStateFor(UDPContext *msg)
+	  {
+	    std::string key = benchmarkPeerKey(msg->address());
+	    auto found = serverConnsByPeer.find(key);
+	    if (found != serverConnsByPeer.end())
+	    {
+	      return *found->second;
+	    }
+
+	    auto owned = std::make_unique<ServerConnState>();
+	    ServerConnState *raw = owned.get();
+	    serverConns.push_back(std::move(owned));
+	    serverConnsByPeer.emplace(std::move(key), raw);
+	    loadServerState(*raw);
+	    init_conn_server(msg);
+	    saveServerState(*raw);
+	    return *raw;
+	  }
+
+	  static void encodeU64(uint64_t value, std::array<uint8_t, sizeof(uint64_t)>& out)
+	  {
+	    uint64_t swapped = bswap_64(value);
+	    memcpy(out.data(), &swapped, out.size());
+	  }
+
+	  static uint64_t decodeU64(const std::array<uint8_t, sizeof(uint64_t)>& in)
+	  {
+	    uint64_t value = 0;
+	    memcpy(&value, in.data(), in.size());
+	    return bswap_64(value);
+	  }
+
+	  uint64_t genericTransferBytesForStream(uint64_t index) const
+	  {
+	    const uint64_t count = std::max<uint64_t>(1, benchmarkGenericStreamsPerConnection());
+	    const uint64_t base = genericClientBytes / count;
+	    if (index + 1 == count)
+	    {
+	      return genericClientBytes - (base * (count - 1));
+	    }
+	    return std::max<uint64_t>(1, base);
+	  }
+
+	  void initializeGenericClientState(GenericStreamState& state)
+	  {
+	    state.phase = GenericPhase::sendRequest;
+	    const uint64_t index = genericOpenedStreams++;
+	    if (benchmarkScenarioIsSmallGenericStreamWorkload(benchmarkScenario))
+	    {
+	      state.requestBytesExpected = benchmarkGenericReqRespRequestBytes();
+	      state.responseRemaining = benchmarkGenericReqRespResponseBytes();
+	    }
+	    else
+	    {
+	      const uint64_t streamBytes = genericTransferBytesForStream(index);
+	      state.requestValue = streamBytes;
+	      encodeU64(streamBytes, state.requestBytes);
+	      state.requestBytesExpected = state.requestBytes.size();
+	      state.payloadRemaining = (benchmarkScenario == BenchmarkScenario::multistream_upload ||
+	                                benchmarkScenario == BenchmarkScenario::bidi) ? streamBytes : 0;
+	      state.responseRemaining = benchmarkScenario == BenchmarkScenario::multistream_upload ? 1 : streamBytes;
+	    }
+	  }
+
+	  GenericStreamState *serverGenericStreamFor(int64_t streamId, void *streamUserData)
+	  {
+	    if (streamUserData != nullptr)
+	    {
+	      return static_cast<GenericStreamState *>(streamUserData);
+	    }
+	    if (activeServerState == nullptr)
+	    {
+	      return nullptr;
+	    }
+	    auto found = activeServerState->genericStreams.find(streamId);
+	    if (found != activeServerState->genericStreams.end())
+	    {
+	      return found->second.get();
+	    }
+	    auto state = std::make_unique<GenericStreamState>();
+	    state->streamId = streamId;
+	    state->phase = GenericPhase::readRequest;
+	    GenericStreamState *raw = state.get();
+	    activeServerState->genericStreams.emplace(streamId, std::move(state));
+	    ngtcp2_conn_set_stream_user_data(conn, streamId, raw);
+	    return raw;
+	  }
+
+	  void markGenericClientComplete(GenericStreamState *state)
+	  {
+	    if (state == nullptr || state->complete)
+	    {
+	      return;
+	    }
+	    state->complete = true;
+	    state->phase = GenericPhase::complete;
+	    ++genericCompletedStreams;
+	    openMoreGenericClientStreams();
+	  }
+
+	  void markGenericServerComplete(GenericStreamState *state)
+	  {
+	    if (state == nullptr || state->complete || activeServerState == nullptr)
+	    {
+	      return;
+	    }
+	    state->complete = true;
+	    state->phase = GenericPhase::complete;
+	    ++activeServerState->genericCompletedStreams;
+	    ngtcp2_conn_extend_max_streams_bidi(conn, 1);
+	    markServerStateComplete(*activeServerState);
+	  }
+
+	  void openMoreGenericClientStreams()
+	  {
+	    if constexpr (mode & Mode::client)
+	    {
+	      if (!genericStarted || !benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario) || conn == nullptr)
+	      {
+	        return;
+	      }
+	      const uint64_t targetStreams = benchmarkGenericStreamsPerConnection();
+	      const uint64_t maxActive = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
+	      uint64_t active = 0;
+	      for (const auto& state : genericClientStreams)
+	      {
+	        if (!state->complete)
+	        {
+	          ++active;
+	        }
+	      }
+	      while (genericRequestedStreams < targetStreams && active < maxActive)
+	      {
+	        auto state = std::make_unique<GenericStreamState>();
+	        initializeGenericClientState(*state);
+	        int64_t streamId = -1;
+	        GenericStreamState *raw = state.get();
+	        int rv = ngtcp2_conn_open_bidi_stream(conn, &streamId, raw);
+	        if (rv != 0)
+	        {
+	          break;
+	        }
+	        raw->streamId = streamId;
+	        genericClientStreams.push_back(std::move(state));
+	        ++genericRequestedStreams;
+	        ++active;
+	      }
+	    }
+	  }
+
+	  bool tryOpenClientStream() {
+    if (stream_opened)
+    {
+      return true;
+    }
+
+    int64_t stream_id;
+    if (auto rv = ngtcp2_conn_open_bidi_stream(conn, &stream_id, nullptr);
+        rv != 0)
+    {
+      assert(NGTCP2_ERR_STREAM_ID_BLOCKED == rv);
+      return false;
+    }
+
+    assert(0 == stream_id);
+    stream_opened = true;
+
+    return true;
+  }
 
   static int set_read_secret(SSL *ssl, enum ssl_encryption_level_t ssl_level,
                              const SSL_CIPHER *cipher, const uint8_t *secret,
@@ -87,14 +415,37 @@ private:
       flush_flight,    send_alert,
   };
 
-  static void rand(uint8_t *dest, size_t destlen,
-                   const ngtcp2_rand_ctx *rand_ctx) {
-    RAND_bytes(dest, static_cast<int>(destlen));
-  }
+	  static void rand(uint8_t *dest, size_t destlen,
+	                   const ngtcp2_rand_ctx *rand_ctx) {
+	    RAND_bytes(dest, static_cast<int>(destlen));
+	  }
+
+	  static int get_new_connection_id2(ngtcp2_conn *conn, ngtcp2_cid *cid,
+	                                    ngtcp2_stateless_reset_token *token,
+	                                    size_t cidlen, void *user_data) {
+	    if (cidlen > NGTCP2_MAX_CIDLEN)
+	    {
+	      return NGTCP2_ERR_CALLBACK_FAILURE;
+	    }
+
+	    cid->datalen = cidlen;
+
+	    if (RAND_bytes(cid->data, static_cast<int>(cidlen)) != 1 ||
+	        RAND_bytes(token->data, NGTCP2_STATELESS_RESET_TOKENLEN) != 1)
+	    {
+	      return NGTCP2_ERR_CALLBACK_FAILURE;
+	    }
+
+	    return 0;
+	  }
 
   static int extend_max_stream_data_server(ngtcp2_conn *conn, int64_t stream_id,
                                            uint64_t max_data, void *user_data,
                                            void *stream_user_data) {
+    if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
+    {
+      return 0;
+    }
     if (stream_id != 0)
     {
       return 0;
@@ -102,7 +453,7 @@ private:
 
     auto c = static_cast<Ngtcp2<mode> *>(user_data);
 
-    if (c->bytesInFlight > 0)
+    if (!benchmarkIsUpload() && c->bytesInFlight > 0)
     {
       c->data_ready = true;
     }
@@ -114,54 +465,181 @@ private:
                                      int64_t stream_id, uint64_t offset,
                                      const uint8_t *data, size_t datalen,
                                      void *user_data, void *stream_user_data) {
+    auto c = static_cast<Ngtcp2<mode> *>(user_data);
+
+    if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
+    {
+      ngtcp2_conn_extend_max_offset(conn, datalen);
+      ngtcp2_conn_extend_max_stream_offset(conn, stream_id, datalen);
+      auto state = c->serverGenericStreamFor(stream_id, stream_user_data);
+      if (state == nullptr)
+      {
+        return 0;
+      }
+
+      size_t consumed = 0;
+      if (state->phase == GenericPhase::readRequest)
+      {
+        if (benchmarkScenarioIsSmallGenericStreamWorkload(benchmarkScenario))
+        {
+          if (state->requestBytesExpected == 0)
+          {
+            state->requestBytesExpected = benchmarkGenericReqRespRequestBytes();
+          }
+          const uint64_t copied = std::min<uint64_t>(
+            state->requestBytesExpected - state->requestBytesRead, datalen);
+          state->requestBytesRead += copied;
+          consumed += static_cast<size_t>(copied);
+          if (state->requestBytesRead == state->requestBytesExpected)
+          {
+            state->responseRemaining = benchmarkGenericReqRespResponseBytes();
+            state->phase = GenericPhase::sendResponse;
+          }
+        }
+        else
+        {
+          while (state->requestBytesRead < state->requestBytes.size() && consumed < datalen)
+          {
+            state->requestBytes[state->requestBytesRead++] = data[consumed++];
+          }
+          if (state->requestBytesRead == state->requestBytes.size())
+          {
+            state->requestValue = decodeU64(state->requestBytes);
+            state->payloadRemaining = (benchmarkScenario == BenchmarkScenario::multistream_upload ||
+                                       benchmarkScenario == BenchmarkScenario::bidi) ? state->requestValue : 0;
+            state->responseRemaining = benchmarkScenario == BenchmarkScenario::multistream_upload ? 1 : state->requestValue;
+            state->phase = state->payloadRemaining > 0 ? GenericPhase::readPayload : GenericPhase::sendResponse;
+          }
+        }
+      }
+
+      if ((benchmarkScenario == BenchmarkScenario::multistream_upload ||
+           benchmarkScenario == BenchmarkScenario::bidi) &&
+          consumed < datalen && state->payloadRemaining > 0)
+      {
+        const uint64_t copied = std::min<uint64_t>(state->payloadRemaining, datalen - consumed);
+        state->payloadRemaining -= copied;
+        consumed += static_cast<size_t>(copied);
+        if (state->payloadRemaining == 0)
+        {
+          state->phase = GenericPhase::sendResponse;
+        }
+      }
+
+      if (state->phase == GenericPhase::readResponse && consumed < datalen)
+      {
+        const size_t copied = std::min<size_t>(1 - state->doneBytesRead, datalen - consumed);
+        state->doneBytesRead += copied;
+      }
+
+      return 0;
+    }
+
     if (stream_id != 0)
     {
       return 0;
     }
 
-    auto c = static_cast<Ngtcp2<mode> *>(user_data);
+    ngtcp2_conn_extend_max_offset(conn, datalen);
+    ngtcp2_conn_extend_max_stream_offset(conn, stream_id, datalen);
 
-    if (c->reqsizebuf.size() == c->reqsizebuflen)
+    size_t consumed = 0;
+    while (c->reqsizebuf.size() > c->reqsizebuflen && consumed < datalen)
     {
-      return 0;
+      auto n = std::min(c->reqsizebuf.size() - c->reqsizebuflen, datalen - consumed);
+      std::copy_n(data + consumed, n, c->reqsizebuf.data() + c->reqsizebuflen);
+      c->reqsizebuflen += n;
+      consumed += n;
     }
-
-    auto n = std::min(c->reqsizebuf.size() - c->reqsizebuflen, datalen);
-    std::copy_n(data, n, c->reqsizebuf.data());
-    c->reqsizebuflen += n;
 
     if (c->reqsizebuf.size() > c->reqsizebuflen)
     {
       return 0;
     }
 
-    memcpy(&c->bytesInFlight, c->reqsizebuf.data(), c->reqsizebuf.size());
-    c->bytesInFlight = bswap_64(c->bytesInFlight);
+    if (!c->requestParsed)
+    {
+      memcpy(&c->bytesInFlight, c->reqsizebuf.data(), c->reqsizebuf.size());
+      c->bytesInFlight = bswap_64(c->bytesInFlight);
+      c->requestParsed = true;
 
-    c->data_ready = true;
+      if (!benchmarkIsUpload())
+      {
+        c->data_ready = true;
+      }
+    }
 
-    return 0;
-  }
+	    if (benchmarkIsUpload() && consumed < datalen)
+	    {
+	      c->bytesInFlight -= std::min<int64_t>(c->bytesInFlight, static_cast<int64_t>(datalen - consumed));
+	    }
+
+	    if (!benchmarkIsUpload() && benchmarkIsLossRecovery() &&
+	        (flags & NGTCP2_STREAM_DATA_FLAG_FIN))
+	    {
+	      c->clientDone = true;
+	    }
+
+	    return 0;
+	  }
 
   static int recv_stream_data_client(ngtcp2_conn *conn, uint32_t flags,
                                      int64_t stream_id, uint64_t offset,
                                      const uint8_t *data, size_t datalen,
                                      void *user_data, void *stream_user_data) {
+    auto c = static_cast<Ngtcp2<mode> *>(user_data);
     ngtcp2_conn_extend_max_offset(conn, datalen);
+
+    if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
+    {
+      ngtcp2_conn_extend_max_stream_offset(conn, stream_id, datalen);
+      auto state = static_cast<GenericStreamState *>(stream_user_data);
+      if (state == nullptr)
+      {
+        return 0;
+      }
+      size_t consumed = 0;
+      if (state->responseRemaining > 0)
+      {
+        const uint64_t copied = std::min<uint64_t>(state->responseRemaining, datalen);
+        state->responseRemaining -= copied;
+        consumed += static_cast<size_t>(copied);
+        if (state->responseRemaining == 0)
+        {
+          state->phase = GenericPhase::sendPayload;
+        }
+      }
+      if (state->doneBytesWritten > 0 && state->ackBytesRead < 1 && consumed < datalen)
+      {
+        const size_t copied = std::min<size_t>(1 - state->ackBytesRead, datalen - consumed);
+        state->ackBytesRead += copied;
+      }
+      if (state->ackBytesRead >= 1)
+      {
+        c->markGenericClientComplete(state);
+      }
+      return 0;
+    }
 
     if (stream_id != 0)
     {
       return 0;
     }
 
-    auto c = static_cast<Ngtcp2<mode> *>(user_data);
+    if (benchmarkIsUpload() && (flags & NGTCP2_STREAM_DATA_FLAG_FIN))
+    {
+      c->clientDone = true;
+      return 0;
+    }
 
-    if (c->bytesInFlight < datalen)
+    const auto received = static_cast<int64_t>(datalen);
+
+    if (c->bytesInFlight < received)
     {
       c->bytesInFlight = 0;
     } else
     {
-      c->bytesInFlight -= datalen;
+      c->bytesInFlight -= received;
 
       ngtcp2_conn_extend_max_stream_offset(conn, stream_id, datalen);
     }
@@ -174,24 +652,38 @@ private:
                                             void *user_data) {
     auto c = static_cast<Ngtcp2<mode> *>(user_data);
 
+    if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
+    {
+      c->openMoreGenericClientStreams();
+      return 0;
+    }
+
     if (c->stream_opened)
     {
       return 0;
     }
 
-    int64_t stream_id;
-    if (auto rv = ngtcp2_conn_open_bidi_stream(conn, &stream_id, nullptr);
-        rv != 0)
-    {
-      assert(NGTCP2_ERR_STREAM_ID_BLOCKED == rv);
-      return 0;
-    }
-
-    assert(0 == stream_id);
-
-    c->stream_opened = true;
+    c->tryOpenClientStream();
 
     return 0;
+  }
+
+  static ngtcp2_callbacks make_callbacks() {
+    ngtcp2_callbacks callbacks = {};
+
+    callbacks.recv_crypto_data = ngtcp2_crypto_recv_crypto_data_cb;
+    callbacks.encrypt = ngtcp2_crypto_encrypt_cb;
+    callbacks.decrypt = ngtcp2_crypto_decrypt_cb;
+    callbacks.hp_mask = ngtcp2_crypto_hp_mask_cb;
+    callbacks.rand = rand;
+    callbacks.update_key = ngtcp2_crypto_update_key_cb;
+    callbacks.delete_crypto_aead_ctx = ngtcp2_crypto_delete_crypto_aead_ctx_cb;
+    callbacks.delete_crypto_cipher_ctx = ngtcp2_crypto_delete_crypto_cipher_ctx_cb;
+    callbacks.version_negotiation = ngtcp2_crypto_version_negotiation_cb;
+    callbacks.get_new_connection_id2 = get_new_connection_id2;
+    callbacks.get_path_challenge_data2 = ngtcp2_crypto_get_path_challenge_data2_cb;
+
+    return callbacks;
   }
 
   void init_conn_server(UDPContext *msg) {
@@ -203,63 +695,40 @@ private:
       abort();
     }
 
-    auto callbacks = ngtcp2_callbacks{
-        nullptr, // client_initial
-        ngtcp2_crypto_recv_client_initial_cb,
-        ngtcp2_crypto_recv_crypto_data_cb,
-        nullptr, // handshake_completed
-        nullptr, // recv_version_negotiation
-        ngtcp2_crypto_encrypt_cb,
-        ngtcp2_crypto_decrypt_cb,
-        ngtcp2_crypto_hp_mask_cb,
-        recv_stream_data_server,
-        nullptr, // acked_stream_data_offset
-        nullptr, // stream_open
-        nullptr, // stream_close
-        nullptr, // recv_stateless_reset
-        nullptr, // recv_retry
-        nullptr, // extend_max_streams_bidi
-        nullptr, // extend_max_streams_uni
-        rand,
-        nullptr, // get_new_connection_id
-        nullptr, // remove_connection_id
-        ngtcp2_crypto_update_key_cb,
-        nullptr, // path_validation
-        nullptr, // select_preferred_addr
-        nullptr, // stream_reset
-        nullptr, // extend_max_remote_streams_bidi
-        nullptr, // extend_max_remote_streams_uni
-        extend_max_stream_data_server,
-        nullptr, // dcid_status
-        nullptr, // handshake_confirmed
-        nullptr, // recv_new_token
-        ngtcp2_crypto_delete_crypto_aead_ctx_cb,
-        ngtcp2_crypto_delete_crypto_cipher_ctx_cb,
-        nullptr, // recv_datagram
-        nullptr, // ack_datagram
-        nullptr, // lost_datagram
-        ngtcp2_crypto_get_path_challenge_data_cb,
-    };
+    auto callbacks = make_callbacks();
+    callbacks.recv_client_initial = ngtcp2_crypto_recv_client_initial_cb;
+    callbacks.recv_stream_data = recv_stream_data_server;
+    callbacks.extend_max_stream_data = extend_max_stream_data_server;
 
-    ngtcp2_settings settings;
+	    ngtcp2_settings settings;
     ngtcp2_settings_default(&settings);
     settings.initial_ts = timeNowUs() * NGTCP2_MICROSECONDS;
-    settings.max_stream_window = 8 * 1024 * 1024;
-    settings.max_window = 8 * 1024 * 1024;
-    settings.max_udp_payload_size = MAX_IPV6_UDP_PACKET_SIZE;
-    settings.no_udp_payload_size_shaping = 1;
+    settings.cc_algo = NGTCP2_CC_ALGO_BBR;
+    settings.max_stream_window = benchmarkStreamWindow;
+    settings.max_window = benchmarkConnectionWindow;
+    settings.max_tx_udp_payload_size = benchmarkUdpPayloadSize;
+    settings.no_tx_udp_payload_size_shaping = 1;
 
     ngtcp2_transport_params params;
     ngtcp2_transport_params_default(&params);
-    params.initial_max_streams_bidi = 100;
-    params.initial_max_stream_data_bidi_remote = 1024 * 1024;
-    params.initial_max_data = 1024 * 1024;
+    params.initial_max_streams_bidi = benchmarkMaxBidiStreams;
+    params.initial_max_streams_uni = benchmarkMaxUniStreams;
+    params.initial_max_stream_data_bidi_local = benchmarkStreamWindow;
+    params.initial_max_stream_data_bidi_remote = benchmarkStreamWindow;
+    params.initial_max_stream_data_uni = benchmarkStreamWindow;
+    params.initial_max_data = benchmarkConnectionWindow;
+    params.max_idle_timeout = benchmarkIdleTimeoutMs * NGTCP2_MILLISECONDS;
+    params.max_udp_payload_size = benchmarkUdpPayloadSize;
+    params.ack_delay_exponent = benchmarkAckDelayExponent;
+    params.max_ack_delay = benchmarkMaxAckDelayMs * NGTCP2_MILLISECONDS;
     params.original_dcid = hd.dcid;
+    params.original_dcid_present = 1;
 
-    auto path =
-        ngtcp2_path{{sizeof(struct sockaddr_in6),
-                     reinterpret_cast<sockaddr *>(networkHub->socket.address6)},
-                    {sizeof(struct sockaddr_in6), msg->address()}};
+	    auto path = ngtcp2_path{
+	        {reinterpret_cast<sockaddr *>(networkHub->socket.address6),
+	         sizeof(struct sockaddr_in6)},
+	        {msg->address(), sizeof(struct sockaddr_in6)},
+	        nullptr};
 
     ngtcp2_cid scid;
     ngtcp2_cid_init(&scid, nullptr, 0);
@@ -284,61 +753,39 @@ private:
   }
 
   void init_conn_client(struct sockaddr *address) {
-    auto callbacks = ngtcp2_callbacks{
-        ngtcp2_crypto_client_initial_cb,
-        nullptr, // recv_client_initial
-        ngtcp2_crypto_recv_crypto_data_cb,
-        nullptr, // handshake_completed
-        nullptr, // recv_version_negotiation
-        ngtcp2_crypto_encrypt_cb,
-        ngtcp2_crypto_decrypt_cb,
-        ngtcp2_crypto_hp_mask_cb,
-        recv_stream_data_client,
-        nullptr, // acked_stream_data_offset
-        nullptr, // stream_open
-        nullptr, // stream_close
-        nullptr, // recv_stateless_reset
-        ngtcp2_crypto_recv_retry_cb,
-        extend_max_streams_bidi_client,
-        nullptr, // extend_max_streams_uni
-        rand,
-        nullptr, // get_new_connection_id
-        nullptr, // remove_connection_id
-        ngtcp2_crypto_update_key_cb,
-        nullptr, // path_validation
-        nullptr, // select_preferred_addr
-        nullptr, // stream_reset
-        nullptr, // extend_max_remote_streams_bidi
-        nullptr, // extend_max_remote_streams_uni
-        nullptr, // extend_max_stream_data
-        nullptr, // dcid_status
-        nullptr, // handshake_confirmed
-        nullptr, // recv_new_token
-        ngtcp2_crypto_delete_crypto_aead_ctx_cb,
-        ngtcp2_crypto_delete_crypto_cipher_ctx_cb,
-        nullptr, // recv_datagram
-        nullptr, // ack_datagram
-        nullptr, // lost_datagram
-        ngtcp2_crypto_get_path_challenge_data_cb,
-    };
+    auto callbacks = make_callbacks();
+    callbacks.client_initial = ngtcp2_crypto_client_initial_cb;
+    callbacks.recv_stream_data = recv_stream_data_client;
+    callbacks.recv_retry = ngtcp2_crypto_recv_retry_cb;
+    callbacks.extend_max_local_streams_bidi = extend_max_streams_bidi_client;
 
-    ngtcp2_settings settings;
+	    ngtcp2_settings settings;
     ngtcp2_settings_default(&settings);
     settings.initial_ts = timeNowUs() * NGTCP2_MICROSECONDS;
-    settings.max_stream_window = 8 * 1024 * 1024;
-    settings.max_window = 8 * 1024 * 1024;
-    settings.max_udp_payload_size = MAX_IPV6_UDP_PACKET_SIZE;
-    settings.no_udp_payload_size_shaping = 1;
+    settings.cc_algo = NGTCP2_CC_ALGO_BBR;
+    settings.max_stream_window = benchmarkStreamWindow;
+    settings.max_window = benchmarkConnectionWindow;
+    settings.max_tx_udp_payload_size = benchmarkUdpPayloadSize;
+    settings.no_tx_udp_payload_size_shaping = 1;
 
     ngtcp2_transport_params params;
     ngtcp2_transport_params_default(&params);
-    params.initial_max_stream_data_bidi_local = 1024 * 1024;
-    params.initial_max_data = 1024 * 1024;
+    params.initial_max_streams_bidi = benchmarkMaxBidiStreams;
+    params.initial_max_streams_uni = benchmarkMaxUniStreams;
+    params.initial_max_stream_data_bidi_local = benchmarkStreamWindow;
+    params.initial_max_stream_data_bidi_remote = benchmarkStreamWindow;
+    params.initial_max_stream_data_uni = benchmarkStreamWindow;
+    params.initial_max_data = benchmarkConnectionWindow;
+    params.max_idle_timeout = benchmarkIdleTimeoutMs * NGTCP2_MILLISECONDS;
+    params.max_udp_payload_size = benchmarkUdpPayloadSize;
+    params.ack_delay_exponent = benchmarkAckDelayExponent;
+    params.max_ack_delay = benchmarkMaxAckDelayMs * NGTCP2_MILLISECONDS;
 
-    auto path =
-        ngtcp2_path{{sizeof(struct sockaddr_in6),
-                     reinterpret_cast<sockaddr *>(networkHub->socket.address6)},
-                    {sizeof(struct sockaddr_in6), address}};
+	    auto path = ngtcp2_path{
+	        {reinterpret_cast<sockaddr *>(networkHub->socket.address6),
+	         sizeof(struct sockaddr_in6)},
+	        {address, sizeof(struct sockaddr_in6)},
+	        nullptr};
 
     ngtcp2_cid scid;
     ngtcp2_cid_init(&scid, nullptr, 0);
@@ -366,31 +813,137 @@ private:
     ngtcp2_conn_set_tls_native_handle(conn, ssl);
   }
 
+  std::tuple<int64_t, ngtcp2_vec, size_t, uint32_t> get_generic_stream_data_server() {
+    activeGenericSend = nullptr;
+    activeGenericSendKind = GenericSendKind::none;
+
+    if (activeServerState == nullptr)
+    {
+      return {-1, ngtcp2_vec{}, 0, NGTCP2_WRITE_STREAM_FLAG_MORE};
+    }
+
+    for (auto& item : activeServerState->genericStreams)
+    {
+      auto& state = *item.second;
+      if (state.complete)
+      {
+        continue;
+      }
+      if (state.phase == GenericPhase::sendResponse && state.responseRemaining > 0)
+      {
+        const size_t n = static_cast<size_t>(
+          std::min<uint64_t>(state.responseRemaining, sizeof(networkHub->junk)));
+        ngtcp2_vec vec{networkHub->junk, n};
+        activeGenericSend = &state;
+        activeGenericSendKind = GenericSendKind::response;
+        return {state.streamId, vec, 1, NGTCP2_WRITE_STREAM_FLAG_MORE};
+      }
+      if (state.phase == GenericPhase::readResponse && state.doneBytesRead > 0 && state.ackBytesWritten == 0)
+      {
+        static uint8_t ack = 0;
+        ngtcp2_vec vec{&ack, sizeof(ack)};
+        activeGenericSend = &state;
+        activeGenericSendKind = GenericSendKind::ack;
+        return {state.streamId, vec, 1, NGTCP2_WRITE_STREAM_FLAG_FIN};
+      }
+    }
+
+    return {-1, ngtcp2_vec{}, 0, NGTCP2_WRITE_STREAM_FLAG_MORE};
+  }
+
+  std::tuple<int64_t, ngtcp2_vec, size_t, uint32_t> get_generic_stream_data_client() {
+    activeGenericSend = nullptr;
+    activeGenericSendKind = GenericSendKind::none;
+
+    for (auto& owned : genericClientStreams)
+    {
+      auto& state = *owned;
+      if (state.complete)
+      {
+        continue;
+      }
+      if (state.requestBytesWritten < state.requestBytesExpected)
+      {
+        const size_t left = static_cast<size_t>(state.requestBytesExpected - state.requestBytesWritten);
+        uint8_t *source = nullptr;
+        if (benchmarkScenarioIsSmallGenericStreamWorkload(benchmarkScenario))
+        {
+          source = networkHub->junk;
+        }
+        else
+        {
+          source = state.requestBytes.data() + state.requestBytesWritten;
+        }
+        const size_t n = std::min<size_t>(left, sizeof(networkHub->junk));
+        ngtcp2_vec vec{source, n};
+        activeGenericSend = &state;
+        activeGenericSendKind = GenericSendKind::request;
+        return {state.streamId, vec, 1, NGTCP2_WRITE_STREAM_FLAG_MORE};
+      }
+      if (state.payloadRemaining > 0)
+      {
+        const size_t n = static_cast<size_t>(
+          std::min<uint64_t>(state.payloadRemaining, sizeof(networkHub->junk)));
+        ngtcp2_vec vec{networkHub->junk, n};
+        activeGenericSend = &state;
+        activeGenericSendKind = GenericSendKind::payload;
+        return {state.streamId, vec, 1, NGTCP2_WRITE_STREAM_FLAG_MORE};
+      }
+      if (state.responseRemaining == 0 && state.doneBytesWritten == 0)
+      {
+        static uint8_t done = 0;
+        ngtcp2_vec vec{&done, sizeof(done)};
+        activeGenericSend = &state;
+        activeGenericSendKind = GenericSendKind::done;
+        return {state.streamId, vec, 1, NGTCP2_WRITE_STREAM_FLAG_FIN};
+      }
+    }
+
+    return {-1, ngtcp2_vec{}, 0, NGTCP2_WRITE_STREAM_FLAG_MORE};
+  }
+
   std::tuple<int64_t, ngtcp2_vec, size_t, uint32_t> get_stream_data_server() {
+    if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
+    {
+      return get_generic_stream_data_server();
+    }
     int64_t stream_id = -1;
     size_t vcnt = 0;
     ngtcp2_vec vec{};
     uint32_t flags = NGTCP2_WRITE_STREAM_FLAG_MORE;
 
-    if (data_ready && bytesInFlight >= 0 && ngtcp2_conn_get_max_data_left(conn))
+    if (benchmarkIsUpload())
     {
-      auto n = std::min(static_cast<int64_t>(sizeof(networkHub->junk)),
-                        bytesInFlight);
+      if (requestParsed && bytesInFlight == 0 && !uploadFinSent)
+      {
+        stream_id = 0;
+        vcnt = 0;
+        flags = NGTCP2_WRITE_STREAM_FLAG_FIN;
+      }
+    }
+	    else if (data_ready && bytesInFlight >= 0 && ngtcp2_conn_get_max_data_left(conn))
+	    {
+	      auto n = std::min(static_cast<int64_t>(sizeof(networkHub->junk)),
+	                        bytesInFlight);
       vec.len = n;
       vec.base = networkHub->junk;
       vcnt = 1;
       stream_id = 0;
 
-      if (n == bytesInFlight)
-      {
-        flags |= NGTCP2_WRITE_STREAM_FLAG_FIN;
-      }
-    }
+	      if (n == bytesInFlight)
+	      {
+	        flags |= NGTCP2_WRITE_STREAM_FLAG_FIN;
+	      }
+	    }
 
     return {stream_id, vec, vcnt, flags};
   }
 
   std::tuple<int64_t, ngtcp2_vec, size_t, uint32_t> get_stream_data_client() {
+    if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
+    {
+      return get_generic_stream_data_client();
+    }
     int64_t stream_id = -1;
     size_t vcnt = 0;
     ngtcp2_vec vec{};
@@ -398,11 +951,40 @@ private:
 
     if (data_ready && ngtcp2_conn_get_max_data_left(conn))
     {
-      vec.len = reqsizebuflen - reqsizebufoffset;
-      vec.base = reqsizebuf.data() + reqsizebufoffset;
-      vcnt = 1;
-      stream_id = 0;
-      flags |= NGTCP2_WRITE_STREAM_FLAG_FIN;
+      if (benchmarkIsUpload() && reqsizebufoffset == reqsizebuflen)
+      {
+        auto n = std::min(static_cast<int64_t>(sizeof(networkHub->junk)), bytesInFlight);
+        vec.len = n;
+        vec.base = networkHub->junk;
+        vcnt = n > 0 ? 1 : 0;
+        stream_id = n > 0 ? 0 : -1;
+        if (n == bytesInFlight)
+        {
+          flags |= NGTCP2_WRITE_STREAM_FLAG_FIN;
+        }
+      }
+      else
+      {
+        if (!benchmarkIsUpload() && benchmarkIsLossRecovery() &&
+            reqsizebufoffset == reqsizebuflen && bytesInFlight == 0 && !clientDone)
+        {
+          vcnt = 0;
+          stream_id = 0;
+          flags |= NGTCP2_WRITE_STREAM_FLAG_FIN;
+        }
+        else
+        {
+          vec.len = reqsizebuflen - reqsizebufoffset;
+          vec.base = reqsizebuf.data() + reqsizebufoffset;
+          vcnt = 1;
+          stream_id = 0;
+          if ((!benchmarkIsUpload() && !benchmarkIsLossRecovery()) ||
+              (benchmarkIsUpload() && bytesInFlight == 0))
+          {
+            flags |= NGTCP2_WRITE_STREAM_FLAG_FIN;
+          }
+        }
+      }
     }
 
     return {stream_id, vec, vcnt, flags};
@@ -417,6 +999,38 @@ private:
   }
 
   void stream_data_sent_server(size_t datalen) {
+    if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
+    {
+      if (activeGenericSend == nullptr)
+      {
+        return;
+      }
+      if (activeGenericSendKind == GenericSendKind::response)
+      {
+        activeGenericSend->responseRemaining -= std::min<uint64_t>(
+          activeGenericSend->responseRemaining, datalen);
+        if (activeGenericSend->responseRemaining == 0)
+        {
+          activeGenericSend->phase = GenericPhase::readResponse;
+        }
+      }
+      else if (activeGenericSendKind == GenericSendKind::ack)
+      {
+        activeGenericSend->ackBytesWritten += datalen;
+      }
+      activeGenericSend = nullptr;
+      activeGenericSendKind = GenericSendKind::none;
+      return;
+    }
+    if (benchmarkIsUpload())
+    {
+      if (requestParsed && bytesInFlight == 0)
+      {
+        uploadFinSent = true;
+      }
+      return;
+    }
+
     bytesInFlight -= datalen;
     if (bytesInFlight == 0)
     {
@@ -425,8 +1039,51 @@ private:
   }
 
   void stream_data_sent_client(size_t datalen) {
+    if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
+    {
+      if (activeGenericSend == nullptr)
+      {
+        return;
+      }
+      switch (activeGenericSendKind)
+      {
+        case GenericSendKind::request:
+          activeGenericSend->requestBytesWritten += datalen;
+          break;
+        case GenericSendKind::payload:
+          activeGenericSend->payloadRemaining -= std::min<uint64_t>(
+            activeGenericSend->payloadRemaining, datalen);
+          break;
+        case GenericSendKind::done:
+          activeGenericSend->doneBytesWritten += datalen;
+          break;
+        default:
+          break;
+      }
+      activeGenericSend = nullptr;
+      activeGenericSendKind = GenericSendKind::none;
+      return;
+    }
+    if (benchmarkIsUpload() && reqsizebufoffset == reqsizebuflen)
+    {
+      bytesInFlight -= std::min<int64_t>(bytesInFlight, static_cast<int64_t>(datalen));
+      if (bytesInFlight == 0)
+      {
+        data_ready = false;
+      }
+      return;
+    }
+
+    if (!benchmarkIsUpload() && benchmarkIsLossRecovery() &&
+        reqsizebufoffset == reqsizebuflen && bytesInFlight == 0 && datalen == 0)
+    {
+      clientDone = true;
+      data_ready = false;
+      return;
+    }
+
     reqsizebufoffset += datalen;
-    if (reqsizebufoffset == reqsizebuflen)
+    if (reqsizebufoffset == reqsizebuflen && !benchmarkIsUpload())
     {
       data_ready = false;
     }
@@ -463,13 +1120,13 @@ private:
 
       for (;;)
       {
-        sockaddr_storage local_addr;
-
-        auto [stream_id, vec, vcnt, flags] = get_stream_data();
-        auto path = ngtcp2_path{
-            {0, reinterpret_cast<sockaddr *>(&local_addr)},
-            {0, reinterpret_cast<sockaddr *>(remote_addr)},
-        };
+	        auto [stream_id, vec, vcnt, flags] = get_stream_data();
+	        auto path = ngtcp2_path{
+	            {reinterpret_cast<sockaddr *>(networkHub->socket.address6),
+	             sizeof(struct sockaddr_in6)},
+	            {reinterpret_cast<sockaddr *>(remote_addr),
+	             sizeof(struct sockaddr_in6)},
+	            nullptr};
 
         ngtcp2_ssize ndatalen;
         nwrite = ngtcp2_conn_writev_stream(
@@ -500,8 +1157,9 @@ private:
           break;
         }
 
-        packet->msg_hdr.msg_iov[0].iov_len = nwrite;
-        ++packets->count;
+	        packet->msg_hdr.msg_iov[0].iov_len = nwrite;
+	        packet->msg_hdr.msg_namelen = sizeof(struct sockaddr_in6);
+	        ++packets->count;
 
         break;
       }
@@ -514,9 +1172,104 @@ private:
     { networkHub->sendPool.relinquish(packets); }
   }
 
-  void advance(int32_t count = 0) {
-    do
+  void drainIouringSends(void)
+  {
+    if constexpr (mode & Mode::iouring)
     {
+      networkHub->flush();
+      networkHub->drainSendCompletions();
+    }
+  }
+
+  void completeGenericServerStreams(ServerConnState& state)
+  {
+    if (!benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
+    {
+      return;
+    }
+    loadServerState(state);
+    for (auto& item : state.genericStreams)
+    {
+      GenericStreamState *stream = item.second.get();
+      if (stream->ackBytesWritten >= 1 && !stream->complete)
+      {
+        markGenericServerComplete(stream);
+      }
+    }
+    saveServerState(state);
+  }
+
+	  void advance(int32_t count = 0) {
+	    if constexpr (mode & Mode::server)
+	    {
+	      do
+	      {
+	        int64_t usTil = 100'000;
+	        auto now = timeNowUs() * NGTCP2_MICROSECONDS;
+	        for (auto& state : serverConns)
+	        {
+	          loadServerState(*state);
+	          if (conn)
+	          {
+	            send_packet(now);
+	            auto expiry = ngtcp2_conn_get_expiry(conn);
+	            if (expiry != std::numeric_limits<uint64_t>::max() && now < expiry)
+	            {
+	              usTil = std::min<int64_t>(usTil, static_cast<int64_t>(std::max(
+	                (expiry - now) / NGTCP2_MICROSECONDS, static_cast<uint64_t>(1))));
+	            }
+	          }
+	          saveServerState(*state);
+	        }
+
+	        networkHub->recvmsgWithTimeout(usTil, [&](UDPContext *msg) -> void {
+	          ServerConnState& state = serverStateFor(msg);
+	          loadServerState(state);
+	          auto path = ngtcp2_path{
+	            {reinterpret_cast<sockaddr *>(networkHub->socket.address6),
+	             sizeof(struct sockaddr_in6)},
+	            {msg->address(), sizeof(struct sockaddr_in6)},
+	            nullptr};
+	          auto pi = ngtcp2_pkt_info{};
+
+	          if (auto rv = ngtcp2_conn_read_pkt(conn, &path, &pi, msg->buffer(),
+	                                             msg->msg_len,
+	                                             timeNowUs() * NGTCP2_MICROSECONDS);
+	              rv != 0)
+	          {
+	            std::cerr << "ngtcp2_conn_read_pkt: " << ngtcp2_strerror(rv)
+	                      << std::endl;
+	            assert(0);
+	            abort();
+	          }
+	    saveServerState(state);
+	    markServerStateComplete(state);
+	        });
+
+	        for (auto& state : serverConns)
+	        {
+	          loadServerState(*state);
+	          if (conn)
+	          {
+	            send_packet(timeNowUs() * NGTCP2_MICROSECONDS);
+	          }
+	          saveServerState(*state);
+	        }
+
+	        networkHub->flush();
+	        drainIouringSends();
+
+	        for (auto& state : serverConns)
+	        {
+	          completeGenericServerStreams(*state);
+	          markServerStateComplete(*state);
+	        }
+	      } while (!perfComplete() && (count == 0 || --count > 0));
+	      return;
+	    }
+
+	    do
+	    {
       int64_t usTil = 0;
       if (conn)
       {
@@ -541,10 +1294,11 @@ private:
           }
         }
 
-        auto path = ngtcp2_path{
-            {sizeof(struct sockaddr_in6),
-             reinterpret_cast<sockaddr *>(networkHub->socket.address6)},
-            {sizeof(struct sockaddr_in6), msg->address()}};
+	        auto path = ngtcp2_path{
+	            {reinterpret_cast<sockaddr *>(networkHub->socket.address6),
+	             sizeof(struct sockaddr_in6)},
+	            {msg->address(), sizeof(struct sockaddr_in6)},
+	            nullptr};
         auto pi = ngtcp2_pkt_info{};
 
         if (auto rv = ngtcp2_conn_read_pkt(conn, &path, &pi, msg->buffer(),
@@ -558,7 +1312,7 @@ private:
           abort();
         }
       });
-    } while (bytesInFlight != 0 && (count == 0 || --count > 0));
+    } while (!perfComplete() && (count == 0 || --count > 0));
   }
 
 public:
@@ -570,13 +1324,40 @@ public:
     SSL_CTX_set_quic_method(ssl_ctx, &quic_method);
   }
 
-  void connectToServer(struct sockaddr *address) { init_conn_client(address); }
+  void connectToServer(struct sockaddr *address) {
+    init_conn_client(address);
 
-  void openStream(void) {}
+    while (!ngtcp2_conn_get_handshake_completed(conn))
+    {
+      advance(1);
+    }
+  }
+
+  void openStream(void) {
+    if constexpr (mode & Mode::client)
+    {
+      while (!tryOpenClientStream())
+      {
+        advance(1);
+      }
+    }
+  }
 
   void startPerfTest(uint64_t nBytes) {
     if constexpr (mode & Mode::client)
     {
+      if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
+      {
+        genericClientBytes = nBytes;
+        genericRequestedStreams = 0;
+        genericOpenedStreams = 0;
+        genericCompletedStreams = 0;
+        genericClientStreams.clear();
+        genericStarted = true;
+        openMoreGenericClientStreams();
+        advance();
+        return;
+      }
       bytesInFlight = nBytes;
       data_ready = true;
 
@@ -587,4 +1368,22 @@ public:
 
     advance();
   }
+
+  void postPerfTest() override {
+    if constexpr (mode & Mode::client)
+    {
+      if (!benchmarkIsLossRecovery() || benchmarkIsUpload() || clientDone)
+      {
+        return;
+      }
+
+      data_ready = true;
+      const uint64_t deadlineUs = timeNowUs() + 100'000;
+      do
+      {
+        advance(1);
+      } while (!clientDone && timeNowUs() < deadlineUs);
+
+	    }
+	  }
 };

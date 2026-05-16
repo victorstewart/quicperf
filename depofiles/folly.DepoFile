@@ -1,0 +1,59 @@
+NAME folly
+VERSION main-acd1060-quicperf7
+SYSTEM_LIBS ALLOW
+DEPENDS boost VERSION 1.91.0-quicperf3
+DEPENDS doubleconversion VERSION 3.4.0
+DEPENDS fastfloat VERSION 8.2.5
+DEPENDS fmt VERSION 12.1.0-quicperf2
+DEPENDS gflags VERSION 2.3.0-quicperf2
+DEPENDS glog VERSION 0.7.1-quicperf2
+DEPENDS libsodium VERSION 1.0.22-quicperf2
+DEPENDS liburing VERSION main-d6b7e99
+DEPENDS openssl VERSION 4.0.0
+DEPENDS zlib VERSION 1.3.2
+DEPENDS zstd VERSION 1.5.7-quicperf2
+SOURCE GIT https://github.com/facebook/folly.git acd106068d55c910ba2969d284c8eb3701526a65
+BUILD_SYSTEM CMAKE
+CMAKE_ARG "-DCMAKE_PREFIX_PATH=${dep:boost};${dep:doubleconversion};${dep:fmt};${dep:gflags};${dep:glog};${dep:libsodium};${dep:openssl};${dep:zlib};${dep:zstd}"
+CMAKE_ARG "-DCMAKE_INCLUDE_PATH=${dep:boost}/include;${dep:fastfloat}/include;${dep:libsodium}/include;${dep:liburing}/include;${dep:openssl}/include;${dep:zlib}/include;${dep:zstd}/include"
+CMAKE_ARG "-DCMAKE_LIBRARY_PATH=${dep:libsodium}/lib;${dep:liburing}/lib;${dep:openssl}/lib;${dep:zlib}/lib;${dep:zstd}/lib"
+CMAKE_DEFINE BUILD_SHARED_LIBS=OFF
+CMAKE_DEFINE BUILD_TESTS=OFF
+CMAKE_DEFINE BUILD_BENCHMARKS=OFF
+CMAKE_DEFINE PYTHON_EXTENSIONS=OFF
+CMAKE_BUILD_SH <<'EOF'
+openssl_utils="${DEPO_SOURCE_DIR}/folly/io/async/ssl/OpenSSLUtils.cpp"
+perl -0pi -e 's/unsigned char const\* const rawIpStr = name->d\.iPAddress->data;\n      auto const rawIpLen = size_t\(name->d\.iPAddress->length\);/const unsigned char* const rawIpStr = ASN1_STRING_get0_data(name->d.iPAddress);\n      auto const rawIpLen = size_t(ASN1_STRING_length(name->d.iPAddress));/' "$openssl_utils"
+perl -0pi -e 's/X509_NAME\* subject = X509_get_subject_name\(x509\);/const X509_NAME* subject = X509_get_subject_name(x509);/' "$openssl_utils"
+grep -Fq 'ASN1_STRING_get0_data(name->d.iPAddress)' "$openssl_utils"
+grep -Fq 'const X509_NAME* subject = X509_get_subject_name(x509);' "$openssl_utils"
+
+openssl_cert_utils="${DEPO_SOURCE_DIR}/folly/ssl/OpenSSLCertUtils.cpp"
+perl -0pi -e 's/std::string asn1ToString\(ASN1_STRING\* a\)/std::string asn1ToString(const ASN1_STRING* a)/' "$openssl_cert_utils"
+perl -0pi -e 's/unsigned char\* data = const_cast<unsigned char\*>\(ASN1_STRING_get0_data\(a\)\);/const unsigned char* data = ASN1_STRING_get0_data(a);/' "$openssl_cert_utils"
+perl -0pi -e 's/reinterpret_cast<char\*>\(data\)/reinterpret_cast<const char*>(data)/' "$openssl_cert_utils"
+perl -0pi -e 's/std::string getExtOid\(X509_EXTENSION\* extension\)/std::string getExtOid(const X509_EXTENSION* extension)/' "$openssl_cert_utils"
+perl -0pi -e 's/ASN1_OBJECT\* object = X509_EXTENSION_get_object\(extension\);/const ASN1_OBJECT* object = X509_EXTENSION_get_object(extension);/' "$openssl_cert_utils"
+perl -0pi -e 's/std::string getExtData\(X509_EXTENSION\* extension\)/std::string getExtData(const X509_EXTENSION* extension)/' "$openssl_cert_utils"
+perl -0pi -e 's/Optional<std::string> commonName\(X509_NAME\* name\)/Optional<std::string> commonName(const X509_NAME* name)/' "$openssl_cert_utils"
+perl -0pi -e 's/X509_EXTENSION\* extension = X509_get_ext\(&x509, i\);/const X509_EXTENSION* extension = X509_get_ext(\&x509, i);/g' "$openssl_cert_utils"
+grep -Fq 'std::string asn1ToString(const ASN1_STRING* a)' "$openssl_cert_utils"
+grep -Fq 'const ASN1_OBJECT* object = X509_EXTENSION_get_object(extension);' "$openssl_cert_utils"
+grep -Fq 'Optional<std::string> commonName(const X509_NAME* name)' "$openssl_cert_utils"
+grep -Fq 'const X509_EXTENSION* extension = X509_get_ext(&x509, i);' "$openssl_cert_utils"
+cmake --build "${DEPO_BUILD_DIR}" --parallel
+EOF
+CMAKE_INSTALL_SH <<'EOF'
+cmake --install "${DEPO_BUILD_DIR}" --prefix "${DEPO_PREFIX}"
+mkdir -p "${DEPO_BUILD_DIR}/cmake-install-config"
+cp -a "${DEPO_PREFIX}/lib/cmake/folly" "${DEPO_BUILD_DIR}/cmake-install-config/folly"
+for targets in \
+  "${DEPO_PREFIX}/lib/cmake/folly/folly-targets.cmake" \
+  "${DEPO_BUILD_DIR}/cmake-install-config/folly/folly-targets.cmake"; do
+  perl -0pi -e 's/# Loop over all imported files and verify that they actually exist\nforeach\(_cmake_target IN LISTS _cmake_import_check_targets\).*?unset\(_cmake_import_check_targets\)\n/# quicperf uses Folly::folly only; avoid eager validation of disabled optional archives.\nunset(_cmake_import_check_targets)\n/s' "$targets"
+done
+EOF
+STAGE_TREE BUILD cmake-install-config/folly lib/cmake/folly
+TARGET folly::cmake INTERFACE lib/cmake/folly
+TARGET folly::folly STATIC lib/libfolly.a INTERFACE include
+LINK folly::folly boost::context boost::filesystem boost::program_options boost::regex boost::thread double-conversion::double-conversion fmt::fmt gflags::gflags glog::glog libsodium::libsodium liburing::liburing openssl zlib::zlib zstd::zstd event event_pthreads lz4 snappy bz2 lzma aio iberty unwind unwind-x86_64 dl pthread m rt stdc++

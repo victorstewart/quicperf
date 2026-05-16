@@ -1,0 +1,7 @@
+NAME fastfloat
+VERSION 8.2.5
+SYSTEM_LIBS ALLOW
+SOURCE URL https://github.com/fastfloat/fast_float/archive/refs/tags/v8.2.5.tar.gz
+BUILD_SYSTEM MANUAL
+STAGE_TREE SOURCE include include
+TARGET fastfloat::fastfloat INTERFACE include

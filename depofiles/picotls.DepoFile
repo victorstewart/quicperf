@@ -1,0 +1,22 @@
+NAME picotls
+VERSION master
+SYSTEM_LIBS ALLOW
+DEPENDS openssl VERSION 4.0.0
+SOURCE GIT https://github.com/h2o/picotls.git cfe2ea97ac8fa0b2852cbb8dbdde1ecc83b4ca33
+GIT_SUBMODULES RECURSIVE
+BUILD_SYSTEM CMAKE
+CMAKE_ARG "-DCMAKE_PREFIX_PATH=${dep:openssl}"
+CMAKE_DEFINE WITH_FUSION=ON
+CMAKE_DEFINE WITH_AEGIS=OFF
+STAGE_FILE BUILD libpicotls-core.a lib/libpicotls-core.a
+STAGE_FILE BUILD libpicotls-minicrypto.a lib/libpicotls-minicrypto.a
+STAGE_FILE BUILD libpicotls-fusion.a lib/libpicotls-fusion.a
+STAGE_FILE BUILD libpicotls-openssl.a lib/libpicotls-openssl.a
+STAGE_FILE SOURCE include/picotls.h include/picotls.h
+STAGE_TREE SOURCE include/picotls include/picotls
+TARGET picotls::core STATIC lib/libpicotls-core.a INTERFACE include
+TARGET picotls::minicrypto STATIC lib/libpicotls-minicrypto.a INTERFACE include
+TARGET picotls::fusion STATIC lib/libpicotls-fusion.a INTERFACE include
+TARGET picotls::openssl STATIC lib/libpicotls-openssl.a INTERFACE include
+TARGET picotls::picotls INTERFACE include
+LINK picotls::picotls picotls::core picotls::minicrypto picotls::fusion picotls::openssl openssl

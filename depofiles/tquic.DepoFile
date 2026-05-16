@@ -1,0 +1,12 @@
+NAME tquic
+VERSION 1.6.0
+SYSTEM_LIBS ALLOW
+DEPENDS boringssl VERSION main
+SOURCE GIT https://github.com/Tencent/tquic.git d87a9a072475e381e64bfeb5732f2f505c2c28b7
+GIT_SUBMODULES RECURSIVE
+BUILD_SYSTEM CARGO
+CARGO_BUILD env BORINGSSL_LIB_DIR="${dep:boringssl}/lib" CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo build --release --no-default-features --features ffi --target-dir "${DEPO_BUILD_DIR}/cargo-target"
+STAGE_FILE BUILD cargo-target/release/libtquic.a lib/libtquic.a
+STAGE_TREE SOURCE include include
+TARGET tquic::tquic STATIC lib/libtquic.a INTERFACE include
+LINK tquic::tquic boringssl dl pthread m
