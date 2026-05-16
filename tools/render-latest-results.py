@@ -82,6 +82,7 @@ METRIC_UNITS = {
     "connections_per_second": "connections/second",
     "requests_per_second": "requests/second",
     "messages_per_second": "messages/second",
+    "datagrams_per_second": "DATAGRAMs/second",
     "streams_per_second": "streams/second",
     "server_rss_delta_bytes_per_connection": "bytes/connection",
 }
@@ -91,6 +92,7 @@ METRIC_SORT_DIRECTION = {
     "connections_per_second": "descending",
     "requests_per_second": "descending",
     "messages_per_second": "descending",
+    "datagrams_per_second": "descending",
     "streams_per_second": "descending",
     "server_rss_delta_bytes_per_connection": "ascending",
 }

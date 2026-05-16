@@ -27,7 +27,7 @@ measurements without each stack bringing its own benchmark loop.
 | `flow_control` | `throughput_gbps` | Small-window flow-control pressure. |
 | `idle_footprint` | `server_rss_delta_bytes_per_connection` | Server RSS delta per held idle connection. |
 | `close_reset_cleanup` | `streams_per_second` | Graceful fresh-stream cleanup cost. |
-| `datagram` | `messages_per_second` | Capability row for app DATAGRAM echo. |
+| `datagram` | `datagrams_per_second` | Capability row for delivered app DATAGRAM echo rate. |
 | `resumed_connect` | `connections_per_second` | Accepted CLI row; unsupported until session-ticket APIs are wired. |
 | `zero_rtt_reqresp` | `requests_per_second` | Accepted CLI row; unsupported until 0-RTT APIs are wired. |
 

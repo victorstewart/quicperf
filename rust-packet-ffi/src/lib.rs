@@ -982,12 +982,12 @@ macro_rules! proto_engine {
                     self.drive(now_us)
                 }
 
-                fn datagram_send(
-                    &mut self,
-                    conn_id: u64,
-                    data: &[u8],
-                    now_us: u64,
-                ) -> Result<bool, String> {
+	                fn datagram_send(
+	                    &mut self,
+	                    conn_id: u64,
+	                    data: &[u8],
+	                    _now_us: u64,
+	                ) -> Result<bool, String> {
                     let ch = proto::ConnectionHandle(conn_id as usize);
                     let state = self
                         .connections
@@ -999,21 +999,19 @@ macro_rules! proto_engine {
                         .send(Bytes::copy_from_slice(data), false)
                     {
                         Ok(()) => true,
-                        Err(proto::SendDatagramError::Blocked(_)) => false,
-                        Err(error) => return Err(format!("datagram_send: {error:?}")),
-                    };
-                    self.drive(now_us)?;
-                    Ok(sent)
-                }
+	                        Err(proto::SendDatagramError::Blocked(_)) => false,
+	                        Err(error) => return Err(format!("datagram_send: {error:?}")),
+	                    };
+	                    Ok(sent)
+	                }
 
                 fn datagram_recv(
-                    &mut self,
-                    conn_id: u64,
-                    out: &mut [u8],
-                    now_us: u64,
-                ) -> Result<Option<usize>, String> {
-                    self.drive(now_us)?;
-                    let ch = proto::ConnectionHandle(conn_id as usize);
+	                    &mut self,
+	                    conn_id: u64,
+	                    out: &mut [u8],
+	                    _now_us: u64,
+	                ) -> Result<Option<usize>, String> {
+	                    let ch = proto::ConnectionHandle(conn_id as usize);
                     let state = self
                         .connections
                         .get_mut(&ch)
@@ -1481,23 +1479,21 @@ mod neqo_engine {
                 self.client_mut()?.send_datagram(data.to_vec(), None)
             };
             match result {
-                Ok(()) => {
-                    self.drive_output(Instant::now());
-                    Ok(true)
-                }
+	                Ok(()) => {
+	                    Ok(true)
+	                }
                 Err(Error::TooMuchData) | Err(Error::NotAvailable) => Ok(false),
                 Err(error) => Err(format!("neqo datagram_send: {error:?}")),
             }
         }
 
-        fn datagram_recv(
-            &mut self,
-            conn_id: u64,
-            out: &mut [u8],
-            _now_us: u64,
-        ) -> Result<Option<usize>, String> {
-            self.drive_output(Instant::now());
-            let datagram = if self.is_server {
+	        fn datagram_recv(
+	            &mut self,
+	            conn_id: u64,
+	            out: &mut [u8],
+	            _now_us: u64,
+	        ) -> Result<Option<usize>, String> {
+	            let datagram = if self.is_server {
                 self.server_conns
                     .get_mut(&conn_id)
                     .ok_or_else(|| format!("unknown neqo server connection {conn_id}"))?
@@ -2145,14 +2141,13 @@ mod s2n_engine {
             self.drive_all(now_us)
         }
 
-        fn datagram_send(
-            &mut self,
-            conn_id: u64,
-            data: &[u8],
-            now_us: u64,
-        ) -> Result<bool, String> {
-            self.drive_all(now_us)?;
-            let conn = self
+	        fn datagram_send(
+	            &mut self,
+	            conn_id: u64,
+	            data: &[u8],
+	            _now_us: u64,
+	        ) -> Result<bool, String> {
+	            let conn = self
                 .connections
                 .get_mut(&conn_id)
                 .ok_or_else(|| format!("unknown s2n connection {conn_id}"))?;
@@ -2163,24 +2158,20 @@ mod s2n_engine {
                     with_context(|cx| sender.poll_send_datagram(&mut payload, cx))
                 })
                 .map_err(|e| format!("s2n datagram send query: {e:?}"))?;
-            match send {
-                Poll::Ready(Ok(())) => {
-                    self.drive_all(now_us)?;
-                    Ok(true)
-                }
-                Poll::Pending => Ok(false),
+	            match send {
+	                Poll::Ready(Ok(())) => Ok(true),
+	                Poll::Pending => Ok(false),
                 Poll::Ready(Err(error)) => Err(format!("s2n datagram send: {error:?}")),
             }
         }
 
-        fn datagram_recv(
-            &mut self,
-            conn_id: u64,
-            out: &mut [u8],
-            now_us: u64,
-        ) -> Result<Option<usize>, String> {
-            self.drive_all(now_us)?;
-            let conn = self
+	        fn datagram_recv(
+	            &mut self,
+	            conn_id: u64,
+	            out: &mut [u8],
+	            _now_us: u64,
+	        ) -> Result<Option<usize>, String> {
+	            let conn = self
                 .connections
                 .get_mut(&conn_id)
                 .ok_or_else(|| format!("unknown s2n connection {conn_id}"))?;

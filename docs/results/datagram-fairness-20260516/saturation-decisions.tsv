@@ -1,25 +1,13 @@
 binary	scenario	network	metric	selected_threads	best_threads	boundary_threads	selection_probability_within_tolerance	best_p50	selected_p50	selected_vs_best_ratio	selected_vs_best_ci95_low	selected_vs_best_ci95_high	plateau_sentinel_count	edge_status	decision_status	reason
-lsperf	datagram	iouring	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	unsupported	unsupported	requires_quic_datagram_adapter_api
-lsperf	datagram	syscall	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	unsupported	unsupported	requires_quic_datagram_adapter_api
-mvfstperf	datagram	iouring	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	unsupported	unsupported	requires_quic_datagram_adapter_api
-mvfstperf	datagram	syscall	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	unsupported	unsupported	requires_quic_datagram_adapter_api
-neqoperf	datagram	iouring	messages_per_second	1	1	3	1.000000	114527.679963	114527.679963	1.000000	1.000000	1.000000	2	ok	ready	
-neqoperf	datagram	syscall	messages_per_second	1	1	3	1.000000	126344.669600	126344.669600	1.000000	1.000000	1.000000	2	ok	ready	
-ngtcp2perf	datagram	iouring	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	unsupported	unsupported	requires_quic_datagram_adapter_api
-ngtcp2perf	datagram	syscall	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	unsupported	unsupported	requires_quic_datagram_adapter_api
-noqperf	datagram	iouring	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	not_ready	not_ready	no_ready_rows;t1:block_median_ratio_1.1573_gt_1.1000;drift_0.0335_gt_0.0300;persistent_block_median_ratio_recent_1.1361_gt_1.1000;persistent_drift_0.0335_gt_0.0300
-noqperf	datagram	syscall	messages_per_second	1	1	2	1.000000	166055.277029	166055.277029	1.000000	1.000000	1.000000	0	not_ready	not_ready	sentinels_0_lt_2;t2:block_median_ratio_1.1079_gt_1.1000;persistent_block_median_ratio_recent_1.1021_gt_1.1000
-picoperf	datagram	iouring	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	unsupported	unsupported	requires_quic_datagram_adapter_api
-picoperf	datagram	syscall	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	unsupported	unsupported	requires_quic_datagram_adapter_api
-quicheperf	datagram	iouring	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	not_ready	not_ready	no_ready_rows;t1:p50_ci_width_0.2033_gt_0.0500;p80_p20_1.2791_gt_1.1500;block_median_ratio_1.2698_gt_1.1000;drift_0.0717_gt_0.0300;severe_block_median_ratio_1.2698_gt_1.2500
-quicheperf	datagram	syscall	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	not_ready	not_ready	no_ready_rows;t1:p50_ci_width_0.1013_gt_0.0500;p80_p20_1.1910_gt_1.1500;block_median_ratio_1.2565_gt_1.1000;severe_block_median_ratio_1.2565_gt_1.2500
-quiczigperf	datagram	iouring	messages_per_second	1	1	3	1.000000	200780.248201	200780.248201	1.000000	1.000000	1.000000	1	not_ready	not_ready	sentinels_1_lt_2;t3:p50_ci_width_0.0768_gt_0.0500;block_median_ratio_1.1702_gt_1.1000;persistent_block_median_ratio_recent_1.1228_gt_1.1000
-quiczigperf	datagram	syscall	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	not_ready	not_ready	no_ready_rows;t1:p50_ci_width_0.0694_gt_0.0500;block_median_ratio_1.1298_gt_1.1000;drift_0.0515_gt_0.0300;persistent_block_median_ratio_recent_1.1298_gt_1.1000;persistent_drift_0.0515_gt_0.0300
-quinnperf	datagram	iouring	messages_per_second	1	1	3	1.000000	183608.455439	183608.455439	1.000000	1.000000	1.000000	1	not_ready	not_ready	sentinels_1_lt_2;t3:block_median_ratio_1.1447_gt_1.1000;persistent_block_median_ratio_recent_1.1091_gt_1.1000
-quinnperf	datagram	syscall	messages_per_second	1	1	3	1.000000	195656.527979	195656.527979	1.000000	1.000000	1.000000	2	ok	ready	
-s2nperf	datagram	iouring	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	not_ready	not_ready	no_ready_rows;t1:p50_ci_width_0.0609_gt_0.0500;block_median_ratio_1.1029_gt_1.1000;drift_-0.0384_gt_0.0300;persistent_drift_-0.0384_gt_0.0300
-s2nperf	datagram	syscall	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	not_ready	not_ready	no_ready_rows;t1:block_median_ratio_1.1683_gt_1.1000;persistent_block_median_ratio_recent_1.1061_gt_1.1000
-tquicperf	datagram	iouring	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	unsupported	unsupported	requires_quic_datagram_adapter_api
-tquicperf	datagram	syscall	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	unsupported	unsupported	requires_quic_datagram_adapter_api
-xquicperf	datagram	iouring	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	unsupported	unsupported	requires_quic_datagram_adapter_api
-xquicperf	datagram	syscall	messages_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	unsupported	unsupported	requires_quic_datagram_adapter_api
+neqoperf	datagram	iouring	datagrams_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	not_ready	not_ready	no_ready_rows;t1:p50_ci_width_0.0744_gt_0.0500;block_median_ratio_1.1091_gt_1.1000
+neqoperf	datagram	syscall	datagrams_per_second	1	1	2	1.000000	2291167.668634	2291167.668634	1.000000	1.000000	1.000000	1	ok	ready	
+noqperf	datagram	iouring	datagrams_per_second	2	2	3	1.000000	2486435.654830	2486435.654830	1.000000	1.000000	1.000000	1	ok	ready	
+noqperf	datagram	syscall	datagrams_per_second	2	2	3	1.000000	2770723.991347	2770723.991347	1.000000	1.000000	1.000000	1	ok	ready	
+quicheperf	datagram	iouring	datagrams_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	not_ready	not_ready	no_ready_rows;t1:p50_ci_width_0.0682_gt_0.0500;block_median_ratio_1.2905_gt_1.1000;drift_-0.0426_gt_0.0300
+quicheperf	datagram	syscall	datagrams_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	not_ready	not_ready	no_ready_rows;t1:p50_ci_width_0.0516_gt_0.0500
+quiczigperf	datagram	iouring	datagrams_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	not_ready	not_ready	no_ready_rows;t1:block_median_ratio_1.1514_gt_1.1000
+quiczigperf	datagram	syscall	datagrams_per_second	3	3		1.000000	4511779.530507	4511779.530507	1.000000	1.000000	1.000000	0	edge	not_ready	sentinels_0_lt_1;max_threads_reached
+quinnperf	datagram	iouring	datagrams_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	not_ready	not_ready	no_ready_rows;t1:p50_ci_width_0.0527_gt_0.0500;block_median_ratio_1.1189_gt_1.1000;drift_-0.0315_gt_0.0300
+quinnperf	datagram	syscall	datagrams_per_second				0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0	not_ready	not_ready	no_ready_rows;t1:p50_ci_width_0.0637_gt_0.0500;block_median_ratio_1.1081_gt_1.1000;drift_-0.0359_gt_0.0300
+s2nperf	datagram	iouring	datagrams_per_second	1	1	2	1.000000	1620893.219598	1620893.219598	1.000000	1.000000	1.000000	0	not_ready	not_ready	sentinels_0_lt_1;t2:block_median_ratio_1.2251_gt_1.1000;drift_0.0349_gt_0.0300
+s2nperf	datagram	syscall	datagrams_per_second	1	1	2	1.000000	1789720.516913	1789720.516913	1.000000	1.000000	1.000000	0	not_ready	not_ready	sentinels_0_lt_1;t2:p50_ci_width_0.1038_gt_0.0500;p80_p20_1.3014_gt_1.1500;block_median_ratio_1.3476_gt_1.1000;drift_-0.0340_gt_0.0300

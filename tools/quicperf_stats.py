@@ -40,6 +40,15 @@ SAMPLE_FIELDS = [
     "git_commit",
     "env_hash",
     "machine_hash",
+    "datagram_sent",
+    "datagram_received",
+    "datagram_lost",
+    "datagram_delivery_ratio",
+    "udp_packets_sent",
+    "udp_packets_received",
+    "udp_send_syscalls",
+    "udp_recv_polls",
+    "datagrams_per_udp_packet",
 ]
 
 
@@ -51,7 +60,7 @@ RESULT_RE = re.compile(
     r"adapter_features=(\S+) initial_cwnd_packets=(\d+) ack_frequency_packets=(\d+) "
     r"socket_sndbuf_requested=(\d+) socket_sndbuf_effective=(-?\d+) "
     r"socket_rcvbuf_requested=(\d+) socket_rcvbuf_effective=(-?\d+) "
-    r".*?(throughput_gbps|connections_per_second|requests_per_second|streams_per_second|messages_per_second|server_rss_delta_bytes_per_connection)=([0-9.]+)"
+    r".*?(throughput_gbps|connections_per_second|requests_per_second|streams_per_second|messages_per_second|datagrams_per_second|server_rss_delta_bytes_per_connection)=([0-9.]+)"
 )
 
 LOWER_IS_BETTER_METRICS = {"server_rss_delta_bytes_per_connection"}
@@ -106,6 +115,15 @@ class Sample:
     git_commit: str
     env_hash: str
     machine_hash: str
+    datagram_sent: int = 0
+    datagram_received: int = 0
+    datagram_lost: int = 0
+    datagram_delivery_ratio: float = 0.0
+    udp_packets_sent: int = 0
+    udp_packets_received: int = 0
+    udp_send_syscalls: int = 0
+    udp_recv_polls: int = 0
+    datagrams_per_udp_packet: float = 0.0
 
     @property
     def row_key(self) -> RowKey:
@@ -132,6 +150,7 @@ class StatsConfig:
     p20_p80_preferred: float = 1.10
     block_median_ratio_max: float = 1.10
     drift_rel_max: float = 0.03
+    datagram_delivery_ratio_min: float = 0.995
     high_variance_min_blocks: int = 8
     high_variance_min_samples: int = 40
     high_variance_improvement_min: float = 0.10
@@ -277,8 +296,10 @@ def scenario_metric_name(scenario: str) -> str:
         return "requests_per_second"
     if scenario in {"stream_churn", "close_reset_cleanup"}:
         return "streams_per_second"
-    if scenario in {"small_payload_pps", "datagram"}:
+    if scenario == "small_payload_pps":
         return "messages_per_second"
+    if scenario == "datagram":
+        return "datagrams_per_second"
     if scenario == "idle_footprint":
         return "server_rss_delta_bytes_per_connection"
     return "throughput_gbps"
@@ -357,6 +378,15 @@ def load_samples(path: Path | str) -> list[Sample]:
                     git_commit=row.get("git_commit", ""),
                     env_hash=row.get("env_hash", ""),
                     machine_hash=row.get("machine_hash", ""),
+                    datagram_sent=_safe_int(row.get("datagram_sent")),
+                    datagram_received=_safe_int(row.get("datagram_received")),
+                    datagram_lost=_safe_int(row.get("datagram_lost")),
+                    datagram_delivery_ratio=_safe_float(row.get("datagram_delivery_ratio")),
+                    udp_packets_sent=_safe_int(row.get("udp_packets_sent")),
+                    udp_packets_received=_safe_int(row.get("udp_packets_received")),
+                    udp_send_syscalls=_safe_int(row.get("udp_send_syscalls")),
+                    udp_recv_polls=_safe_int(row.get("udp_recv_polls")),
+                    datagrams_per_udp_packet=_safe_float(row.get("datagrams_per_udp_packet")),
                 )
             )
     return samples
@@ -367,7 +397,7 @@ def write_samples(path: Path | str, samples: list[Sample], append: bool = False)
     sample_path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not append or not sample_path.exists() or sample_path.stat().st_size == 0
     with sample_path.open("a" if append else "w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, delimiter="\t", fieldnames=SAMPLE_FIELDS)
+        writer = csv.DictWriter(handle, delimiter="\t", fieldnames=SAMPLE_FIELDS, lineterminator="\n")
         if write_header:
             writer.writeheader()
         for sample in samples:
@@ -402,6 +432,15 @@ def sample_to_row(sample: Sample) -> dict[str, str]:
         "git_commit": sample.git_commit,
         "env_hash": sample.env_hash,
         "machine_hash": sample.machine_hash,
+        "datagram_sent": str(sample.datagram_sent),
+        "datagram_received": str(sample.datagram_received),
+        "datagram_lost": str(sample.datagram_lost),
+        "datagram_delivery_ratio": f"{sample.datagram_delivery_ratio:.9f}",
+        "udp_packets_sent": str(sample.udp_packets_sent),
+        "udp_packets_received": str(sample.udp_packets_received),
+        "udp_send_syscalls": str(sample.udp_send_syscalls),
+        "udp_recv_polls": str(sample.udp_recv_polls),
+        "datagrams_per_udp_packet": f"{sample.datagrams_per_udp_packet:.9f}",
     }
 
 
@@ -471,6 +510,7 @@ def parse_client_log_samples(
             metric,
             value,
         ) = match.groups()
+        result_fields = dict(re.findall(r"([A-Za-z0-9_]+)=([^ ]+)", line))
         samples.append(
             Sample(
                 publication_id=publication_id,
@@ -499,6 +539,15 @@ def parse_client_log_samples(
                 git_commit=git_commit,
                 env_hash=env_hash,
                 machine_hash=machine_hash,
+                datagram_sent=_safe_int(result_fields.get("datagram_sent")),
+                datagram_received=_safe_int(result_fields.get("datagram_received")),
+                datagram_lost=_safe_int(result_fields.get("datagram_lost")),
+                datagram_delivery_ratio=_safe_float(result_fields.get("datagram_delivery_ratio")),
+                udp_packets_sent=_safe_int(result_fields.get("udp_packets_sent")),
+                udp_packets_received=_safe_int(result_fields.get("udp_packets_received")),
+                udp_send_syscalls=_safe_int(result_fields.get("udp_send_syscalls")),
+                udp_recv_polls=_safe_int(result_fields.get("udp_recv_polls")),
+                datagrams_per_udp_packet=_safe_float(result_fields.get("datagrams_per_udp_packet")),
             )
         )
     return samples
@@ -583,6 +632,16 @@ def row_stats(samples: list[Sample], config: StatsConfig | None = None) -> RowSt
         reasons.append(f"drift_{drift_rel:.4f}_gt_{cfg.drift_rel_max:.4f}")
     if outlier_count:
         reasons.append(f"outliers_{outlier_count}")
+    if samples[0].scenario == "datagram":
+        delivery_ratios = [
+            sample.datagram_delivery_ratio
+            for sample in measured
+            if sample.datagram_sent > 0 or sample.datagram_received > 0
+        ]
+        if delivery_ratios and min(delivery_ratios) < cfg.datagram_delivery_ratio_min:
+            reasons.append(
+                f"datagram_delivery_ratio_{min(delivery_ratios):.4f}_lt_{cfg.datagram_delivery_ratio_min:.4f}"
+            )
     high_variance_reasons = _high_variance_reasons(
         ordered_blocks,
         p20_p80_ratio,

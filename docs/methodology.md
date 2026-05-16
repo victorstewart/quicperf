@@ -36,7 +36,7 @@ Capability rows:
 
 | Scenario | Metric | Status |
 |---|---|---|
-| `datagram` | `messages_per_second` | Wired for `neqoperf`, `noqperf`, `quicheperf`, `quiczigperf`, `quinnperf`, and `s2nperf`; other adapters return `unsupported`. |
+| `datagram` | `datagrams_per_second` | Delivered app DATAGRAM echo rate for `neqoperf`, `noqperf`, `quicheperf`, `quiczigperf`, `quinnperf`, and `s2nperf`; other adapters return `unsupported`. |
 | `resumed_connect` | `connections_per_second` | Accepted CLI row; unsupported until session-ticket capture/replay is exposed uniformly. |
 | `zero_rtt_reqresp` | `requests_per_second` | Accepted CLI row; unsupported until 0-RTT accepted/rejected controls are exposed uniformly. |
 
@@ -46,6 +46,21 @@ silently remapped to another workload.
 Current non-graceful close/reset subprofiles are not primary rows. They require
 uniform RESET_STREAM, STOP_SENDING, CONNECTION_CLOSE, and abrupt-peer controls
 before promotion.
+
+### DATAGRAM Contract
+
+`datagram` measures delivered application DATAGRAM echo rate. The client queues
+DATAGRAMs up to the shared in-flight cap, flushes once, drains once, receives
+echoed DATAGRAMs, and repeats until the operation count is reached. The server
+uses the same cycle: drain once, queue echoes for the batch, then flush once.
+
+The harness records sent, received, unreturned, delivery ratio, UDP packets,
+send submit/syscall batches, receive polls, and DATAGRAMs per UDP packet. Rows
+must pass the delivery-ratio gate before publication.
+
+Packet-engine adapters must not flush or poll once per app DATAGRAM. C++ owns
+the UDP socket, backend, batching, and timeout loop for DATAGRAM rows just like
+the stream workloads.
 
 ## Output Schema
 

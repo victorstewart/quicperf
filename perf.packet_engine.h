@@ -297,12 +297,11 @@ private:
 		return timeNowUs();
 	}
 
-	void flushPackets(void)
-	{
-		drainReadyIncomingPackets();
-		networkHub->drainSendCompletions();
-		MultiUDPContext *packets = nullptr;
-		while (true)
+		void flushOutgoingPackets(void)
+		{
+			networkHub->drainSendCompletions();
+			MultiUDPContext *packets = nullptr;
+			while (true)
 		{
 			if (packets == nullptr)
 			{
@@ -352,10 +351,16 @@ private:
 				packets->reset();
 				networkHub->sendPool.relinquish(packets);
 			}
+			}
+			networkHub->flush();
 		}
-		networkHub->flush();
-		drainReadyIncomingPackets();
-	}
+
+		void flushPackets(void)
+		{
+			drainReadyIncomingPackets();
+			flushOutgoingPackets();
+			drainReadyIncomingPackets();
+		}
 
 	void drainReadyIncomingPackets(void)
 	{
@@ -464,22 +469,37 @@ private:
 		return {read, fin};
 	}
 
-	bool sendDatagram(uint64_t activeConn, const uint8_t *data, size_t length)
-	{
-		int result = Abi::datagramSend(engine, activeConn, data, length, nowUs());
-		check(result);
-		flushPackets();
-		return result == 1;
-	}
+		bool sendDatagram(uint64_t activeConn, const uint8_t *data, size_t length)
+		{
+			int result = Abi::datagramSend(engine, activeConn, data, length, nowUs());
+			check(result);
+			flushPackets();
+			return result == 1;
+		}
 
-	bool recvDatagram(uint64_t activeConn, uint8_t *data, size_t capacity, size_t& read)
-	{
-		read = 0;
-		int result = Abi::datagramRecv(engine, activeConn, data, capacity, &read, nowUs());
-		check(result);
-		flushPackets();
-		return result == 1;
-	}
+		bool queueDatagram(uint64_t activeConn, const uint8_t *data, size_t length)
+		{
+			int result = Abi::datagramSend(engine, activeConn, data, length, nowUs());
+			check(result);
+			return result == 1;
+		}
+
+		bool recvDatagram(uint64_t activeConn, uint8_t *data, size_t capacity, size_t& read)
+		{
+			read = 0;
+			int result = Abi::datagramRecv(engine, activeConn, data, capacity, &read, nowUs());
+			check(result);
+			flushPackets();
+			return result == 1;
+		}
+
+		bool popDatagram(uint64_t activeConn, uint8_t *data, size_t capacity, size_t& read)
+		{
+			read = 0;
+			int result = Abi::datagramRecv(engine, activeConn, data, capacity, &read, nowUs());
+			check(result);
+			return result == 1;
+		}
 
 	void sendAll(const uint8_t *data, size_t length)
 	{
@@ -1300,31 +1320,32 @@ private:
 		const uint64_t maxInFlight = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
 		const uint64_t maxAttempts = std::max<uint64_t>(
 			4096ULL, operations + (std::max<uint64_t>(operations, maxInFlight) * 64ULL));
-		while (received < operations)
-		{
-			bool progressed = false;
-			if (sent >= maxAttempts && received < operations)
+			while (received < operations)
+			{
+				bool progressed = false;
+				if (sent >= maxAttempts && received < operations)
 			{
 				fprintf(stderr, "%s DATAGRAM delivery target not reached received=%" PRIu64 " sent=%" PRIu64 " target=%" PRIu64 "\n",
 					Abi::label, received, sent, operations);
 				abort();
 			}
-				// DATAGRAM echo is unreliable; cap outstanding messages instead of
-				// adding a full burst every loop and overwhelming one slow path.
 				while ((sent - received) < maxInFlight && sent < maxAttempts)
 				{
-					if (!sendDatagram(connection, buffer.data(), payloadSize))
+					if (!queueDatagram(connection, buffer.data(), payloadSize))
 					{
 						break;
 					}
 					++sent;
+					progressed = true;
 				}
+				flushOutgoingPackets();
 
-			size_t read = 0;
-			while (recvDatagram(connection, buffer.data(), buffer.size(), read))
-			{
-				(void)read;
-				++received;
+				size_t read = 0;
+				drainReadyIncomingPackets();
+				while (popDatagram(connection, buffer.data(), buffer.size(), read))
+				{
+					(void)read;
+					++received;
 				progressed = true;
 				if (received >= operations)
 				{
@@ -1638,6 +1659,7 @@ private:
 			while (drainDeadlineUs == 0 || nowUs() < drainDeadlineUs)
 			{
 				bool progressed = false;
+				drainReadyIncomingPackets();
 				while (conns.size() < benchmarkServerTargetConnections)
 				{
 					uint64_t accepted = UINT64_MAX;
@@ -1654,10 +1676,10 @@ private:
 				bool allConnectionsComplete = conns.size() >= benchmarkServerTargetConnections;
 				for (DatagramServerConn& active : conns)
 				{
-					size_t read = 0;
-					while (recvDatagram(active.conn, buffer.data(), buffer.size(), read))
-					{
-						(void)read;
+						size_t read = 0;
+						while (popDatagram(active.conn, buffer.data(), buffer.size(), read))
+						{
+							(void)read;
 						++active.received;
 						// Echo every received DATAGRAM. A peer reaching its local
 						// target is the only reliable completion signal in this row.
@@ -1665,28 +1687,29 @@ private:
 						progressed = true;
 					}
 
-					while (active.pendingEchoes > 0)
-					{
-						if (!sendDatagram(active.conn, buffer.data(), payloadSize))
+						while (active.pendingEchoes > 0)
 						{
-							break;
-						}
+							if (!queueDatagram(active.conn, buffer.data(), payloadSize))
+							{
+								break;
+							}
 						--active.pendingEchoes;
 						++active.echoed;
-						progressed = true;
-					}
+							progressed = true;
+						}
 
 					allConnectionsComplete = allConnectionsComplete &&
 						active.echoed >= benchmarkScenarioOperations;
 				}
 
-				if (allConnectionsComplete && (drainDeadlineUs == 0 || progressed))
-				{
-					drainDeadlineUs = nowUs() + 100'000;
-				}
+					if (allConnectionsComplete && (drainDeadlineUs == 0 || progressed))
+					{
+						drainDeadlineUs = nowUs() + 100'000;
+					}
+					flushOutgoingPackets();
 
-				if (!progressed)
-				{
+					if (!progressed)
+					{
 					pumpOnce();
 				}
 		}

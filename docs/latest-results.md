@@ -4,7 +4,7 @@ The adaptive publication runner samples each library/network/test row in randomi
 
 Client load is swept upward per row to find server saturation using as many client threads as needed within the configured limit. Tables are sorted by best p99 first; for the current rate and throughput metrics, higher is better.
 
-The TCP+TLS sidecar is excluded from these QUIC tables. Full raw data and gate details are committed under [`results/full31`](results/full31/).
+The TCP+TLS sidecar is excluded from these QUIC tables. Full raw data and gate details are committed under [`results/full31`](results/full31/). DATAGRAM addendum data is under [`results/datagram-fairness-20260516`](results/datagram-fairness-20260516/).
 
 ## Results
 
@@ -380,10 +380,42 @@ Graceful fresh-stream close and cleanup throughput.
 | mvfst | syscall | 3 | 20 | streams/second | 8,845 | 9,215 | 9,813 |
 | mvfst | io_uring | 1 | 25 | streams/second | 6,629 | 7,054 | 7,165 |
 
+### Datagram
+
+Unreliable application DATAGRAM echo throughput.
+
+Addendum: the earlier full31 DATAGRAM rows were retracted because the harness
+applied different DATAGRAM pressure to native quiche and packet-engine adapters.
+The fixed harness now batches DATAGRAM queueing, flushes once per batch cycle,
+drains once per cycle, records delivery/UDP counters, and gates on delivery
+ratio. After the fix, DATAGRAM was run alone so the data below was not mixed
+with the rest of the full benchmark matrix.
+
+This table is the approved full-duration DATAGRAM-only smoke. The adaptive
+DATAGRAM inspection artifacts are committed beside it and show `417` measured
+samples with zero benchmark failures, but only `1/12` result rows passed the
+strict convergence gates in the bounded inspection run. Treat this as a
+DATAGRAM addendum, not as a clean adaptive leaderboard.
+
+| Library | Network | Client threads | Samples | Unit | p50 | p90 | p99 | Delivery | DATAGRAMs per UDP packet |
+|---|---|---:|---:|---|---:|---:|---:|---:|---:|
+| quiche | io_uring | 1 | 1 | datagrams/second | 4,705,674 | 4,705,674 | 4,705,674 | 0.999878 | 20.64 |
+| quiche | syscall | 1 | 1 | datagrams/second | 4,382,924 | 4,382,924 | 4,382,924 | 0.999880 | 20.62 |
+| quic-zig | syscall | 1 | 1 | datagrams/second | 3,740,953 | 3,740,953 | 3,740,953 | 0.999908 | 20.61 |
+| quic-zig | io_uring | 1 | 1 | datagrams/second | 3,625,460 | 3,625,460 | 3,625,460 | 0.999904 | 20.44 |
+| noq | syscall | 1 | 1 | datagrams/second | 3,026,198 | 3,026,198 | 3,026,198 | 0.999881 | 11.46 |
+| Quinn | syscall | 1 | 1 | datagrams/second | 2,847,039 | 2,847,039 | 2,847,039 | 0.999901 | 11.20 |
+| Quinn | io_uring | 1 | 1 | datagrams/second | 2,783,558 | 2,783,558 | 2,783,558 | 0.999908 | 11.20 |
+| Neqo | syscall | 1 | 1 | datagrams/second | 2,304,280 | 2,304,280 | 2,304,280 | 0.999894 | 11.97 |
+| noq | io_uring | 1 | 1 | datagrams/second | 2,298,315 | 2,298,315 | 2,298,315 | 0.999920 | 11.82 |
+| Neqo | io_uring | 1 | 1 | datagrams/second | 2,062,750 | 2,062,750 | 2,062,750 | 0.999981 | 11.28 |
+| s2n-quic | syscall | 1 | 1 | datagrams/second | 1,884,664 | 1,884,664 | 1,884,664 | 0.999893 | 19.22 |
+| s2n-quic | io_uring | 1 | 1 | datagrams/second | 1,568,843 | 1,568,843 | 1,568,843 | 0.999902 | 18.93 |
+
 ## Caveats
 
 - `idle_footprint` is omitted from the current table because this run captured only the old completion marker, not resource footprint. Rerun with the RSS sampler before publishing idle-footprint claims.
-- `datagram` is retracted from the published table while DATAGRAM fairness is under audit. The latest addendum showed implausibly polarized rows, so it must not be treated as a fair cross-library result.
 - Unsupported capability rows are explicit unsupported markers, not crashes.
 - Row-level caveats and full gate reasons are in [`publication-results.tsv`](results/full31/publication-results.tsv), [`row-stats.tsv`](results/full31/row-stats.tsv), [`publication-row-audit.tsv`](results/full31/publication-row-audit.tsv), and [`saturation-decisions.tsv`](results/full31/saturation-decisions.tsv).
 - Raw samples are in [`adaptive-samples.tsv`](results/full31/adaptive-samples.tsv).
+- DATAGRAM-only smoke samples are in [`datagram-smoke-raw-samples.tsv`](results/datagram-fairness-20260516/datagram-smoke-raw-samples.tsv); DATAGRAM adaptive inspection gate details are in [`results/datagram-fairness-20260516`](results/datagram-fairness-20260516/).

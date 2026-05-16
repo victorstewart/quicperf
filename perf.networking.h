@@ -281,6 +281,7 @@ private:
 		int iouringRecvRingMask = 0;
 		uint64_t impairmentPacketOrdinal = 0;
 		uint64_t iouringSendErrorLogs = 0;
+		uint64_t iouringPendingSendSqes = 0;
 		std::vector<std::unique_ptr<UDPContext>> iouringDeferredRecv;
 
 	[[noreturn]] void failIouringSetup(const char *step, int result)
@@ -378,6 +379,7 @@ private:
 			iouringRecvView.msg_hdr.msg_iov[0].iov_base = io_uring_recvmsg_payload(out, &iouringRecvMsg);
 			iouringRecvView.msg_hdr.msg_iov[0].iov_len = out->payloadlen;
 			iouringRecvView.msg_len = out->payloadlen;
+			benchmarkRecordUdpPacketsReceived(1);
 			msgConsumer(&iouringRecvView);
 		}
 
@@ -404,20 +406,25 @@ private:
 
 		void *buffer = iouringRecvBuffers[bid];
 		struct io_uring_recvmsg_out *out = io_uring_recvmsg_validate(buffer, cqe->res, &iouringRecvMsg);
-		if (out != nullptr && out->payloadlen <= MAX_IPV6_UDP_PACKET_SIZE)
-		{
-			auto deferred = std::make_unique<UDPContext>();
-			deferred->copyInAddress(reinterpret_cast<const struct sockaddr *>(io_uring_recvmsg_name(out)));
-			deferred->setLength(out->payloadlen);
-			memcpy(deferred->buffer(), io_uring_recvmsg_payload(out, &iouringRecvMsg), out->payloadlen);
-			iouringDeferredRecv.emplace_back(std::move(deferred));
-		}
+			if (out != nullptr && out->payloadlen <= MAX_IPV6_UDP_PACKET_SIZE)
+			{
+				auto deferred = std::make_unique<UDPContext>();
+				deferred->copyInAddress(reinterpret_cast<const struct sockaddr *>(io_uring_recvmsg_name(out)));
+				deferred->setLength(out->payloadlen);
+				memcpy(deferred->buffer(), io_uring_recvmsg_payload(out, &iouringRecvMsg), out->payloadlen);
+				iouringDeferredRecv.emplace_back(std::move(deferred));
+				benchmarkRecordUdpPacketsReceived(1);
+			}
 
 		recycleIouringRecvBuffer(bid);
 	}
 
 		void handleIouringSendCqe(void *callbackBuffer, int result)
 		{
+			if (result >= 0)
+			{
+				benchmarkRecordUdpPacketsSent(1);
+			}
 			if (result < 0 && iouringSendErrorLogs < 16)
 			{
 				++iouringSendErrorLogs;
@@ -543,31 +550,35 @@ public:
 	{
 		if (benchmarkIsLossRecovery())
 		{
-			for (uint16_t i = 0; i < packets->count; ++i)
-			{
-				if (shouldDropBenchmarkPacket())
+				for (uint16_t i = 0; i < packets->count; ++i)
 				{
-					continue;
-				}
-				if (sendmsg(socket.fd, &packets->msgs[i].msg_hdr, 0) < 0)
-				{
-					break;
+					if (shouldDropBenchmarkPacket())
+					{
+						continue;
+					}
+					benchmarkRecordUdpSendSyscalls(1);
+					if (sendmsg(socket.fd, &packets->msgs[i].msg_hdr, 0) < 0)
+					{
+						break;
+					}
+					benchmarkRecordUdpPacketsSent(1);
 				}
 			}
-		}
-		else
-		{
-			uint16_t sent = 0;
-			while (sent < packets->count)
+			else
 			{
-				int result = sendmmsg(socket.fd, reinterpret_cast<struct mmsghdr *>(packets->msgs + sent), packets->count - sent, 0);
-				if (result <= 0)
+				uint16_t sent = 0;
+				while (sent < packets->count)
 				{
-					break;
+					benchmarkRecordUdpSendSyscalls(1);
+					int result = sendmmsg(socket.fd, reinterpret_cast<struct mmsghdr *>(packets->msgs + sent), packets->count - sent, 0);
+					if (result <= 0)
+					{
+						break;
+					}
+					benchmarkRecordUdpPacketsSent(static_cast<uint64_t>(result));
+					sent += static_cast<uint16_t>(result);
 				}
-				sent += static_cast<uint16_t>(result);
 			}
-		}
 
 			packets->reset();
 			sendPool.relinquish(packets);
@@ -590,10 +601,10 @@ public:
 
 			//printf("(A) sqe space left = %ld\n", *(ring.sq.kring_entries) - io_uring_sq_ready(&ring));
 
-			for (uint16_t i = 0, submitted = 0; i < packets->count; i++)
-			{
-				if (!submitPacket[i])
+				for (uint16_t i = 0, submitted = 0; i < packets->count; i++)
 				{
+					if (!submitPacket[i])
+					{
 					continue;
 				}
 				++submitted;
@@ -608,9 +619,9 @@ public:
 					}
 					io_uring_sqe_set_flags(sqe, flags);
 					setCallbackData(sqe, IORING_OP_SENDMSG, packets);
-				++packets->sendsInFlight;
-			}
-
+					++packets->sendsInFlight;
+					++iouringPendingSendSqes;
+				}
 			if (packets->sendsInFlight == 0)
 			{
 				packets->reset();
@@ -621,17 +632,26 @@ public:
 		}
    }
 
-	void flush(void)
-	{
-		if constexpr (usesIouring)
+		void flush(void)
 		{
+			if constexpr (usesIouring)
+			{
 			if (!iouringRecvArmed)
 			{
 				armIouringRecv();
+				}
+				if (io_uring_sq_ready(&ring) > 0)
+				{
+					const bool hasPendingSend = iouringPendingSendSqes > 0;
+					int result = io_uring_submit(&ring);
+					if (result >= 0 && hasPendingSend)
+					{
+						benchmarkRecordUdpSendSyscalls(1);
+						iouringPendingSendSqes = 0;
+					}
+				}
 			}
-			io_uring_submit(&ring);
 		}
-	}
 
 	void drainSendCompletions(void)
 	{
@@ -680,11 +700,12 @@ public:
 		}
 	}
 
-   template <typename Consumer>
-   bool recvmsgWithTimeout(int64_t timeoutus, Consumer&& msgConsumer) // timeout in microseconds
-   {
-		if constexpr (mode & Mode::syscall)
-		{
+	   template <typename Consumer>
+	   bool recvmsgWithTimeout(int64_t timeoutus, Consumer&& msgConsumer) // timeout in microseconds
+	   {
+			benchmarkRecordUdpRecvPoll();
+			if constexpr (mode & Mode::syscall)
+			{
 			int flags = MSG_WAITFORONE;
 			if (timeoutus <= 0)
 			{
@@ -721,13 +742,14 @@ public:
 				return false;
 			}
 
-				for (auto i = 0; i < result; i++)
-				{
-					UDPContext *packet = &recvContext.msgs[i];
-					msgConsumer(packet);
-					packet->reset();
-				}
-		}
+					for (auto i = 0; i < result; i++)
+					{
+						UDPContext *packet = &recvContext.msgs[i];
+						msgConsumer(packet);
+						packet->reset();
+					}
+					benchmarkRecordUdpPacketsReceived(static_cast<uint64_t>(result));
+			}
 		else
 		{
 				if (deliverDeferredIouringRecv(msgConsumer))

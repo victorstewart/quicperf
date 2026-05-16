@@ -290,7 +290,7 @@ static void configureBenchmarkScenarioProfile(void)
 	benchmarkScenarioProfile = "default";
 	benchmarkLossDropEveryPackets = 0;
 	benchmarkLossWarmupPackets = envU64("QUICPERF_LOSS_WARMUP_PACKETS", 128);
-	const uint64_t defaultScenarioOperations = benchmarkScenario == BenchmarkScenario::datagram ? 65'536 : 1024;
+	const uint64_t defaultScenarioOperations = benchmarkScenario == BenchmarkScenario::datagram ? 8'388'608 : 1024;
 	benchmarkScenarioOperations = envU64("QUICPERF_SCENARIO_OPERATIONS", defaultScenarioOperations);
 	const uint64_t defaultStreamsInFlight = benchmarkScenario == BenchmarkScenario::datagram ? 1024 : 8;
 	benchmarkScenarioStreamsInFlight = static_cast<uint32_t>(envU64("QUICPERF_STREAMS_IN_FLIGHT", defaultStreamsInFlight));
@@ -581,7 +581,9 @@ int main (int argc, char *argv[])
 		installNoNewThreadGuard();
 		verifyThreadCount(argv[1], "entry", 1);
 
-		globalSetup<Mode::server>();
+			globalSetup<Mode::server>();
+			benchmarkResetDatagramClientCounters();
+			benchmarkResetUdpCounters();
 
 		auto runServerTest = [&] <Mode mode> (QuicLibrary<mode> *server) -> void {
 
@@ -593,20 +595,47 @@ int main (int argc, char *argv[])
 			delete server;
 			verifyThreadCount(argv[1], "complete", 1);
 
+			if (benchmarkScenario == BenchmarkScenario::datagram)
+			{
+				const uint64_t udpPacketsSent = benchmarkUdpPacketsSentTotal.load(std::memory_order_relaxed);
+				const uint64_t udpPacketsReceived = benchmarkUdpPacketsReceivedTotal.load(std::memory_order_relaxed);
+				const uint64_t udpSendSyscalls = benchmarkUdpSendSyscallsTotal.load(std::memory_order_relaxed);
+				const uint64_t udpRecvPolls = benchmarkUdpRecvPollsTotal.load(std::memory_order_relaxed);
 				printf("quicperf_result library=%s scenario=%s role=server network=%s address=%s "
-					"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s "
-					"app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
-					"adapter_features=%s initial_cwnd_packets=%u ack_frequency_packets=%u "
-					"socket_sndbuf_requested=%" PRIu64 " socket_sndbuf_effective=%d "
-					"socket_rcvbuf_requested=%" PRIu64 " socket_rcvbuf_effective=%d "
-					"scenario_profile=%s loss_drop_every_packets=%" PRIu64 " loss_warmup_packets=%" PRIu64 " status=complete\n",
-					benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3],
-					benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile,
-					benchmarkAppChunkSize, benchmarkServerTargetConnections, benchmarkTlsVerifyMode, benchmarkTlsCertProfile,
-					benchmarkAdapterFeatures(), benchmarkAdapterInitialCwndPackets(), benchmarkAdapterAckFrequencyPackets(),
-					benchmarkConnectionWindow, benchmarkSocketSndbufEffective.load(std::memory_order_relaxed),
-					benchmarkConnectionWindow, benchmarkSocketRcvbufEffective.load(std::memory_order_relaxed),
-					benchmarkScenarioProfile, benchmarkLossDropEveryPackets, benchmarkLossWarmupPackets);
+						"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s "
+						"app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
+						"adapter_features=%s initial_cwnd_packets=%u ack_frequency_packets=%u "
+						"socket_sndbuf_requested=%" PRIu64 " socket_sndbuf_effective=%d "
+						"socket_rcvbuf_requested=%" PRIu64 " socket_rcvbuf_effective=%d "
+						"scenario_profile=%s loss_drop_every_packets=%" PRIu64 " loss_warmup_packets=%" PRIu64 " "
+						"udp_packets_sent=%" PRIu64 " udp_packets_received=%" PRIu64 " "
+						"udp_send_syscalls=%" PRIu64 " udp_recv_polls=%" PRIu64 " status=complete\n",
+						benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3],
+						benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile,
+						benchmarkAppChunkSize, benchmarkServerTargetConnections, benchmarkTlsVerifyMode, benchmarkTlsCertProfile,
+						benchmarkAdapterFeatures(), benchmarkAdapterInitialCwndPackets(), benchmarkAdapterAckFrequencyPackets(),
+						benchmarkConnectionWindow, benchmarkSocketSndbufEffective.load(std::memory_order_relaxed),
+						benchmarkConnectionWindow, benchmarkSocketRcvbufEffective.load(std::memory_order_relaxed),
+						benchmarkScenarioProfile, benchmarkLossDropEveryPackets, benchmarkLossWarmupPackets,
+						udpPacketsSent, udpPacketsReceived, udpSendSyscalls, udpRecvPolls);
+				return;
+			}
+
+			printf("quicperf_result library=%s scenario=%s role=server network=%s address=%s "
+				"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s "
+				"app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
+				"adapter_features=%s initial_cwnd_packets=%u ack_frequency_packets=%u "
+				"socket_sndbuf_requested=%" PRIu64 " socket_sndbuf_effective=%d "
+				"socket_rcvbuf_requested=%" PRIu64 " socket_rcvbuf_effective=%d "
+				"scenario_profile=%s loss_drop_every_packets=%" PRIu64 " loss_warmup_packets=%" PRIu64 " "
+				"status=complete\n",
+				benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3],
+				benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile,
+				benchmarkAppChunkSize, benchmarkServerTargetConnections, benchmarkTlsVerifyMode, benchmarkTlsCertProfile,
+				benchmarkAdapterFeatures(), benchmarkAdapterInitialCwndPackets(), benchmarkAdapterAckFrequencyPackets(),
+				benchmarkConnectionWindow, benchmarkSocketSndbufEffective.load(std::memory_order_relaxed),
+				benchmarkConnectionWindow, benchmarkSocketRcvbufEffective.load(std::memory_order_relaxed),
+				benchmarkScenarioProfile, benchmarkLossDropEveryPackets, benchmarkLossWarmupPackets);
 			};
 
 		if (network == "iouring")
@@ -796,8 +825,9 @@ int main (int argc, char *argv[])
 					std::this_thread::yield();
 				}
 				installNoNewThreadGuard();
-				globalSetup<Mode::client>();
-				benchmarkResetDatagramClientCounters();
+					globalSetup<Mode::client>();
+					benchmarkResetDatagramClientCounters();
+					benchmarkResetUdpCounters();
 				verifyThreadCount(argv[1], "guard_installed", nThreads);
 				guardInstalled.store(true, std::memory_order_release);
 
@@ -875,29 +905,36 @@ int main (int argc, char *argv[])
 
 				if (benchmarkScenario == BenchmarkScenario::datagram)
 				{
-					const uint64_t datagramSent = benchmarkDatagramClientSentTotal.load(std::memory_order_relaxed);
-					const uint64_t datagramReceived = benchmarkDatagramClientReceivedTotal.load(std::memory_order_relaxed);
-					const uint64_t datagramLost = datagramSent > datagramReceived ? datagramSent - datagramReceived : 0;
-					const double datagramDeliveryRatio = datagramSent == 0 ? 0.0 : (double)datagramReceived / (double)datagramSent;
-					printf("quicperf_result library=%s scenario=%s role=client network=%s address=%s threads=%u "
-						"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s "
-						"app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
+						const uint64_t datagramSent = benchmarkDatagramClientSentTotal.load(std::memory_order_relaxed);
+						const uint64_t datagramReceived = benchmarkDatagramClientReceivedTotal.load(std::memory_order_relaxed);
+						const uint64_t datagramLost = datagramSent > datagramReceived ? datagramSent - datagramReceived : 0;
+						const double datagramDeliveryRatio = datagramSent == 0 ? 0.0 : (double)datagramReceived / (double)datagramSent;
+						const uint64_t udpPacketsSent = benchmarkUdpPacketsSentTotal.load(std::memory_order_relaxed);
+						const uint64_t udpPacketsReceived = benchmarkUdpPacketsReceivedTotal.load(std::memory_order_relaxed);
+						const uint64_t udpSendSyscalls = benchmarkUdpSendSyscallsTotal.load(std::memory_order_relaxed);
+						const uint64_t udpRecvPolls = benchmarkUdpRecvPollsTotal.load(std::memory_order_relaxed);
+						const double datagramsPerUdpPacket = udpPacketsReceived == 0 ? 0.0 : (double)datagramReceived / (double)udpPacketsReceived;
+						printf("quicperf_result library=%s scenario=%s role=client network=%s address=%s threads=%u "
+							"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s "
+							"app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
 						"adapter_features=%s initial_cwnd_packets=%u ack_frequency_packets=%u "
 						"socket_sndbuf_requested=%" PRIu64 " socket_sndbuf_effective=%d "
 						"socket_rcvbuf_requested=%" PRIu64 " socket_rcvbuf_effective=%d "
-						"scenario_profile=%s loss_drop_every_packets=%" PRIu64 " loss_warmup_packets=%" PRIu64 " "
-						"units_per_thread=%" PRIu64 " total_units=%" PRIu64 " wall_seconds=%.9f "
-						"datagram_sent=%" PRIu64 " datagram_received=%" PRIu64 " datagram_lost=%" PRIu64 " "
-						"datagram_delivery_ratio=%.9f %s=%.6f\n",
-						benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], nThreads,
-						benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile,
-						benchmarkAppChunkSize, benchmarkServerTargetConnections, benchmarkTlsVerifyMode, benchmarkTlsCertProfile,
-						benchmarkAdapterFeatures(), benchmarkAdapterInitialCwndPackets(), benchmarkAdapterAckFrequencyPackets(),
+							"scenario_profile=%s loss_drop_every_packets=%" PRIu64 " loss_warmup_packets=%" PRIu64 " "
+							"units_per_thread=%" PRIu64 " total_units=%" PRIu64 " wall_seconds=%.9f "
+							"datagram_sent=%" PRIu64 " datagram_received=%" PRIu64 " datagram_lost=%" PRIu64 " "
+							"datagram_delivery_ratio=%.9f udp_packets_sent=%" PRIu64 " udp_packets_received=%" PRIu64 " "
+							"udp_send_syscalls=%" PRIu64 " udp_recv_polls=%" PRIu64 " datagrams_per_udp_packet=%.9f %s=%.6f\n",
+							benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], nThreads,
+							benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile,
+							benchmarkAppChunkSize, benchmarkServerTargetConnections, benchmarkTlsVerifyMode, benchmarkTlsCertProfile,
+							benchmarkAdapterFeatures(), benchmarkAdapterInitialCwndPackets(), benchmarkAdapterAckFrequencyPackets(),
 						benchmarkConnectionWindow, benchmarkSocketSndbufEffective.load(std::memory_order_relaxed),
-						benchmarkConnectionWindow, benchmarkSocketRcvbufEffective.load(std::memory_order_relaxed),
-						benchmarkScenarioProfile, benchmarkLossDropEveryPackets, benchmarkLossWarmupPackets,
-						unitsPerThread, totalUnits, maxSeconds, datagramSent, datagramReceived, datagramLost,
-						datagramDeliveryRatio, benchmarkScenarioMetricName(benchmarkScenario), metricValue);
+							benchmarkConnectionWindow, benchmarkSocketRcvbufEffective.load(std::memory_order_relaxed),
+							benchmarkScenarioProfile, benchmarkLossDropEveryPackets, benchmarkLossWarmupPackets,
+							unitsPerThread, totalUnits, maxSeconds, datagramSent, datagramReceived, datagramLost,
+							datagramDeliveryRatio, udpPacketsSent, udpPacketsReceived, udpSendSyscalls, udpRecvPolls,
+							datagramsPerUdpPacket, benchmarkScenarioMetricName(benchmarkScenario), metricValue);
 					return 0;
 				}
 

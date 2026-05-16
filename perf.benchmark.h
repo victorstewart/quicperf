@@ -68,8 +68,9 @@ static constexpr const char *benchmarkScenarioMetricName(BenchmarkScenario scena
 		case BenchmarkScenario::close_reset_cleanup:
 			return "streams_per_second";
 		case BenchmarkScenario::small_payload_pps:
-		case BenchmarkScenario::datagram:
 			return "messages_per_second";
+		case BenchmarkScenario::datagram:
+			return "datagrams_per_second";
 		case BenchmarkScenario::idle_footprint:
 			return "server_rss_delta_bytes_per_connection";
 		case BenchmarkScenario::download:
@@ -275,6 +276,10 @@ static inline uint32_t benchmarkScenarioMessageBytes = 64;
 static inline uint64_t benchmarkIdleHoldMs = 1000;
 static inline std::atomic<uint64_t> benchmarkDatagramClientSentTotal{0};
 static inline std::atomic<uint64_t> benchmarkDatagramClientReceivedTotal{0};
+static inline std::atomic<uint64_t> benchmarkUdpPacketsSentTotal{0};
+static inline std::atomic<uint64_t> benchmarkUdpPacketsReceivedTotal{0};
+static inline std::atomic<uint64_t> benchmarkUdpSendSyscallsTotal{0};
+static inline std::atomic<uint64_t> benchmarkUdpRecvPollsTotal{0};
 static constexpr uint32_t benchmarkAggressiveInitialCwndPackets = 32;
 static constexpr uint32_t benchmarkAggressiveAckFrequencyPackets = 10;
 static inline std::atomic<int> benchmarkSocketSndbufEffective{-1};
@@ -318,6 +323,50 @@ static inline void benchmarkRecordDatagramClientCounters(uint64_t sent, uint64_t
 {
 	benchmarkDatagramClientSentTotal.fetch_add(sent, std::memory_order_relaxed);
 	benchmarkDatagramClientReceivedTotal.fetch_add(received, std::memory_order_relaxed);
+}
+
+static inline void benchmarkResetUdpCounters(void)
+{
+	benchmarkUdpPacketsSentTotal.store(0, std::memory_order_relaxed);
+	benchmarkUdpPacketsReceivedTotal.store(0, std::memory_order_relaxed);
+	benchmarkUdpSendSyscallsTotal.store(0, std::memory_order_relaxed);
+	benchmarkUdpRecvPollsTotal.store(0, std::memory_order_relaxed);
+}
+
+static inline void benchmarkRecordUdpPacketsSent(uint64_t packets)
+{
+	if (benchmarkScenario != BenchmarkScenario::datagram)
+	{
+		return;
+	}
+	benchmarkUdpPacketsSentTotal.fetch_add(packets, std::memory_order_relaxed);
+}
+
+static inline void benchmarkRecordUdpPacketsReceived(uint64_t packets)
+{
+	if (benchmarkScenario != BenchmarkScenario::datagram)
+	{
+		return;
+	}
+	benchmarkUdpPacketsReceivedTotal.fetch_add(packets, std::memory_order_relaxed);
+}
+
+static inline void benchmarkRecordUdpSendSyscalls(uint64_t calls)
+{
+	if (benchmarkScenario != BenchmarkScenario::datagram)
+	{
+		return;
+	}
+	benchmarkUdpSendSyscallsTotal.fetch_add(calls, std::memory_order_relaxed);
+}
+
+static inline void benchmarkRecordUdpRecvPoll(void)
+{
+	if (benchmarkScenario != BenchmarkScenario::datagram)
+	{
+		return;
+	}
+	benchmarkUdpRecvPollsTotal.fetch_add(1, std::memory_order_relaxed);
 }
 
 static inline uint64_t benchmarkGenericReqRespRequestBytes(void)

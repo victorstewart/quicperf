@@ -290,14 +290,12 @@ private:
 				if (datagramClientReceived >= benchmarkScenarioOperations)
 				{
 					signalClientDone();
-					flushPackets();
 					break;
 				}
 			}
 			if (receivedAny && datagramClientReceived < benchmarkScenarioOperations)
 			{
 				processClientDatagramWritable();
-				flushPackets();
 			}
 		}
 	}
@@ -985,6 +983,10 @@ private:
 			do
 			{
 			uint64_t usTil = conn == nullptr ? 100'000 : flushPackets();
+			if (benchmarkScenario == BenchmarkScenario::datagram && connected)
+			{
+				usTil = std::min<uint64_t>(usTil, 1'000);
+			}
 			usTil = std::min<uint64_t>(usTil, 100'000);
 
 			bool timedout = networkHub->recvmsgWithTimeout(usTil, [&] (UDPContext *msg) -> void {
