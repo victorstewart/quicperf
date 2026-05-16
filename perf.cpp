@@ -76,43 +76,65 @@ static const char *benchmarkLibrary(void)
 static const char *benchmarkAdapterFeatures(void)
 {
 #ifdef LSPERF
-	return "cc=bbr|pacing=on|spin=on|ql_bits=2|ecn=off|pmtud=off|send_batch=50";
+	return benchmarkUdpGsoEnabled()
+		? "cc=bbr|pacing=on|spin=on|ql_bits=2|ecn=off|pmtud=off|send_batch=50|udp_gso=common_cpp|udp_gro=on"
+		: "cc=bbr|pacing=on|spin=on|ql_bits=2|ecn=off|pmtud=off|send_batch=50|udp_gso=off|udp_gro=debug";
 #endif
 #ifdef PICOPERF
 	return benchmarkPicoquicAdapterFeatures();
 #endif
 #ifdef QUICHEPERF
-	return "cc=bbr2_gcongestion|migration=off|pmtud=off|max_windows=profile";
+	return benchmarkUdpGsoEnabled()
+		? "cc=bbr2_gcongestion|migration=off|pmtud=off|max_windows=profile|udp_gso=common_cpp|udp_gro=on"
+		: "cc=bbr2_gcongestion|migration=off|pmtud=off|max_windows=profile|udp_gso=off|udp_gro=debug";
 #endif
 #ifdef NGTCP2PERF
-	return "cc=bbr|udp_payload_shaping=off|pmtud=off|max_tx_payload=1452";
+	return benchmarkUdpGsoEnabled()
+		? "cc=bbr|udp_payload_shaping=off|pmtud=off|max_tx_payload=1452|udp_gso=common_cpp|udp_gro=on"
+		: "cc=bbr|udp_payload_shaping=off|pmtud=off|max_tx_payload=1452|udp_gso=off|udp_gro=debug";
 #endif
 #ifdef TCPPERF
 	return "cc=bbr_requested|nodelay=on|quickack=on|partial_write=on";
 #endif
 #ifdef TQUICPERF
-		return "cc=bbr|pacing=on|pmtud=off|send_batch=150|max_conns=server_connections|tls_sigalgs=explicit";
+		return benchmarkUdpGsoEnabled()
+			? "cc=bbr|pacing=on|pmtud=off|send_batch=150|max_conns=server_connections|tls_sigalgs=explicit|udp_gso=common_cpp|udp_gro=on"
+			: "cc=bbr|pacing=on|pmtud=off|send_batch=150|max_conns=server_connections|tls_sigalgs=explicit|udp_gso=off|udp_gro=debug";
 #endif
 #ifdef XQUICPERF
-	return "cc=bbr|pacing=on|sendmmsg=on|cid_len=12|qlog=off|tls_sigalgs=ssl_ctx_wrap|tls_verify=config_chain_preflight";
+	return benchmarkUdpGsoEnabled()
+		? "cc=bbr|pacing=on|sendmmsg=on|cid_len=12|qlog=off|tls_sigalgs=ssl_ctx_wrap|tls_verify=config_chain_preflight|udp_gso=common_cpp|udp_gro=on"
+		: "cc=bbr|pacing=on|sendmmsg=on|cid_len=12|qlog=off|tls_sigalgs=ssl_ctx_wrap|tls_verify=config_chain_preflight|udp_gso=off|udp_gro=debug";
 #endif
 #ifdef QUINNPERF
-	return "cc=bbr|sans_io=quinn-proto|cpp_networkhub=on|gso=off|runtime=none";
+	return benchmarkUdpGsoEnabled()
+		? "cc=bbr|sans_io=quinn-proto|cpp_networkhub=on|udp_gso=common_cpp|udp_gro=on|runtime=none"
+		: "cc=bbr|sans_io=quinn-proto|cpp_networkhub=on|udp_gso=off|udp_gro=debug|runtime=none";
 #endif
 #ifdef NOQPERF
-	return "cc=bbr3|sans_io=noq-proto|cpp_networkhub=on|gso=off|runtime=none";
+	return benchmarkUdpGsoEnabled()
+		? "cc=bbr3|sans_io=noq-proto|cpp_networkhub=on|udp_gso=common_cpp|udp_gro=on|runtime=none"
+		: "cc=bbr3|sans_io=noq-proto|cpp_networkhub=on|udp_gso=off|udp_gro=debug|runtime=none";
 #endif
 #ifdef NEQOPERF
-	return "sans_io=neqo-transport|cpp_networkhub=on|runtime=none|tls_verify=config_chain_preflight";
+	return benchmarkUdpGsoEnabled()
+		? "sans_io=neqo-transport|cpp_networkhub=on|runtime=none|tls_verify=config_chain_preflight|udp_gso=common_cpp|udp_gro=on"
+		: "sans_io=neqo-transport|cpp_networkhub=on|runtime=none|tls_verify=config_chain_preflight|udp_gso=off|udp_gro=debug";
 #endif
 #ifdef S2NPERF
-	return "cc=bbr|manual_endpoint=s2n-quic|cpp_networkhub=on|gso=off|runtime=none";
+	return benchmarkUdpGsoEnabled()
+		? "cc=bbr|manual_endpoint=s2n-quic|cpp_networkhub=on|udp_gso=common_cpp|udp_gro=on|runtime=none"
+		: "cc=bbr|manual_endpoint=s2n-quic|cpp_networkhub=on|udp_gso=off|udp_gro=debug|runtime=none";
 #endif
 #ifdef QUICZIGPERF
-	return "cc=cubic|bbr=unsupported|packet_api=quic-zig-connection|cpp_networkhub=on|gso=off|runtime=none|pmtud=off|pacing=disabled|send_backpressure=stream_window|flow_window_clamp=64m|server_send_rr=on";
+	return benchmarkUdpGsoEnabled()
+		? "cc=cubic|bbr=unsupported|packet_api=quic-zig-connection|cpp_networkhub=on|udp_gso=common_cpp|udp_gro=on|runtime=none|pmtud=off|pacing=disabled|send_backpressure=stream_window|flow_window_clamp=64m|server_send_rr=on"
+		: "cc=cubic|bbr=unsupported|packet_api=quic-zig-connection|cpp_networkhub=on|udp_gso=off|udp_gro=debug|runtime=none|pmtud=off|pacing=disabled|send_backpressure=stream_window|flow_window_clamp=64m|server_send_rr=on";
 #endif
 #ifdef MVFSTPERF
-	return "cc=bbr|cpp_networkhub=on|socket=quic_async_udp_adapter|folly_eventbase=manual|gso=off|runtime=none|pmtud=off|pacing=on";
+	return benchmarkUdpGsoEnabled()
+		? "cc=bbr|cpp_networkhub=on|socket=quic_async_udp_adapter|folly_eventbase=manual|udp_gso=common_cpp|udp_gro=on|runtime=none|pmtud=off|pacing=on"
+		: "cc=bbr|cpp_networkhub=on|socket=quic_async_udp_adapter|folly_eventbase=manual|udp_gso=off|udp_gro=debug|runtime=none|pmtud=off|pacing=on";
 #endif
 }
 

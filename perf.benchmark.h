@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <netinet/in.h>
@@ -293,6 +294,47 @@ static constexpr uint32_t benchmarkAggressiveInitialCwndPackets = 32;
 static constexpr uint32_t benchmarkAggressiveAckFrequencyPackets = 10;
 static inline std::atomic<int> benchmarkSocketSndbufEffective{-1};
 static inline std::atomic<int> benchmarkSocketRcvbufEffective{-1};
+
+static inline bool benchmarkEnvFlagEnabled(const char *name, bool fallback)
+{
+	const char *value = getenv(name);
+	if (value == nullptr || value[0] == '\0')
+	{
+		return fallback;
+	}
+	return strcmp(value, "0") != 0 && strcmp(value, "false") != 0 && strcmp(value, "off") != 0;
+}
+
+static inline bool benchmarkUdpGsoEnabled(void)
+{
+	return benchmarkEnvFlagEnabled("QUICPERF_UDP_GSO", true);
+}
+
+static inline bool benchmarkUdpGroEnabled(void)
+{
+	return benchmarkEnvFlagEnabled("QUICPERF_UDP_GRO", true);
+}
+
+static inline uint16_t benchmarkUdpGsoMaxSegments(void)
+{
+	const char *value = getenv("QUICPERF_UDP_GSO_SEGMENTS");
+	if (value == nullptr || value[0] == '\0')
+	{
+		return 8;
+	}
+
+	char *end = nullptr;
+	unsigned long parsed = strtoul(value, &end, 10);
+	if (end == value || *end != '\0' || parsed == 0)
+	{
+		return 8;
+	}
+	if (parsed > 64)
+	{
+		return 64;
+	}
+	return static_cast<uint16_t>(parsed);
+}
 
 static inline bool benchmarkCongestionProfileIsAggressive(void)
 {

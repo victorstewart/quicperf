@@ -1,9 +1,11 @@
 #include "liburing.h"
 #include <openssl/rand.h>
+#include <algorithm>
 #include <cerrno>
 #include <ctime>
 #include <fcntl.h>
 #include <memory>
+#include <netinet/udp.h>
 #include <poll.h>
 #include <cstdio>
 #include <cstring>
@@ -100,6 +102,13 @@ public:
 
 				setsockopt(fd, SOL_SOCKET, SO_SNDBUF, (const uint32_t[]){ static_cast<uint32_t>(benchmarkConnectionWindow) }, sizeof(uint32_t));
 				setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (const uint32_t[]){ static_cast<uint32_t>(benchmarkConnectionWindow) }, sizeof(uint32_t));
+#ifdef UDP_GRO
+				if (benchmarkUdpGroEnabled())
+				{
+					int enabled = 1;
+					setsockopt(fd, IPPROTO_UDP, UDP_GRO, &enabled, sizeof(enabled));
+				}
+#endif
 				benchmarkRecordSocketBuffers(fd);
 
 			addressLen = sizeof(struct sockaddr_in6);
@@ -119,11 +128,18 @@ public:
 	    }
 	};
 
-#define MAX_IPV6_UDP_PACKET_SIZE benchmarkUdpPayloadSize
+static constexpr size_t MAX_IPV6_UDP_PACKET_SIZE = benchmarkUdpPayloadSize;
+static constexpr uint16_t MAX_IPV6_UDP_GSO_SEGMENTS = 64;
+static constexpr size_t MAX_IPV6_UDP_GSO_PAYLOAD_SIZE = 65507;
+static constexpr size_t MAX_IPV6_UDP_GSO_BUFFER_SIZE = benchmarkUdpPayloadSize * MAX_IPV6_UDP_GSO_SEGMENTS;
+
 struct UDPContext {
 
 	struct msghdr msg_hdr;
 	unsigned int  msg_len;
+	size_t iov_capacity;
+	uint16_t udp_segment_size;
+	alignas(struct cmsghdr) char control[CMSG_SPACE(sizeof(uint16_t))];
 
 		UDPContext()
 		{
@@ -135,6 +151,8 @@ struct UDPContext {
 		msg_hdr.msg_iov[0].iov_len = MAX_IPV6_UDP_PACKET_SIZE;
 		msg_hdr.msg_iov[0].iov_base = malloc(MAX_IPV6_UDP_PACKET_SIZE);
 		msg_hdr.msg_iovlen = 1;
+		iov_capacity = MAX_IPV6_UDP_PACKET_SIZE;
+		udp_segment_size = 0;
 
 		// add the interface to every message
 
@@ -160,37 +178,172 @@ struct UDPContext {
 		return (T *)msg_hdr.msg_name;
 	}
 
+	template <typename T = struct sockaddr>
+	const T* address(void) const
+	{
+		return (const T *)msg_hdr.msg_name;
+	}
+
 	uint8_t* buffer(void)
 	{
 		return (uint8_t *)msg_hdr.msg_iov[0].iov_base;
 	}
 
-		void setLength(size_t length)
-		{
-			msg_hdr.msg_iov[0].iov_len = length;
-			msg_len = length;
+	size_t length(void) const
+	{
+		return msg_hdr.msg_iov[0].iov_len;
 	}
 
-		void reset(void)
+	void ensureCapacity(size_t capacity)
+	{
+		if (capacity > iov_capacity)
 		{
-			msg_len = 0;
-			msg_hdr.msg_namelen = sizeof(struct sockaddr_storage);
-			setLength(MAX_IPV6_UDP_PACKET_SIZE);
+			void *resized = realloc(msg_hdr.msg_iov[0].iov_base, capacity);
+			if (resized == nullptr)
+			{
+				fprintf(stderr, "quicperf_udp_buffer_realloc_failed requested=%zu\n", capacity);
+				abort();
+			}
+			msg_hdr.msg_iov[0].iov_base = resized;
+			iov_capacity = capacity;
 		}
+	}
+
+	void setLength(size_t length)
+	{
+		msg_hdr.msg_iov[0].iov_len = length;
+		msg_len = length;
+	}
+
+	void clearUdpSegmentSize(void)
+	{
+		udp_segment_size = 0;
+		msg_hdr.msg_control = nullptr;
+		msg_hdr.msg_controllen = 0;
+	}
+
+	void reset(void)
+	{
+		msg_len = 0;
+		msg_hdr.msg_namelen = sizeof(struct sockaddr_storage);
+		clearUdpSegmentSize();
+		setLength(MAX_IPV6_UDP_PACKET_SIZE);
+	}
+
+	void enableRecvControl(void)
+	{
+		memset(control, 0, sizeof(control));
+		msg_hdr.msg_control = control;
+		msg_hdr.msg_controllen = sizeof(control);
+	}
+
+	void setUdpSegmentSize(uint16_t segmentSize)
+	{
+		if (segmentSize == 0)
+		{
+			clearUdpSegmentSize();
+			return;
+		}
+		udp_segment_size = segmentSize;
+		memset(control, 0, sizeof(control));
+		msg_hdr.msg_control = control;
+		msg_hdr.msg_controllen = CMSG_SPACE(sizeof(segmentSize));
+		struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg_hdr);
+		cmsg->cmsg_level = IPPROTO_UDP;
+		cmsg->cmsg_type = UDP_SEGMENT;
+		cmsg->cmsg_len = CMSG_LEN(sizeof(segmentSize));
+		memcpy(CMSG_DATA(cmsg), &segmentSize, sizeof(segmentSize));
+	}
+
+	uint16_t udpSegmentSize(void) const
+	{
+		return udp_segment_size;
+	}
+
+	uint64_t udpPacketCount(void) const
+	{
+		size_t packetLength = length();
+		if (udp_segment_size == 0)
+		{
+			return packetLength > 0 ? 1 : 0;
+		}
+		return (packetLength + udp_segment_size - 1) / udp_segment_size;
+	}
+
+	uint16_t receivedGroSegmentSize(void) const
+	{
+		for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(const_cast<struct msghdr *>(&msg_hdr));
+			cmsg != nullptr;
+			cmsg = CMSG_NXTHDR(const_cast<struct msghdr *>(&msg_hdr), cmsg))
+		{
+			if (cmsg->cmsg_level == IPPROTO_UDP && cmsg->cmsg_type == UDP_GRO &&
+				cmsg->cmsg_len >= CMSG_LEN(sizeof(uint16_t)))
+			{
+				uint16_t segmentSize = 0;
+				memcpy(&segmentSize, CMSG_DATA(cmsg), sizeof(segmentSize));
+				return segmentSize;
+			}
+		}
+		return 0;
+	}
+
+	bool sameAddressAs(const UDPContext& other) const
+	{
+		return msg_hdr.msg_namelen == other.msg_hdr.msg_namelen &&
+			memcmp(msg_hdr.msg_name, other.msg_hdr.msg_name, msg_hdr.msg_namelen) == 0;
+	}
 
 	void copyInIov(struct iovec& opposingVec)
 	{
+		ensureCapacity(opposingVec.iov_len);
 		msg_len = opposingVec.iov_len;
 		msg_hdr.msg_iov[0].iov_len = opposingVec.iov_len;
+		clearUdpSegmentSize();
 
 		memcpy(buffer(), opposingVec.iov_base, msg_len);
 	}
 
-		void copyInAddress(const struct sockaddr *destination)
+	void copyInAddress(const struct sockaddr *destination)
+	{
+		memcpy(address(), destination, sizeof(struct sockaddr_in6));
+		msg_hdr.msg_namelen = sizeof(struct sockaddr_in6);
+	}
+
+	void copyFrom(const UDPContext& source)
+	{
+		size_t sourceLength = source.length();
+		ensureCapacity(sourceLength);
+		memcpy(address(), source.address(), source.msg_hdr.msg_namelen);
+		msg_hdr.msg_namelen = source.msg_hdr.msg_namelen;
+		memcpy(buffer(), source.msg_hdr.msg_iov[0].iov_base, sourceLength);
+		setLength(sourceLength);
+		if (source.udp_segment_size != 0)
 		{
-			memcpy(address(), destination, sizeof(struct sockaddr_in6));
-			msg_hdr.msg_namelen = sizeof(struct sockaddr_in6);
+			setUdpSegmentSize(source.udp_segment_size);
 		}
+		else
+		{
+			clearUdpSegmentSize();
+		}
+	}
+
+	void appendPayloadFrom(const UDPContext& source)
+	{
+		size_t originalLength = length();
+		size_t sourceLength = source.length();
+		ensureCapacity(originalLength + sourceLength);
+		memcpy(buffer() + originalLength, source.msg_hdr.msg_iov[0].iov_base, sourceLength);
+		setLength(originalLength + sourceLength);
+	}
+
+	void setExternalView(const struct sockaddr *sourceAddress, socklen_t sourceAddressLen, void *payload, size_t payloadLength)
+	{
+		memcpy(address(), sourceAddress, sourceAddressLen);
+		msg_hdr.msg_namelen = sourceAddressLen;
+		msg_hdr.msg_iov[0].iov_base = payload;
+		setLength(payloadLength);
+		clearUdpSegmentSize();
+	}
 };
 
 struct MultiUDPContext {
@@ -200,6 +353,8 @@ struct MultiUDPContext {
 	UDPContext msgs[batchSize];
 	uint16_t count;
 	uint16_t sendsInFlight;
+	uint64_t udpPacketsInFlight;
+	uint16_t sendErrorsInFlight;
 
 	MultiUDPContext()
 	{
@@ -220,11 +375,88 @@ struct MultiUDPContext {
 	{
 		count = 0;
 		sendsInFlight = 0;
+		udpPacketsInFlight = 0;
+		sendErrorsInFlight = 0;
 
 		for (auto i = 0; i < batchSize; i++)
 		{
 			msgs[i].reset();
 		}
+	}
+
+	void filterDroppedPackets(bool (*shouldDrop)(void *), void *opaque)
+	{
+		uint16_t write = 0;
+		for (uint16_t read = 0; read < count; ++read)
+		{
+			if (shouldDrop(opaque))
+			{
+				continue;
+			}
+			if (write != read)
+			{
+				msgs[write].copyFrom(msgs[read]);
+			}
+			++write;
+		}
+		for (uint16_t i = write; i < count; ++i)
+		{
+			msgs[i].reset();
+		}
+		count = write;
+	}
+
+	void coalesceGsoPackets(void)
+	{
+		if (!benchmarkUdpGsoEnabled() || count < 2)
+		{
+			return;
+		}
+
+		uint16_t configuredMaxSegments = benchmarkUdpGsoMaxSegments();
+		uint16_t write = 0;
+		for (uint16_t read = 0; read < count;)
+		{
+			if (write != read)
+			{
+				msgs[write].copyFrom(msgs[read]);
+			}
+
+			UDPContext& current = msgs[write];
+			uint16_t segmentSize = static_cast<uint16_t>(current.length());
+			uint16_t segments = 1;
+			++read;
+
+			if (current.udpSegmentSize() == 0 && segmentSize > 0 && segmentSize <= MAX_IPV6_UDP_PACKET_SIZE)
+			{
+				uint16_t maxSegments = std::min<uint16_t>(configuredMaxSegments,
+					std::max<uint16_t>(1, static_cast<uint16_t>(MAX_IPV6_UDP_GSO_PAYLOAD_SIZE / segmentSize)));
+				while (read < count &&
+					segments < maxSegments &&
+					msgs[read].udpSegmentSize() == 0 &&
+					msgs[read].length() == segmentSize &&
+					current.length() + segmentSize <= MAX_IPV6_UDP_GSO_BUFFER_SIZE &&
+					current.length() + segmentSize <= MAX_IPV6_UDP_GSO_PAYLOAD_SIZE &&
+					current.sameAddressAs(msgs[read]))
+				{
+					current.appendPayloadFrom(msgs[read]);
+					++segments;
+					++read;
+				}
+				if (segments > 1)
+				{
+					current.setUdpSegmentSize(segmentSize);
+				}
+			}
+
+			++write;
+		}
+
+		for (uint16_t i = write; i < count; ++i)
+		{
+			msgs[i].reset();
+		}
+		count = write;
 	}
 };
 
@@ -262,7 +494,8 @@ private:
 #endif
 	static constexpr uint16_t iouringBufferGroup = 7;
 	static constexpr uint32_t iouringRecvBufferCount = 1024;
-	static constexpr size_t iouringRecvBufferSize = sizeof(struct io_uring_recvmsg_out) + sizeof(struct sockaddr_storage) + MAX_IPV6_UDP_PACKET_SIZE;
+	static constexpr size_t iouringRecvControlSize = CMSG_SPACE(sizeof(uint16_t));
+	static constexpr size_t iouringRecvBufferSize = sizeof(struct io_uring_recvmsg_out) + sizeof(struct sockaddr_storage) + iouringRecvControlSize + MAX_IPV6_UDP_GSO_BUFFER_SIZE;
 
    struct io_uring ring;
 
@@ -277,6 +510,7 @@ private:
 	std::vector<void *> iouringRecvBuffers;
 	struct msghdr iouringRecvMsg = {};
 	UDPContext iouringRecvView;
+	UDPContext splitRecvView;
 		bool iouringRecvArmed = false;
 		int iouringRecvRingMask = 0;
 		uint64_t impairmentPacketOrdinal = 0;
@@ -317,6 +551,7 @@ private:
 
 		memset(&iouringRecvMsg, 0, sizeof(iouringRecvMsg));
 		iouringRecvMsg.msg_namelen = sizeof(struct sockaddr_storage);
+		iouringRecvMsg.msg_controllen = iouringRecvControlSize;
 	}
 
 	void recycleIouringRecvBuffer(uint16_t bid)
@@ -351,6 +586,75 @@ private:
 		iouringRecvArmed = true;
 	}
 
+	uint16_t iouringGroSegmentSize(struct io_uring_recvmsg_out *out)
+	{
+		for (struct cmsghdr *cmsg = io_uring_recvmsg_cmsg_firsthdr(out, &iouringRecvMsg);
+			cmsg != nullptr;
+			cmsg = io_uring_recvmsg_cmsg_nexthdr(out, &iouringRecvMsg, cmsg))
+		{
+			if (cmsg->cmsg_level == IPPROTO_UDP && cmsg->cmsg_type == UDP_GRO &&
+				cmsg->cmsg_len >= CMSG_LEN(sizeof(uint16_t)))
+			{
+				uint16_t segmentSize = 0;
+				memcpy(&segmentSize, CMSG_DATA(cmsg), sizeof(segmentSize));
+				return segmentSize;
+			}
+		}
+		return 0;
+	}
+
+	template <typename Consumer>
+	void deliverReceivedPacket(UDPContext& view, const struct sockaddr *sourceAddress, socklen_t sourceAddressLen,
+		void *payload, size_t payloadLength, uint16_t groSegmentSize, Consumer& msgConsumer)
+	{
+		if (groSegmentSize == 0 || payloadLength <= groSegmentSize)
+		{
+			view.setExternalView(sourceAddress, sourceAddressLen, payload, payloadLength);
+			benchmarkRecordUdpPacketsReceived(1);
+			msgConsumer(&view);
+			return;
+		}
+
+		uint64_t delivered = 0;
+		for (size_t offset = 0; offset < payloadLength; offset += groSegmentSize)
+		{
+			size_t segmentLength = std::min<size_t>(groSegmentSize, payloadLength - offset);
+			view.setExternalView(sourceAddress, sourceAddressLen,
+				static_cast<uint8_t *>(payload) + offset, segmentLength);
+			msgConsumer(&view);
+			++delivered;
+		}
+		benchmarkRecordUdpPacketsReceived(delivered);
+	}
+
+	void deferReceivedPacket(const struct sockaddr *sourceAddress, socklen_t sourceAddressLen,
+		void *payload, size_t payloadLength, uint16_t groSegmentSize)
+	{
+		if (groSegmentSize == 0 || payloadLength <= groSegmentSize)
+		{
+			auto deferred = std::make_unique<UDPContext>();
+			deferred->copyInAddress(sourceAddress);
+			deferred->setLength(payloadLength);
+			memcpy(deferred->buffer(), payload, payloadLength);
+			iouringDeferredRecv.emplace_back(std::move(deferred));
+			benchmarkRecordUdpPacketsReceived(1);
+			return;
+		}
+
+		uint64_t deferredPackets = 0;
+		for (size_t offset = 0; offset < payloadLength; offset += groSegmentSize)
+		{
+			size_t segmentLength = std::min<size_t>(groSegmentSize, payloadLength - offset);
+			auto deferred = std::make_unique<UDPContext>();
+			deferred->copyInAddress(sourceAddress);
+			deferred->setLength(segmentLength);
+			memcpy(deferred->buffer(), static_cast<uint8_t *>(payload) + offset, segmentLength);
+			iouringDeferredRecv.emplace_back(std::move(deferred));
+			++deferredPackets;
+		}
+		benchmarkRecordUdpPacketsReceived(deferredPackets);
+	}
+
 	template <typename Consumer>
 	void handleIouringRecvCqe(struct io_uring_cqe *cqe, Consumer& msgConsumer)
 	{
@@ -372,15 +676,15 @@ private:
 
 		void *buffer = iouringRecvBuffers[bid];
 		struct io_uring_recvmsg_out *out = io_uring_recvmsg_validate(buffer, cqe->res, &iouringRecvMsg);
-		if (out != nullptr && out->payloadlen <= MAX_IPV6_UDP_PACKET_SIZE)
+		if (out != nullptr && out->payloadlen <= MAX_IPV6_UDP_GSO_BUFFER_SIZE)
 		{
-			iouringRecvView.msg_hdr.msg_name = io_uring_recvmsg_name(out);
-			iouringRecvView.msg_hdr.msg_namelen = out->namelen;
-			iouringRecvView.msg_hdr.msg_iov[0].iov_base = io_uring_recvmsg_payload(out, &iouringRecvMsg);
-			iouringRecvView.msg_hdr.msg_iov[0].iov_len = out->payloadlen;
-			iouringRecvView.msg_len = out->payloadlen;
-			benchmarkRecordUdpPacketsReceived(1);
-			msgConsumer(&iouringRecvView);
+			deliverReceivedPacket(iouringRecvView,
+				reinterpret_cast<const struct sockaddr *>(io_uring_recvmsg_name(out)),
+				out->namelen,
+				io_uring_recvmsg_payload(out, &iouringRecvMsg),
+				out->payloadlen,
+				iouringGroSegmentSize(out),
+				msgConsumer);
 		}
 
 		recycleIouringRecvBuffer(bid);
@@ -406,14 +710,14 @@ private:
 
 		void *buffer = iouringRecvBuffers[bid];
 		struct io_uring_recvmsg_out *out = io_uring_recvmsg_validate(buffer, cqe->res, &iouringRecvMsg);
-			if (out != nullptr && out->payloadlen <= MAX_IPV6_UDP_PACKET_SIZE)
+			if (out != nullptr && out->payloadlen <= MAX_IPV6_UDP_GSO_BUFFER_SIZE)
 			{
-				auto deferred = std::make_unique<UDPContext>();
-				deferred->copyInAddress(reinterpret_cast<const struct sockaddr *>(io_uring_recvmsg_name(out)));
-				deferred->setLength(out->payloadlen);
-				memcpy(deferred->buffer(), io_uring_recvmsg_payload(out, &iouringRecvMsg), out->payloadlen);
-				iouringDeferredRecv.emplace_back(std::move(deferred));
-				benchmarkRecordUdpPacketsReceived(1);
+				deferReceivedPacket(
+					reinterpret_cast<const struct sockaddr *>(io_uring_recvmsg_name(out)),
+					out->namelen,
+					io_uring_recvmsg_payload(out, &iouringRecvMsg),
+					out->payloadlen,
+					iouringGroSegmentSize(out));
 			}
 
 		recycleIouringRecvBuffer(bid);
@@ -421,10 +725,6 @@ private:
 
 		void handleIouringSendCqe(void *callbackBuffer, int result)
 		{
-			if (result >= 0)
-			{
-				benchmarkRecordUdpPacketsSent(1);
-			}
 			if (result < 0 && iouringSendErrorLogs < 16)
 			{
 				++iouringSendErrorLogs;
@@ -433,8 +733,16 @@ private:
 			if (callbackBuffer)
 			{
 			MultiUDPContext *packets = (MultiUDPContext *)callbackBuffer;
+			if (result < 0)
+			{
+				++packets->sendErrorsInFlight;
+			}
 			if (packets->sendsInFlight > 0 && --packets->sendsInFlight == 0)
 			{
+				if (packets->sendErrorsInFlight == 0)
+				{
+					benchmarkRecordUdpPacketsSent(packets->udpPacketsInFlight);
+				}
 				packets->reset();
 				sendPool.relinquish(packets);
 			}
@@ -544,28 +852,27 @@ public:
 		return ((ordinal - benchmarkLossWarmupPackets) % benchmarkLossDropEveryPackets) == 0;
 	}
 
+	static bool shouldDropBenchmarkPacketThunk(void *opaque)
+	{
+		return static_cast<NetworkHub *>(opaque)->shouldDropBenchmarkPacket();
+	}
+
    void sendBatch(MultiUDPContext *packets)
    {
+	if (benchmarkIsLossRecovery())
+	{
+		packets->filterDroppedPackets(&NetworkHub::shouldDropBenchmarkPacketThunk, this);
+	}
+	packets->coalesceGsoPackets();
+	if (packets->count == 0)
+	{
+		packets->reset();
+		sendPool.relinquish(packets);
+		return;
+	}
+
 	if constexpr (mode & Mode::syscall)
 	{
-		if (benchmarkIsLossRecovery())
-		{
-				for (uint16_t i = 0; i < packets->count; ++i)
-				{
-					if (shouldDropBenchmarkPacket())
-					{
-						continue;
-					}
-					benchmarkRecordUdpSendSyscalls(1);
-					if (sendmsg(socket.fd, &packets->msgs[i].msg_hdr, 0) < 0)
-					{
-						break;
-					}
-					benchmarkRecordUdpPacketsSent(1);
-				}
-			}
-			else
-			{
 				uint16_t sent = 0;
 				while (sent < packets->count)
 				{
@@ -575,10 +882,14 @@ public:
 					{
 						break;
 					}
-					benchmarkRecordUdpPacketsSent(static_cast<uint64_t>(result));
+					uint64_t udpPackets = 0;
+					for (int i = 0; i < result; ++i)
+					{
+						udpPackets += packets->msgs[sent + i].udpPacketCount();
+					}
+					benchmarkRecordUdpPacketsSent(udpPackets);
 					sent += static_cast<uint16_t>(result);
 				}
-			}
 
 			packets->reset();
 			sendPool.relinquish(packets);
@@ -588,25 +899,12 @@ public:
 		struct io_uring_sqe *sqe;
 		packets->sendsInFlight = 0;
 
-			bool submitPacket[MultiUDPContext::batchSize] = {};
-			uint16_t submitCount = 0;
-			for (uint16_t i = 0; i < packets->count; ++i)
-			{
-				submitPacket[i] = !shouldDropBenchmarkPacket();
-				if (submitPacket[i])
-				{
-					++submitCount;
-				}
-			}
+			uint16_t submitCount = packets->count;
 
 			//printf("(A) sqe space left = %ld\n", *(ring.sq.kring_entries) - io_uring_sq_ready(&ring));
 
 				for (uint16_t i = 0, submitted = 0; i < packets->count; i++)
 				{
-					if (!submitPacket[i])
-					{
-					continue;
-				}
 				++submitted;
 				struct msghdr& msg = packets->msgs[i].msg_hdr;
 
@@ -620,6 +918,7 @@ public:
 					io_uring_sqe_set_flags(sqe, flags);
 					setCallbackData(sqe, IORING_OP_SENDMSG, packets);
 					++packets->sendsInFlight;
+					packets->udpPacketsInFlight += packets->msgs[i].udpPacketCount();
 					++iouringPendingSendSqes;
 				}
 			if (packets->sendsInFlight == 0)
@@ -731,6 +1030,13 @@ public:
 				flags |= MSG_DONTWAIT;
 			}
 
+			for (uint16_t i = 0; i < MultiUDPContext::batchSize; ++i)
+			{
+				recvContext.msgs[i].ensureCapacity(MAX_IPV6_UDP_GSO_BUFFER_SIZE);
+				recvContext.msgs[i].setLength(MAX_IPV6_UDP_GSO_BUFFER_SIZE);
+				recvContext.msgs[i].enableRecvControl();
+			}
+
 			int result = recvmmsg(socket.fd, reinterpret_cast<struct mmsghdr *>(recvContext.msgs), MultiUDPContext::batchSize, flags, NULL);
 
 			if (result < 0)
@@ -745,10 +1051,15 @@ public:
 					for (auto i = 0; i < result; i++)
 					{
 						UDPContext *packet = &recvContext.msgs[i];
-						msgConsumer(packet);
+						deliverReceivedPacket(splitRecvView,
+							packet->address(),
+							packet->msg_hdr.msg_namelen,
+							packet->buffer(),
+							packet->msg_len,
+							packet->receivedGroSegmentSize(),
+							msgConsumer);
 						packet->reset();
 					}
-					benchmarkRecordUdpPacketsReceived(static_cast<uint64_t>(result));
 			}
 		else
 		{

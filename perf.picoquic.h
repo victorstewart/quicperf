@@ -95,13 +95,26 @@ static inline picoquic_congestion_algorithm_t const *benchmarkPicoquicCongestion
 static inline const char *benchmarkPicoquicAdapterFeatures(void)
 {
 	static thread_local char features[256];
+	const bool gsoRequested = benchmarkUdpGsoEnabled();
+	const bool nativeGso = gsoRequested && !benchmarkIsLossRecovery();
+	const char *udpGso = "off";
+	if (nativeGso)
+	{
+		udpGso = "native_picoquic";
+	}
+	else if (gsoRequested)
+	{
+		udpGso = "common_cpp_after_impairment";
+	}
 	snprintf(features, sizeof(features),
-		"cc=%s|pmtud=off|packet_train=%s|bdp_frame=%s|bdp_seed=%s|seed_now=%s|mtu=%u|null_verifier=ed25519_sigalgs",
+		"cc=%s|pmtud=off|packet_train=%s|bdp_frame=%s|bdp_seed=%s|seed_now=%s|udp_gso=%s|udp_gro=%s|mtu=%u|null_verifier=ed25519_sigalgs",
 		benchmarkPicoquicCongestionAlgorithmName(),
-		benchmarkPicoquicPacketTrainMode ? "on" : "off",
+		nativeGso ? "on" : "off",
 		benchmarkPicoquicBdpFrameMode ? "on" : "off",
 		benchmarkPicoquicBdpSeedMode ? "on" : "off",
 		benchmarkPicoquicBdpSeedImmediateMode ? "on" : "off",
+		udpGso,
+		benchmarkUdpGroEnabled() ? "on" : "off",
 		static_cast<unsigned>(benchmarkUdpPayloadSize));
 	return features;
 }
@@ -115,6 +128,7 @@ private:
 		picoquic_quic_t *engine = nullptr;
 		picoquic_cnx_t *cnx = nullptr;
 		int64_t bytesInFlight = -1;
+		bool useUdpGso = false;
 		std::array<uint8_t, sizeof(uint64_t)> requestBytes = {};
 		size_t requestBytesRead = 0;
 		size_t requestBytesWritten = 0;
@@ -128,13 +142,12 @@ private:
 
 			enum class GenericPhase : uint8_t {
 				sendRequest,
-				readRequest,
-				sendPayload,
-				readPayload,
-				sendResponse,
-				readResponse,
-				complete
-			};
+					readRequest,
+					sendPayload,
+					readPayload,
+					sendResponse,
+					complete
+				};
 
 			struct GenericStreamState {
 				Picoquic<mode> *owner = nullptr;
@@ -145,15 +158,11 @@ private:
 				uint64_t requestValue = 0;
 				uint64_t requestBytesExpected = 0;
 				uint64_t requestBytesRead = 0;
-				uint64_t requestBytesWritten = 0;
-				uint64_t payloadRemaining = 0;
-				uint64_t responseRemaining = 0;
-				size_t doneBytesRead = 0;
-				size_t doneBytesWritten = 0;
-				size_t ackBytesRead = 0;
-				size_t ackBytesWritten = 0;
-				bool complete = false;
-			};
+					uint64_t requestBytesWritten = 0;
+					uint64_t payloadRemaining = 0;
+					uint64_t responseRemaining = 0;
+					bool complete = false;
+				};
 
 		static int noVerifyCertificate(
 			ptls_verify_certificate_t *self,
@@ -665,26 +674,16 @@ private:
 					size_t consumed = 0;
 					if constexpr (mode & Mode::client)
 					{
-						if (genericState->responseRemaining > 0)
-						{
-							const uint64_t copied = std::min<uint64_t>(genericState->responseRemaining, length);
-							genericState->responseRemaining -= copied;
-							consumed += static_cast<size_t>(copied);
-							if (genericState->responseRemaining == 0)
+							if (genericState->responseRemaining > 0)
 							{
-								genericState->phase = GenericPhase::sendPayload;
-								picoquic_mark_active_stream(cnx, stream_id, true, genericState);
+								const uint64_t copied = std::min<uint64_t>(genericState->responseRemaining, length);
+								genericState->responseRemaining -= copied;
+								consumed += static_cast<size_t>(copied);
+								if (genericState->responseRemaining == 0)
+								{
+									instance->markGenericClientComplete(genericState);
+								}
 							}
-						}
-						if (genericState->doneBytesWritten > 0 && genericState->ackBytesRead < 1 && consumed < length)
-						{
-							const size_t copied = std::min<size_t>(1 - genericState->ackBytesRead, length - consumed);
-							genericState->ackBytesRead += copied;
-						}
-						if (genericState->ackBytesRead >= 1)
-						{
-							instance->markGenericClientComplete(genericState);
-						}
 					}
 					else
 					{
@@ -740,16 +739,7 @@ private:
 								picoquic_mark_active_stream(cnx, stream_id, true, genericState);
 							}
 						}
-						if (genericState->phase == GenericPhase::readResponse && consumed < length)
-						{
-							const size_t copied = std::min<size_t>(1 - genericState->doneBytesRead, length - consumed);
-							genericState->doneBytesRead += copied;
-							if (genericState->doneBytesRead >= 1)
-							{
-								picoquic_mark_active_stream(cnx, stream_id, true, genericState);
-							}
 						}
-					}
 					break;
 				}
 				if constexpr (mode & Mode::client)
@@ -853,30 +843,25 @@ private:
 						const uint8_t *source = nullptr;
 						bool finished = false;
 						bool stillActive = false;
-						if (genericState->requestBytesWritten < genericState->requestBytesExpected)
-						{
-							const size_t left = static_cast<size_t>(
-								genericState->requestBytesExpected - genericState->requestBytesWritten);
-							sendLength = std::min<size_t>(length, left);
+							if (genericState->requestBytesWritten < genericState->requestBytesExpected)
+							{
+								const size_t left = static_cast<size_t>(
+									genericState->requestBytesExpected - genericState->requestBytesWritten);
+								sendLength = std::min<size_t>(length, left);
 								source = benchmarkScenarioIsSmallGenericStreamWorkload(benchmarkScenario)
 									? instance->networkHub->junk
 									: genericState->requestBytes.data() + genericState->requestBytesWritten;
-							stillActive = sendLength < left || genericState->payloadRemaining > 0;
-						}
-						else if (genericState->payloadRemaining > 0)
-						{
-							sendLength = static_cast<size_t>(
-								std::min<uint64_t>(length, genericState->payloadRemaining));
-							source = instance->networkHub->junk;
-							stillActive = sendLength < genericState->payloadRemaining;
-						}
-						else if (genericState->responseRemaining == 0 && genericState->doneBytesWritten == 0)
-						{
-							static const uint8_t done = 0;
-							sendLength = std::min<size_t>(length, sizeof(done));
-							source = &done;
-							finished = true;
-						}
+								stillActive = sendLength < left || genericState->payloadRemaining > 0;
+								finished = sendLength == left && genericState->payloadRemaining == 0;
+							}
+							else if (genericState->payloadRemaining > 0)
+							{
+								sendLength = static_cast<size_t>(
+									std::min<uint64_t>(length, genericState->payloadRemaining));
+								source = instance->networkHub->junk;
+								stillActive = sendLength < genericState->payloadRemaining;
+								finished = sendLength == genericState->payloadRemaining;
+							}
 
 						uint8_t *buffer = picoquic_provide_stream_data_buffer(bytes, sendLength, finished, stillActive);
 						if (buffer != nullptr && sendLength > 0 && source != nullptr)
@@ -890,10 +875,6 @@ private:
 							{
 								genericState->payloadRemaining -= sendLength;
 							}
-							else if (finished)
-							{
-								genericState->doneBytesWritten += sendLength;
-							}
 						}
 					}
 					else
@@ -902,39 +883,27 @@ private:
 						const uint8_t *source = nullptr;
 						bool finished = false;
 						bool stillActive = false;
-						if (genericState->phase == GenericPhase::sendResponse && genericState->responseRemaining > 0)
-						{
-							sendLength = static_cast<size_t>(
-								std::min<uint64_t>(length, genericState->responseRemaining));
+							if (genericState->phase == GenericPhase::sendResponse && genericState->responseRemaining > 0)
+							{
+								sendLength = static_cast<size_t>(
+									std::min<uint64_t>(length, genericState->responseRemaining));
 							source = instance->networkHub->junk;
 							stillActive = sendLength < genericState->responseRemaining;
-						}
-						else if (genericState->phase == GenericPhase::readResponse &&
-						         genericState->doneBytesRead > 0 && genericState->ackBytesWritten == 0)
-						{
-							static const uint8_t ack = 0;
-							sendLength = std::min<size_t>(length, sizeof(ack));
-							source = &ack;
-							finished = true;
+							finished = sendLength == genericState->responseRemaining;
 						}
 
 						uint8_t *buffer = picoquic_provide_stream_data_buffer(bytes, sendLength, finished, stillActive);
 						if (buffer != nullptr && sendLength > 0 && source != nullptr)
 						{
 							memcpy(buffer, source, sendLength);
-							if (genericState->phase == GenericPhase::sendResponse)
-							{
-								genericState->responseRemaining -= sendLength;
-								if (genericState->responseRemaining == 0)
+								if (genericState->phase == GenericPhase::sendResponse)
 								{
-									genericState->phase = GenericPhase::readResponse;
+									genericState->responseRemaining -= sendLength;
+									if (genericState->responseRemaining == 0)
+									{
+										instance->markGenericServerComplete(genericState);
+									}
 								}
-							}
-							else if (finished)
-							{
-								genericState->ackBytesWritten += sendLength;
-								instance->markGenericServerComplete(genericState);
-							}
 						}
 					}
 					break;
@@ -1135,6 +1104,7 @@ private:
 		UDPContext *packet;
 
 		size_t send_length;
+		size_t send_msg_size;
 		int result;
 		int interfaceIndex;
 		int64_t usTil;
@@ -1178,13 +1148,25 @@ private:
 				do
 				{
 					packet = &packets->msgs[packets->count];
+					send_msg_size = 0;
+					if (useUdpGso)
+					{
+						packet->ensureCapacity(MAX_IPV6_UDP_GSO_BUFFER_SIZE);
+					}
 
-					result = picoquic_prepare_next_packet_ex(engine, timeNowUs(), packet->buffer(), MAX_IPV6_UDP_PACKET_SIZE, &send_length, packet->address<sockaddr_storage>(), NULL, &interfaceIndex, NULL, NULL, NULL);
+					result = picoquic_prepare_next_packet_ex(engine, timeNowUs(), packet->buffer(),
+						useUdpGso ? MAX_IPV6_UDP_GSO_BUFFER_SIZE : MAX_IPV6_UDP_PACKET_SIZE,
+						&send_length, packet->address<sockaddr_storage>(), NULL, &interfaceIndex,
+						NULL, NULL, useUdpGso ? &send_msg_size : NULL);
 
 						if (result == 0 && send_length > 0)
 						{
 							packet->msg_hdr.msg_iov[0].iov_len = send_length;
 							packet->msg_hdr.msg_namelen = sizeof(struct sockaddr_in6);
+							if (useUdpGso && send_msg_size > 0 && send_length > send_msg_size)
+							{
+								packet->setUdpSegmentSize(static_cast<uint16_t>(send_msg_size));
+							}
 							++packets->count;
 						}
 					else
@@ -1226,6 +1208,10 @@ public:
 	{
 		//printf("picoquic %s: instanceSetup\n", modeToString(mode));
 
+		// Loss rows keep picoquic packetized so the shared impairment layer can
+		// drop deterministic QUIC packets, then NetworkHub re-coalesces survivors.
+		useUdpGso = benchmarkUdpGsoEnabled() && !benchmarkIsLossRecovery();
+
 		networkHub = new NetworkHub<mode>(localPort);
 
 			engine = picoquic_create(1000, tls_cert, tls_key, tls_chain, "perf", datain, this, NULL, NULL, NULL, timeNowUs(), NULL, NULL, NULL, 0);
@@ -1255,9 +1241,9 @@ public:
 		picoquic_set_default_pmtud_policy(engine, picoquic_pmtud_blocked);
 		picoquic_set_mtu_max(engine, benchmarkUdpPayloadSize);
 		picoquic_set_max_data_control(engine, benchmarkConnectionWindow);
-				// Packet-train mode is useful to compare on shaped paths, but it has historically
-				// throttled some loopback rows, so the default remains off.
-				picoquic_set_packet_train_mode(engine, benchmarkPicoquicPacketTrainMode);
+			// Packet-train mode is only enabled when picoquic emits native UDP_SEGMENT
+			// buffers; the shared C++ path owns default coalescing otherwise.
+			picoquic_set_packet_train_mode(engine, useUdpGso ? 1 : 0);
 		//picoquic_set_log_level(engine, 1);
 		//picoquic_set_textlog(engine, "/dev/stdout");
 		//picoquic_set_client_authentication(engine, 1);

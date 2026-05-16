@@ -220,10 +220,17 @@ P-256 is still selectable with explicit `QUICPERF_TLS_CERT`,
 
 - `syscall`: shared traditional UDP socket path
 - `iouring`: shared Linux io_uring UDP path with registered socket fd, larger
-  CQ, taskrun flags, provided buffers, and multishot `recvmsg`
+  CQ, taskrun flags, provided buffers, multishot `recvmsg`, default UDP GSO, and
+  default UDP GRO
 - C++ owns socket creation, receive, send, batching, backend selection, and
   timeout scheduling for measured adapters
 - `tools/audit-cpp-io-boundary.sh` is part of the build graph
 - `tcpperf` remains syscall-only
-- UDP GSO/GRO, SQPOLL, NAPI busy polling, and zerocopy receive are outside the
-  default apples-to-apples rows
+- The shared GSO path coalesces compatible same-destination QUIC packets after
+  deterministic loss filtering, so `loss_recovery` still drops at the QUIC
+  packet unit. Received UDP GRO packets are split back into QUIC-packet
+  deliveries before adapter callbacks.
+- The default GSO train is 8 UDP segments, bounded by a 64-segment buffer and
+  the UDP payload limit for explicit tuning with `QUICPERF_UDP_GSO_SEGMENTS`.
+- SQPOLL, NAPI busy polling, and zerocopy receive are outside the default
+  apples-to-apples rows.

@@ -257,8 +257,8 @@ at least 300 measured samples.
 
 Benchmark controls include one pinned userspace server thread, unpinned client
 load workers, shared TLS 1.3 Ed25519 material, BBR-family congestion control
-where exposed, common `syscall` and `iouring` UDP backends, and C++-owned UDP
-I/O for Rust, Zig, and mvfst adapters.
+where exposed, common `syscall` and `iouring` UDP backends, default UDP GSO/GRO
+on the `iouring` path, and C++-owned UDP I/O for Rust, Zig, and mvfst adapters.
 
 See [docs/methodology.md](docs/methodology.md) for gates, status meanings, and
 row selection details.

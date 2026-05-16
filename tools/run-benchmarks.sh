@@ -471,7 +471,7 @@ for bin in "${binaries[@]}"; do
       case "$network" in
         syscall|iouring) ;;
         gso_gro|udp_gso_gro)
-          echo "quicperf_run_result binary=$name scenario=$scenario network=$network status=unsupported reason=udp_gso_gro_capability_row_not_implemented"
+          echo "quicperf_run_result binary=$name scenario=$scenario network=$network status=unsupported reason=udp_gso_gro_is_default_on_iouring"
           continue
           ;;
         *)

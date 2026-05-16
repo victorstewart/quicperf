@@ -2,6 +2,7 @@
 .data/
 .run/
 .tasks/
+.experiments/
 build*/
 rust-packet-ffi/target/
 zig-packet-ffi/.zig-cache/
