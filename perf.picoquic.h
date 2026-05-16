@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 #pragma once
@@ -202,12 +203,14 @@ private:
 
 				std::vector<std::unique_ptr<ServerStreamState>> serverStreams;
 				std::vector<std::unique_ptr<GenericStreamState>> genericStreams;
+				std::unordered_map<uint64_t, GenericStreamState *> genericStreamById;
 				bool genericStarted = false;
 				uint64_t genericClientBytes = 0;
 				uint64_t genericRequestedStreams = 0;
 				uint64_t genericOpenedStreams = 0;
 				uint64_t genericCompletedStreams = 0;
 				uint64_t genericServerCompletedStreams = 0;
+				uint64_t genericActiveStreams = 0;
 				struct DatagramConnState {
 					picoquic_cnx_t *cnx = nullptr;
 					uint64_t received = 0;
@@ -404,14 +407,8 @@ private:
 
 			GenericStreamState *genericClientStreamFor(uint64_t streamId)
 			{
-				for (auto& state : genericStreams)
-				{
-				if (state->streamId == streamId)
-				{
-					return state.get();
-				}
-				}
-				return nullptr;
+				auto found = genericStreamById.find(streamId);
+				return found == genericStreamById.end() ? nullptr : found->second;
 			}
 
 			DatagramConnState *datagramServerStateFor(picoquic_cnx_t *activeConnection)
@@ -532,6 +529,10 @@ private:
 			state->complete = true;
 			state->phase = GenericPhase::complete;
 			++genericCompletedStreams;
+			if (genericActiveStreams > 0)
+			{
+				--genericActiveStreams;
+			}
 			openMoreGenericClientStreams();
 		}
 
@@ -556,25 +557,18 @@ private:
 				}
 				const uint64_t targetStreams = benchmarkGenericStreamsPerConnection();
 				const uint64_t maxActive = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
-				uint64_t active = 0;
-				for (const auto& state : genericStreams)
-				{
-					if (!state->complete)
-					{
-						++active;
-					}
-				}
-				while (genericRequestedStreams < targetStreams && active < maxActive)
+				while (genericRequestedStreams < targetStreams && genericActiveStreams < maxActive)
 				{
 					const uint64_t streamId = genericRequestedStreams * 4;
 					auto state = std::make_unique<GenericStreamState>();
 					initializeGenericClientState(*state, streamId);
 					GenericStreamState *raw = state.get();
 					genericStreams.push_back(std::move(state));
+					genericStreamById[streamId] = raw;
 					picoquic_set_app_stream_ctx(cnx, streamId, raw);
 					picoquic_mark_active_stream(cnx, streamId, true, raw);
 					++genericRequestedStreams;
-					++active;
+					++genericActiveStreams;
 				}
 			}
 		}
@@ -1337,7 +1331,12 @@ public:
 				genericOpenedStreams = 0;
 				genericCompletedStreams = 0;
 				genericServerCompletedStreams = 0;
+				genericActiveStreams = 0;
 				genericStreams.clear();
+				genericStreamById.clear();
+				const uint64_t targetStreams = benchmarkGenericStreamsPerConnection();
+				genericStreams.reserve(static_cast<size_t>(targetStreams));
+				genericStreamById.reserve(static_cast<size_t>(targetStreams));
 				genericStarted = true;
 				openMoreGenericClientStreams();
 					advance();
