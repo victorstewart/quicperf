@@ -1337,6 +1337,7 @@ private:
 				pumpOnce();
 			}
 		}
+		benchmarkRecordDatagramClientCounters(sent, received);
 	}
 
 	bool processGenericServerStream(GenericServerStream& active)

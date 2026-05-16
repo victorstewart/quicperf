@@ -265,35 +265,42 @@ private:
 				quiche_conn_stream_send(conn, 0, nullptr, 0, true, &streamError);
 				clientDone = true;
 			}
-			}
 		}
+	}
 
-		void processClientDatagramReadable(void)
+	void processClientDatagramReadable(void)
+	{
+		if constexpr (mode & Mode::client)
 		{
-			if constexpr (mode & Mode::client)
+			if (conn == nullptr)
 			{
-				if (conn == nullptr)
+				return;
+			}
+			bool receivedAny = false;
+			while (datagramClientReceived < benchmarkScenarioOperations)
+			{
+				static uint8_t buf[65535];
+				ssize_t received = quiche_conn_dgram_recv(conn, buf, sizeof(buf));
+				if (received <= 0)
 				{
-					return;
+					break;
 				}
-				while (datagramClientReceived < benchmarkScenarioOperations)
+				receivedAny = true;
+				++datagramClientReceived;
+				if (datagramClientReceived >= benchmarkScenarioOperations)
 				{
-					static uint8_t buf[65535];
-					ssize_t received = quiche_conn_dgram_recv(conn, buf, sizeof(buf));
-					if (received <= 0)
-					{
-						break;
-					}
-					++datagramClientReceived;
-					if (datagramClientReceived >= benchmarkScenarioOperations)
-					{
-						signalClientDone();
-						flushPackets();
-						break;
-					}
+					signalClientDone();
+					flushPackets();
+					break;
 				}
 			}
+			if (receivedAny && datagramClientReceived < benchmarkScenarioOperations)
+			{
+				processClientDatagramWritable();
+				flushPackets();
+			}
 		}
+	}
 
 		void processClientDatagramWritable(void)
 		{
@@ -313,19 +320,21 @@ private:
 						datagramClientReceived, datagramClientSent, benchmarkScenarioOperations);
 					abort();
 				}
-					uint64_t sentThisRound = 0;
-					while (sentThisRound < maxInFlight && datagramClientSent < maxAttempts)
+				uint64_t sentThisRound = 0;
+				while (sentThisRound < maxInFlight &&
+				       datagramClientSent < maxAttempts &&
+				       datagramClientSent - datagramClientReceived < maxInFlight)
+				{
+					ssize_t sent = quiche_conn_dgram_send(conn, reinterpret_cast<const uint8_t *>(networkHub->junk), payloadSize);
+					if (sent <= 0)
 					{
-						ssize_t sent = quiche_conn_dgram_send(conn, reinterpret_cast<const uint8_t *>(networkHub->junk), payloadSize);
-						if (sent <= 0)
-						{
-							break;
-						}
-						++datagramClientSent;
-						++sentThisRound;
+						break;
 					}
+					++datagramClientSent;
+					++sentThisRound;
 				}
 			}
+		}
 
 		void processServerDatagramReadable(ServerConn& state)
 		{
@@ -1259,15 +1268,16 @@ public:
 				advance();
 				return;
 			}
-			if (benchmarkScenario == BenchmarkScenario::datagram)
-			{
-				datagramClientSent = 0;
-				datagramClientReceived = 0;
-				processClientDatagramWritable();
-				flushPackets();
-				advance();
-				return;
-			}
+				if (benchmarkScenario == BenchmarkScenario::datagram)
+				{
+					datagramClientSent = 0;
+					datagramClientReceived = 0;
+					processClientDatagramWritable();
+					flushPackets();
+					advance();
+					benchmarkRecordDatagramClientCounters(datagramClientSent, datagramClientReceived);
+					return;
+				}
 			bytesInFlight = nBytes;
 
 			uint64_t swappedBytes = bswap_64(bytesInFlight);

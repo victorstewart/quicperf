@@ -273,6 +273,8 @@ static inline uint32_t benchmarkScenarioRequestBytes = 64;
 static inline uint32_t benchmarkScenarioResponseBytes = 1024;
 static inline uint32_t benchmarkScenarioMessageBytes = 64;
 static inline uint64_t benchmarkIdleHoldMs = 1000;
+static inline std::atomic<uint64_t> benchmarkDatagramClientSentTotal{0};
+static inline std::atomic<uint64_t> benchmarkDatagramClientReceivedTotal{0};
 static constexpr uint32_t benchmarkAggressiveInitialCwndPackets = 32;
 static constexpr uint32_t benchmarkAggressiveAckFrequencyPackets = 10;
 static inline std::atomic<int> benchmarkSocketSndbufEffective{-1};
@@ -304,6 +306,18 @@ static inline uint32_t benchmarkAdapterAckFrequencyPackets(void)
 static inline bool benchmarkTlsVerifyPeer(void)
 {
 	return strcmp(benchmarkTlsVerifyMode, "peer") == 0 || strcmp(benchmarkTlsVerifyMode, "chain") == 0;
+}
+
+static inline void benchmarkResetDatagramClientCounters(void)
+{
+	benchmarkDatagramClientSentTotal.store(0, std::memory_order_relaxed);
+	benchmarkDatagramClientReceivedTotal.store(0, std::memory_order_relaxed);
+}
+
+static inline void benchmarkRecordDatagramClientCounters(uint64_t sent, uint64_t received)
+{
+	benchmarkDatagramClientSentTotal.fetch_add(sent, std::memory_order_relaxed);
+	benchmarkDatagramClientReceivedTotal.fetch_add(received, std::memory_order_relaxed);
 }
 
 static inline uint64_t benchmarkGenericReqRespRequestBytes(void)

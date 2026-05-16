@@ -290,8 +290,10 @@ static void configureBenchmarkScenarioProfile(void)
 	benchmarkScenarioProfile = "default";
 	benchmarkLossDropEveryPackets = 0;
 	benchmarkLossWarmupPackets = envU64("QUICPERF_LOSS_WARMUP_PACKETS", 128);
-	benchmarkScenarioOperations = envU64("QUICPERF_SCENARIO_OPERATIONS", 1024);
-	benchmarkScenarioStreamsInFlight = static_cast<uint32_t>(envU64("QUICPERF_STREAMS_IN_FLIGHT", 8));
+	const uint64_t defaultScenarioOperations = benchmarkScenario == BenchmarkScenario::datagram ? 65'536 : 1024;
+	benchmarkScenarioOperations = envU64("QUICPERF_SCENARIO_OPERATIONS", defaultScenarioOperations);
+	const uint64_t defaultStreamsInFlight = benchmarkScenario == BenchmarkScenario::datagram ? 1024 : 8;
+	benchmarkScenarioStreamsInFlight = static_cast<uint32_t>(envU64("QUICPERF_STREAMS_IN_FLIGHT", defaultStreamsInFlight));
 	benchmarkScenarioRequestBytes = static_cast<uint32_t>(envU64("QUICPERF_REQUEST_BYTES", 64));
 	benchmarkScenarioResponseBytes = static_cast<uint32_t>(envU64("QUICPERF_RESPONSE_BYTES", 1024));
 	benchmarkScenarioMessageBytes = static_cast<uint32_t>(envU64("QUICPERF_MESSAGE_BYTES", 64));
@@ -795,6 +797,7 @@ int main (int argc, char *argv[])
 				}
 				installNoNewThreadGuard();
 				globalSetup<Mode::client>();
+				benchmarkResetDatagramClientCounters();
 				verifyThreadCount(argv[1], "guard_installed", nThreads);
 				guardInstalled.store(true, std::memory_order_release);
 
@@ -870,7 +873,35 @@ int main (int argc, char *argv[])
 					? ((double)totalUnits * 8.0) / maxSeconds / 1'000'000'000.0
 					: ((double)totalUnits) / maxSeconds;
 
+				if (benchmarkScenario == BenchmarkScenario::datagram)
+				{
+					const uint64_t datagramSent = benchmarkDatagramClientSentTotal.load(std::memory_order_relaxed);
+					const uint64_t datagramReceived = benchmarkDatagramClientReceivedTotal.load(std::memory_order_relaxed);
+					const uint64_t datagramLost = datagramSent > datagramReceived ? datagramSent - datagramReceived : 0;
+					const double datagramDeliveryRatio = datagramSent == 0 ? 0.0 : (double)datagramReceived / (double)datagramSent;
 					printf("quicperf_result library=%s scenario=%s role=client network=%s address=%s threads=%u "
+						"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s "
+						"app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
+						"adapter_features=%s initial_cwnd_packets=%u ack_frequency_packets=%u "
+						"socket_sndbuf_requested=%" PRIu64 " socket_sndbuf_effective=%d "
+						"socket_rcvbuf_requested=%" PRIu64 " socket_rcvbuf_effective=%d "
+						"scenario_profile=%s loss_drop_every_packets=%" PRIu64 " loss_warmup_packets=%" PRIu64 " "
+						"units_per_thread=%" PRIu64 " total_units=%" PRIu64 " wall_seconds=%.9f "
+						"datagram_sent=%" PRIu64 " datagram_received=%" PRIu64 " datagram_lost=%" PRIu64 " "
+						"datagram_delivery_ratio=%.9f %s=%.6f\n",
+						benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], nThreads,
+						benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile,
+						benchmarkAppChunkSize, benchmarkServerTargetConnections, benchmarkTlsVerifyMode, benchmarkTlsCertProfile,
+						benchmarkAdapterFeatures(), benchmarkAdapterInitialCwndPackets(), benchmarkAdapterAckFrequencyPackets(),
+						benchmarkConnectionWindow, benchmarkSocketSndbufEffective.load(std::memory_order_relaxed),
+						benchmarkConnectionWindow, benchmarkSocketRcvbufEffective.load(std::memory_order_relaxed),
+						benchmarkScenarioProfile, benchmarkLossDropEveryPackets, benchmarkLossWarmupPackets,
+						unitsPerThread, totalUnits, maxSeconds, datagramSent, datagramReceived, datagramLost,
+						datagramDeliveryRatio, benchmarkScenarioMetricName(benchmarkScenario), metricValue);
+					return 0;
+				}
+
+				printf("quicperf_result library=%s scenario=%s role=client network=%s address=%s threads=%u "
 					"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s "
 					"app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
 					"adapter_features=%s initial_cwnd_packets=%u ack_frequency_packets=%u "

@@ -1,0 +1,1 @@
+scenario	network	metric	binary_a	binary_b	a_p50	b_p50	a_vs_b_median_ratio	a_vs_b_ci95_low	a_vs_b_ci95_high	relation
