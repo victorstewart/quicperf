@@ -565,7 +565,6 @@ private:
 					GenericStreamState *raw = state.get();
 					genericStreams.push_back(std::move(state));
 					genericStreamById[streamId] = raw;
-					picoquic_set_app_stream_ctx(cnx, streamId, raw);
 					picoquic_mark_active_stream(cnx, streamId, true, raw);
 					++genericRequestedStreams;
 					++genericActiveStreams;
