@@ -1,4 +1,5 @@
 .depos/
+.data/
 .run/
 .tasks/
 build*/
@@ -9,6 +10,8 @@ zig-packet-ffi/zig-global-cache/
 zig-packet-ffi/zig-out/
 zig-packet-ffi/zig-pkg/
 *.log
+profiles/network/*.lock
+profiles/network/*.tmp.*
 __pycache__/
 picoperf
 lsperf

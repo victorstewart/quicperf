@@ -108,7 +108,7 @@ public:
 	   address6->sin6_family = AF_INET6;
 	   address6->sin6_flowinfo = 0;
 	   address6->sin6_port = htons(port);
-	   address6->sin6_addr = serverAddress;
+	   address6->sin6_addr = localAddress;
 
 	      if (bind(fd, (struct sockaddr *)address6, addressLen) != 0)
 			{

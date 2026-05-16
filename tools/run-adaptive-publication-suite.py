@@ -20,10 +20,13 @@ from quicperf_stats import (
     Sample,
     SaturationDecision,
     StatsConfig,
+    bootstrap_stat_distribution,
     compare_rows,
     format_float,
     group_samples,
     load_samples,
+    median,
+    quantile,
     row_stats,
     saturation_decision,
     scenario_metric_name,
@@ -39,11 +42,12 @@ class Target:
     binary: str
     scenario: str
     network: str
+    path_profile: str
     threads: int
 
     @property
-    def group(self) -> tuple[str, str, str]:
-        return (self.binary, self.scenario, self.network)
+    def group(self) -> tuple[str, str, str, str]:
+        return (self.binary, self.scenario, self.network, self.path_profile)
 
 
 @dataclass
@@ -274,13 +278,14 @@ def run_block(
     warmup: int,
 ) -> BlockResult:
     block_id = f"r{round_index:03d}b{block_ordinal:05d}t{target.threads}"
-    out_dir = out_root / "blocks" / f"{block_id}-{target.binary}-{target.scenario}-{target.network}"
+    out_dir = out_root / "blocks" / f"{block_id}-{target.binary}-{target.scenario}-{target.network}-{target.path_profile}"
     env = os.environ.copy()
     env.update(
         {
             "QUICPERF_BINARIES": target.binary,
             "QUICPERF_SCENARIOS": target.scenario,
             "QUICPERF_NETWORKS": target.network,
+            "QUICPERF_PATH_PROFILES": target.path_profile,
             "QUICPERF_CLIENT_THREADS": str(target.threads),
             "QUICPERF_SERVER_CONNECTIONS": str(target.threads),
             "QUICPERF_REPEAT": str(cfg.block_size),
@@ -327,6 +332,7 @@ def samples_for_target(samples: list[Sample], target: Target, phase: str | None 
         if sample.binary == target.binary
         and sample.scenario == target.scenario
         and sample.network == target.network
+        and sample.path_profile == target.path_profile
         and sample.client_threads == target.threads
         and sample.metric
         and (phase is None or sample.phase == phase)
@@ -334,22 +340,22 @@ def samples_for_target(samples: list[Sample], target: Target, phase: str | None 
     return out
 
 
-def group_target_key(target: Target) -> tuple[str, str, str]:
-    return target.binary, target.scenario, target.network
+def group_target_key(target: Target) -> tuple[str, str, str, str]:
+    return target.binary, target.scenario, target.network, target.path_profile
 
 
 def target_from_key(key: RowKey) -> Target:
-    return Target(key.binary, key.scenario, key.network, key.client_threads)
+    return Target(key.binary, key.scenario, key.network, key.path_profile, key.client_threads)
 
 
-def group_metric(samples: list[Sample], group: tuple[str, str, str]) -> str:
+def group_metric(samples: list[Sample], group: tuple[str, str, str, str]) -> str:
     for sample in samples:
-        if (sample.binary, sample.scenario, sample.network) == group and sample.metric:
+        if (sample.binary, sample.scenario, sample.network, sample.path_profile) == group and sample.metric:
             return sample.metric
     return scenario_metric_name(group[1])
 
 
-def parse_block_target(block_dir: Path, networks: list[str]) -> tuple[str, Target] | None:
+def parse_block_target(block_dir: Path, networks: list[str], path_profiles: list[str]) -> tuple[str, Target] | None:
     name = block_dir.name
     if "-" not in name:
         return None
@@ -358,15 +364,20 @@ def parse_block_target(block_dir: Path, networks: list[str]) -> tuple[str, Targe
     if not match:
         return None
     threads = int(match.group(1))
-    for network in sorted(networks, key=len, reverse=True):
-        suffix = f"-{network}"
-        if not rest.endswith(suffix):
+    for path_profile in sorted(path_profiles, key=len, reverse=True):
+        path_suffix = f"-{path_profile}"
+        if not rest.endswith(path_suffix):
             continue
-        binary_scenario = rest[: -len(suffix)]
-        if "-" not in binary_scenario:
-            return None
-        binary, scenario = binary_scenario.split("-", 1)
-        return block_id, Target(binary, scenario, network, threads)
+        without_path = rest[: -len(path_suffix)]
+        for network in sorted(networks, key=len, reverse=True):
+            network_suffix = f"-{network}"
+            if not without_path.endswith(network_suffix):
+                continue
+            binary_scenario = without_path[: -len(network_suffix)]
+            if "-" not in binary_scenario:
+                return None
+            binary, scenario = binary_scenario.split("-", 1)
+            return block_id, Target(binary, scenario, network, path_profile, threads)
     return None
 
 
@@ -394,7 +405,7 @@ def block_terminal_status(stdout: str) -> tuple[str, str]:
     return "", ""
 
 
-def load_block_failures(out_root: Path, networks: list[str]) -> dict[Target, str]:
+def load_block_failures(out_root: Path, networks: list[str], path_profiles: list[str]) -> dict[Target, str]:
     failures: dict[Target, str] = {}
     blocks = out_root / "blocks"
     if not blocks.exists():
@@ -402,7 +413,7 @@ def load_block_failures(out_root: Path, networks: list[str]) -> dict[Target, str
     for block_dir in blocks.iterdir():
         if not block_dir.is_dir():
             continue
-        parsed = parse_block_target(block_dir, networks)
+        parsed = parse_block_target(block_dir, networks, path_profiles)
         if not parsed:
             continue
         _block_id, target = parsed
@@ -415,7 +426,7 @@ def load_block_failures(out_root: Path, networks: list[str]) -> dict[Target, str
     return failures
 
 
-def resume_positions(out_root: Path, samples: list[Sample], networks: list[str]) -> tuple[int, int]:
+def resume_positions(out_root: Path, samples: list[Sample], networks: list[str], path_profiles: list[str]) -> tuple[int, int]:
     max_round = max((sample.round for sample in samples), default=0)
     max_ordinal = max((parse_block_ordinal(sample.block_id) for sample in samples), default=0)
     blocks = out_root / "blocks"
@@ -423,7 +434,7 @@ def resume_positions(out_root: Path, samples: list[Sample], networks: list[str])
         for block_dir in blocks.iterdir():
             if not block_dir.is_dir():
                 continue
-            parsed = parse_block_target(block_dir, networks)
+            parsed = parse_block_target(block_dir, networks, path_profiles)
             if not parsed:
                 continue
             block_id, _target = parsed
@@ -437,68 +448,70 @@ def initialize_resume_state(
     binaries: list[str],
     scenarios: list[str],
     networks: list[str],
+    path_profiles: list[str],
     samples: list[Sample],
     block_failures: dict[Target, str],
     cfg: RunnerConfig,
-) -> tuple[dict[Target, str], dict[Target, str], dict[tuple[str, str, str], str], set[Target]]:
+) -> tuple[dict[Target, str], dict[Target, str], dict[tuple[str, str, str, str], str], set[Target]]:
     row_state: dict[Target, str] = {}
     row_reason: dict[Target, str] = {}
-    group_state: dict[tuple[str, str, str], str] = {}
+    group_state: dict[tuple[str, str, str, str], str] = {}
     active: set[Target] = set()
-    samples_by_group: dict[tuple[str, str, str], list[Sample]] = defaultdict(list)
+    samples_by_group: dict[tuple[str, str, str, str], list[Sample]] = defaultdict(list)
     for sample in samples:
-        samples_by_group[(sample.binary, sample.scenario, sample.network)].append(sample)
+        samples_by_group[(sample.binary, sample.scenario, sample.network, sample.path_profile)].append(sample)
 
     for binary in binaries:
         for scenario in scenarios:
             for network in networks:
-                group = (binary, scenario, network)
-                group_state[group] = "active"
-                group_samples_list = samples_by_group.get(group, [])
-                terminal_samples = [
-                    sample for sample in group_samples_list
-                    if sample.status == "unsupported" or sample.status not in ("", "ok")
-                ]
-                matching_block_failures = {target: reason for target, reason in block_failures.items() if target.group == group}
-                if any(sample.status == "unsupported" for sample in terminal_samples):
-                    target = Target(binary, scenario, network, terminal_samples[0].client_threads or 1)
-                    row_state[target] = "unsupported"
-                    row_reason[target] = terminal_samples[0].reason or "unsupported"
-                    group_state[group] = "unsupported"
-                    continue
-                if terminal_samples:
-                    target = Target(binary, scenario, network, terminal_samples[0].client_threads or 1)
-                    row_state[target] = terminal_samples[0].status or "failed"
-                    row_reason[target] = terminal_samples[0].reason or terminal_samples[0].status or "failed"
-                    group_state[group] = "failed"
-                    continue
-                if matching_block_failures:
-                    target, reason = sorted(matching_block_failures.items(), key=lambda item: item[0].threads)[0]
-                    row_state[target] = "failed"
-                    row_reason[target] = reason
-                    group_state[group] = "failed"
-                    continue
+                for path_profile in path_profiles:
+                    group = (binary, scenario, network, path_profile)
+                    group_state[group] = "active"
+                    group_samples_list = samples_by_group.get(group, [])
+                    terminal_samples = [
+                        sample for sample in group_samples_list
+                        if sample.status == "unsupported" or sample.status not in ("", "ok")
+                    ]
+                    matching_block_failures = {target: reason for target, reason in block_failures.items() if target.group == group}
+                    if any(sample.status == "unsupported" for sample in terminal_samples):
+                        target = Target(binary, scenario, network, path_profile, terminal_samples[0].client_threads or 1)
+                        row_state[target] = "unsupported"
+                        row_reason[target] = terminal_samples[0].reason or "unsupported"
+                        group_state[group] = "unsupported"
+                        continue
+                    if terminal_samples:
+                        target = Target(binary, scenario, network, path_profile, terminal_samples[0].client_threads or 1)
+                        row_state[target] = terminal_samples[0].status or "failed"
+                        row_reason[target] = terminal_samples[0].reason or terminal_samples[0].status or "failed"
+                        group_state[group] = "failed"
+                        continue
+                    if matching_block_failures:
+                        target, reason = sorted(matching_block_failures.items(), key=lambda item: item[0].threads)[0]
+                        row_state[target] = "failed"
+                        row_reason[target] = reason
+                        group_state[group] = "failed"
+                        continue
 
-                grouped_rows = {
-                    target_from_key(key): row_samples
-                    for key, row_samples in group_samples(group_samples_list).items()
-                    if key.binary == binary and key.scenario == scenario and key.network == network
-                }
-                if not grouped_rows:
-                    target = Target(binary, scenario, network, 1)
-                    row_state[target] = "active"
-                    active.add(target)
-                    continue
-                for target, row_samples in grouped_rows.items():
-                    stats = row_stats([sample for sample in row_samples if sample.phase == "discovery"], cfg.stats_config())
-                    if stats.status == "ready":
-                        row_state[target] = "ready"
-                    elif stats.n >= cfg.max_samples:
-                        row_state[target] = stats.status if stats.status.startswith("not_ready") else "not_ready_max_samples"
-                        row_reason[target] = stats.reason
-                    else:
+                    grouped_rows = {
+                        target_from_key(key): row_samples
+                        for key, row_samples in group_samples(group_samples_list).items()
+                        if key.binary == binary and key.scenario == scenario and key.network == network and key.path_profile == path_profile
+                    }
+                    if not grouped_rows:
+                        target = Target(binary, scenario, network, path_profile, 1)
                         row_state[target] = "active"
                         active.add(target)
+                        continue
+                    for target, row_samples in grouped_rows.items():
+                        stats = row_stats([sample for sample in row_samples if sample.phase == "discovery"], cfg.stats_config())
+                        if stats.status == "ready":
+                            row_state[target] = "ready"
+                        elif stats.n >= cfg.max_samples:
+                            row_state[target] = stats.status if stats.status.startswith("not_ready") else "not_ready_max_samples"
+                            row_reason[target] = stats.reason
+                        else:
+                            row_state[target] = "active"
+                            active.add(target)
     return row_state, row_reason, group_state, active
 
 
@@ -510,10 +523,10 @@ def recompute_discovery_stats(samples: list[Sample], cfg: RunnerConfig) -> dict[
     return rows
 
 
-def build_group_samples(samples: list[Sample], group: tuple[str, str, str], phase: str | None = "discovery") -> dict[int, list[Sample]]:
+def build_group_samples(samples: list[Sample], group: tuple[str, str, str, str], phase: str | None = "discovery") -> dict[int, list[Sample]]:
     by_threads: dict[int, list[Sample]] = defaultdict(list)
     for sample in samples:
-        if (sample.binary, sample.scenario, sample.network) != group:
+        if (sample.binary, sample.scenario, sample.network, sample.path_profile) != group:
             continue
         if phase is not None and sample.phase != phase:
             continue
@@ -524,7 +537,7 @@ def build_group_samples(samples: list[Sample], group: tuple[str, str, str], phas
 
 def compute_group_decision(
     samples: list[Sample],
-    group: tuple[str, str, str],
+    group: tuple[str, str, str, str],
     row_state: dict[Target, str],
     cfg: RunnerConfig,
 ) -> SaturationDecision:
@@ -550,6 +563,7 @@ def write_row_stats(path: Path, samples: list[Sample], cfg: RunnerConfig) -> dic
         "binary",
         "scenario",
         "network",
+        "path_profile",
         "client_threads",
         "metric",
         "phase",
@@ -577,7 +591,7 @@ def write_row_stats(path: Path, samples: list[Sample], cfg: RunnerConfig) -> dic
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fields)
         writer.writeheader()
-        for key in sorted(grouped, key=lambda item: (item.binary, item.scenario, item.network, item.client_threads, item.metric)):
+        for key in sorted(grouped, key=lambda item: (item.binary, item.scenario, item.network, item.path_profile, item.client_threads, item.metric)):
             for phase in ("discovery", "confirm", "combined"):
                 if phase == "combined":
                     phase_samples = [sample for sample in grouped[key] if sample.phase in ("discovery", "confirm")]
@@ -593,6 +607,7 @@ def write_row_stats(path: Path, samples: list[Sample], cfg: RunnerConfig) -> dic
                     "binary": key.binary,
                     "scenario": key.scenario,
                     "network": key.network,
+                    "path_profile": key.path_profile,
                     "client_threads": key.client_threads,
                     "metric": key.metric,
                     "phase": phase,
@@ -646,11 +661,12 @@ def confirm_status(discovery: RowStats | None, confirm: RowStats | None, combine
     return ("ready", "") if not reasons else ("not_ready", ";".join(reasons))
 
 
-def write_saturation_decisions(path: Path, decisions: dict[tuple[str, str, str], SaturationDecision], samples: list[Sample]) -> None:
+def write_saturation_decisions(path: Path, decisions: dict[tuple[str, str, str, str], SaturationDecision], samples: list[Sample]) -> None:
     fields = [
         "binary",
         "scenario",
         "network",
+        "path_profile",
         "metric",
         "selected_threads",
         "best_threads",
@@ -670,12 +686,13 @@ def write_saturation_decisions(path: Path, decisions: dict[tuple[str, str, str],
         writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fields)
         writer.writeheader()
         for group in sorted(decisions):
-            binary, scenario, network = group
+            binary, scenario, network, path_profile = group
             decision = decisions[group]
             writer.writerow({
                 "binary": binary,
                 "scenario": scenario,
                 "network": network,
+                "path_profile": path_profile,
                 "metric": group_metric(samples, group),
                 "selected_threads": decision.selected_threads or "",
                 "best_threads": decision.best_threads or "",
@@ -714,7 +731,7 @@ def write_publication_tables(
     out_root: Path,
     samples: list[Sample],
     row_stats_map: dict[tuple[RowKey, str], RowStats],
-    decisions: dict[tuple[str, str, str], SaturationDecision],
+    decisions: dict[tuple[str, str, str, str], SaturationDecision],
     cfg: RunnerConfig,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     curve_path = out_root / "publication-curve.tsv"
@@ -724,6 +741,7 @@ def write_publication_tables(
         "binary",
         "scenario",
         "network",
+        "path_profile",
         "metric",
         "client_threads",
         "curve_role",
@@ -749,8 +767,8 @@ def write_publication_tables(
     with curve_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, delimiter="\t", fieldnames=curve_fields)
         writer.writeheader()
-        for key in sorted(grouped, key=lambda item: (item.binary, item.scenario, item.network, item.client_threads, item.metric)):
-            decision = decisions.get((key.binary, key.scenario, key.network), SaturationDecision(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, "", "not_ready", "missing_decision"))
+        for key in sorted(grouped, key=lambda item: (item.binary, item.scenario, item.network, item.path_profile, item.client_threads, item.metric)):
+            decision = decisions.get((key.binary, key.scenario, key.network, key.path_profile), SaturationDecision(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, "", "not_ready", "missing_decision"))
             for phase in ("discovery", "confirm", "combined"):
                 stats = row_stats_map.get((key, phase))
                 if not stats:
@@ -759,6 +777,7 @@ def write_publication_tables(
                     "binary": key.binary,
                     "scenario": key.scenario,
                     "network": key.network,
+                    "path_profile": key.path_profile,
                     "metric": key.metric,
                     "client_threads": key.client_threads,
                     "curve_role": curve_role(key.client_threads, decision),
@@ -783,6 +802,7 @@ def write_publication_tables(
         "binary",
         "scenario",
         "network",
+        "path_profile",
         "metric",
         "client_threads",
         "publication_role",
@@ -802,6 +822,7 @@ def write_publication_tables(
         "binary",
         "scenario",
         "network",
+        "path_profile",
         "publication_status",
         "metric",
         "selected_threads",
@@ -822,7 +843,7 @@ def write_publication_tables(
         "reason",
     ]
     for group, decision in sorted(decisions.items()):
-        binary, scenario, network = group
+        binary, scenario, network, path_profile = group
         metric = group_metric(samples, group)
         publication_threads = set()
         if decision.selected_threads:
@@ -833,7 +854,7 @@ def write_publication_tables(
         not_ready = []
         selected_discovery = selected_confirm = selected_combined = None
         for threads in sorted(publication_threads):
-            key = RowKey(binary, scenario, network, threads, metric)
+            key = RowKey(binary, scenario, network, path_profile, threads, metric)
             discovery = row_stats_map.get((key, "discovery"))
             confirm = row_stats_map.get((key, "confirm"))
             combined = row_stats_map.get((key, "combined"))
@@ -850,6 +871,7 @@ def write_publication_tables(
                 "binary": binary,
                 "scenario": scenario,
                 "network": network,
+                "path_profile": path_profile,
                 "metric": metric,
                 "client_threads": str(threads),
                 "publication_role": curve_role(threads, decision),
@@ -871,6 +893,7 @@ def write_publication_tables(
             "binary": binary,
             "scenario": scenario,
             "network": network,
+            "path_profile": path_profile,
             "publication_status": publication_status,
             "metric": metric,
             "selected_threads": str(decision.selected_threads or ""),
@@ -904,11 +927,11 @@ def write_publication_tables(
 
 def write_pairwise(path: Path, samples: list[Sample], results: list[dict[str, str]], cfg: RunnerConfig) -> None:
     selected = [row for row in results if row.get("publication_status") == "ready" and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES]
-    by_group: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
+    by_group: dict[tuple[str, str, str, str], list[dict[str, str]]] = defaultdict(list)
     for row in selected:
-        by_group[(row["scenario"], row["network"], row["metric"])].append(row)
+        by_group[(row["scenario"], row["network"], row["path_profile"], row["metric"])].append(row)
     sample_groups = group_samples([sample for sample in samples if sample.phase in ("discovery", "confirm")])
-    fields = ["scenario", "network", "metric", "binary_a", "binary_b", "a_p50", "b_p50", "a_vs_b_median_ratio", "a_vs_b_ci95_low", "a_vs_b_ci95_high", "relation"]
+    fields = ["scenario", "network", "path_profile", "metric", "binary_a", "binary_b", "a_p50", "b_p50", "a_vs_b_median_ratio", "a_vs_b_ci95_low", "a_vs_b_ci95_high", "relation"]
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fields)
         writer.writeheader()
@@ -916,13 +939,14 @@ def write_pairwise(path: Path, samples: list[Sample], results: list[dict[str, st
             rows = sorted(by_group[group], key=lambda row: row["binary"])
             for index, a_row in enumerate(rows):
                 for b_row in rows[index + 1:]:
-                    a_key = RowKey(a_row["binary"], a_row["scenario"], a_row["network"], int(a_row["selected_threads"]), a_row["metric"])
-                    b_key = RowKey(b_row["binary"], b_row["scenario"], b_row["network"], int(b_row["selected_threads"]), b_row["metric"])
+                    a_key = RowKey(a_row["binary"], a_row["scenario"], a_row["network"], a_row["path_profile"], int(a_row["selected_threads"]), a_row["metric"])
+                    b_key = RowKey(b_row["binary"], b_row["scenario"], b_row["network"], b_row["path_profile"], int(b_row["selected_threads"]), b_row["metric"])
                     stats = compare_rows(sample_groups.get(a_key, []), sample_groups.get(b_key, []), cfg.stats_config())
                     writer.writerow({
                         "scenario": group[0],
                         "network": group[1],
-                        "metric": group[2],
+                        "path_profile": group[2],
+                        "metric": group[3],
                         "binary_a": a_row["binary"],
                         "binary_b": b_row["binary"],
                         "a_p50": format_float(stats.a_median),
@@ -932,6 +956,163 @@ def write_pairwise(path: Path, samples: list[Sample], results: list[dict[str, st
                         "a_vs_b_ci95_high": format_float(stats.ci95_high),
                         "relation": stats.relation,
                     })
+
+
+def write_rankings(out_root: Path, samples: list[Sample], results: list[dict[str, str]], decisions: dict[tuple[str, str, str, str], SaturationDecision], cfg: RunnerConfig) -> None:
+    ranking_rows = [row for row in results if row.get("publication_status") == "ready" and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES]
+    by_comparator: dict[tuple[str, str, str, str], list[dict[str, str]]] = defaultdict(list)
+    for row in ranking_rows:
+        by_comparator[(row["scenario"], row["network"], row["path_profile"], row["metric"])].append(row)
+
+    sample_groups = group_samples([sample for sample in samples if sample.phase in ("discovery", "confirm")])
+    by_row_path = out_root / "rankings-by-row.tsv"
+    overall_path = out_root / "rankings-overall.tsv"
+    bands_path = out_root / "rankings-rank-bands.tsv"
+    by_row_records = []
+    weights = (0.60, 0.25, 0.15)
+    for comparator, rows in sorted(by_comparator.items()):
+        selected_values = {row["binary"]: float(row.get("combined_p50", "0") or "0") for row in rows}
+        if not selected_values:
+            continue
+        best_capacity = max(selected_values.values())
+        selected_threads = {row["binary"]: int(row.get("selected_threads", "0") or "0") for row in rows}
+        min_threads = min(thread for thread in selected_threads.values() if thread > 0) if selected_threads else 1
+        for row in rows:
+            binary = row["binary"]
+            decision = decisions.get((binary, row["scenario"], row["network"], row["path_profile"]))
+            capacity_index = selected_values[binary] / best_capacity if best_capacity > 0.0 else 0.0
+            curve_values = []
+            if decision and decision.selected_threads:
+                for threads in range(1, decision.selected_threads + 1):
+                    key = RowKey(binary, row["scenario"], row["network"], row["path_profile"], threads, row["metric"])
+                    values = [sample.value or 0.0 for sample in sample_groups.get(key, []) if sample.measured]
+                    if values:
+                        curve_values.append(median(values))
+            own_best = max(curve_values) if curve_values else selected_values[binary]
+            curve_efficiency = sum(min(value / own_best, 1.0) for value in curve_values) / len(curve_values) if curve_values and own_best > 0.0 else 0.0
+            client_count_efficiency = min_threads / selected_threads[binary] if selected_threads[binary] > 0 else 0.0
+            score = 100.0 * ((weights[0] * capacity_index) + (weights[1] * curve_efficiency) + (weights[2] * client_count_efficiency))
+            by_row_records.append({
+                "binary": binary,
+                "scenario": row["scenario"],
+                "network": row["network"],
+                "path_profile": row["path_profile"],
+                "metric": row["metric"],
+                "capacity_index": format_float(capacity_index),
+                "curve_efficiency": format_float(curve_efficiency),
+                "client_count_efficiency": format_float(client_count_efficiency),
+                "score": format_float(score),
+                "selected_threads": row["selected_threads"],
+                "combined_p50": row["combined_p50"],
+            })
+
+    with by_row_path.open("w", encoding="utf-8", newline="") as handle:
+        fields = ["binary", "scenario", "network", "path_profile", "metric", "capacity_index", "curve_efficiency", "client_count_efficiency", "score", "selected_threads", "combined_p50"]
+        writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(by_row_records)
+
+    scores_by_binary: dict[str, list[float]] = defaultdict(list)
+    for row in by_row_records:
+        scores_by_binary[row["binary"]].append(float(row["score"]))
+    point_scores = {binary: sum(values) / len(values) for binary, values in scores_by_binary.items() if values}
+
+    score_draws = bootstrap_scores(samples, results, decisions, cfg, weights)
+    rank_draws: dict[str, list[int]] = defaultdict(list)
+    for draw in score_draws:
+        ordered = sorted(draw.items(), key=lambda item: (-item[1], item[0]))
+        for rank, (binary, _score) in enumerate(ordered, start=1):
+            rank_draws[binary].append(rank)
+
+    overall_rows = []
+    for binary, score in sorted(point_scores.items(), key=lambda item: (-item[1], item[0])):
+        draws = [draw.get(binary, score) for draw in score_draws if binary in draw]
+        ranks = rank_draws.get(binary, [])
+        overall_rows.append({
+            "binary": binary,
+            "score_median": format_float(quantile(draws, 0.50) if draws else score),
+            "score_ci95_low": format_float(quantile(draws, 0.025) if draws else score),
+            "score_ci95_high": format_float(quantile(draws, 0.975) if draws else score),
+            "rank_low": str(min(ranks) if ranks else ""),
+            "rank_high": str(max(ranks) if ranks else ""),
+            "rank_status": "stable" if ranks and min(ranks) == max(ranks) else "band",
+        })
+
+    with overall_path.open("w", encoding="utf-8", newline="") as handle:
+        fields = ["rank", "binary", "score_median", "score_ci95_low", "score_ci95_high", "rank_low", "rank_high", "rank_status"]
+        writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fields)
+        writer.writeheader()
+        for rank, row in enumerate(overall_rows, start=1):
+            item = {"rank": rank}
+            item.update(row)
+            writer.writerow(item)
+    with bands_path.open("w", encoding="utf-8", newline="") as handle:
+        fields = ["binary", "score_median", "score_ci95_low", "score_ci95_high", "rank_low", "rank_high", "rank_status"]
+        writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(overall_rows)
+
+
+def bootstrap_scores(
+    samples: list[Sample],
+    results: list[dict[str, str]],
+    decisions: dict[tuple[str, str, str, str], SaturationDecision],
+    cfg: RunnerConfig,
+    weights: tuple[float, float, float],
+) -> list[dict[str, float]]:
+    ranking_rows = [row for row in results if row.get("publication_status") == "ready" and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES]
+    if not ranking_rows:
+        return []
+    iters = max(1, min(cfg.bootstrap_iters, 2000))
+    sample_groups = group_samples([sample for sample in samples if sample.phase in ("discovery", "confirm")])
+    dist_cache: dict[RowKey, list[float]] = {}
+
+    def dist_for(key: RowKey) -> list[float]:
+        if key not in dist_cache:
+            row_samples = sample_groups.get(key, [])
+            seed = int(hashlib.sha256(str(key).encode("utf-8")).hexdigest()[:16], 16) ^ cfg.random_seed
+            dist = bootstrap_stat_distribution(row_samples, median, iters, seed)
+            if not dist:
+                dist = [0.0] * iters
+            if len(dist) < iters:
+                dist.extend([dist[-1]] * (iters - len(dist)))
+            dist_cache[key] = dist[:iters]
+        return dist_cache[key]
+
+    by_comparator: dict[tuple[str, str, str, str], list[dict[str, str]]] = defaultdict(list)
+    for row in ranking_rows:
+        by_comparator[(row["scenario"], row["network"], row["path_profile"], row["metric"])].append(row)
+
+    draws: list[dict[str, float]] = []
+    for index in range(iters):
+        component_scores: dict[str, list[float]] = defaultdict(list)
+        for comparator, rows in by_comparator.items():
+            selected_values = {}
+            selected_threads = {}
+            for row in rows:
+                threads = int(row.get("selected_threads", "0") or "0")
+                selected_threads[row["binary"]] = threads
+                key = RowKey(row["binary"], row["scenario"], row["network"], row["path_profile"], threads, row["metric"])
+                selected_values[row["binary"]] = dist_for(key)[index]
+            best_capacity = max(selected_values.values()) if selected_values else 0.0
+            positive_threads = [thread for thread in selected_threads.values() if thread > 0]
+            min_threads = min(positive_threads) if positive_threads else 1
+            for row in rows:
+                binary = row["binary"]
+                decision = decisions.get((binary, row["scenario"], row["network"], row["path_profile"]))
+                capacity_index = selected_values[binary] / best_capacity if best_capacity > 0.0 else 0.0
+                curve_values = []
+                if decision and decision.selected_threads:
+                    for threads in range(1, decision.selected_threads + 1):
+                        key = RowKey(binary, row["scenario"], row["network"], row["path_profile"], threads, row["metric"])
+                        curve_values.append(dist_for(key)[index])
+                own_best = max(curve_values) if curve_values else selected_values[binary]
+                curve_efficiency = sum(min(value / own_best, 1.0) for value in curve_values) / len(curve_values) if curve_values and own_best > 0.0 else 0.0
+                client_count_efficiency = min_threads / selected_threads[binary] if selected_threads[binary] > 0 else 0.0
+                score = 100.0 * ((weights[0] * capacity_index) + (weights[1] * curve_efficiency) + (weights[2] * client_count_efficiency))
+                component_scores[binary].append(score)
+        draws.append({binary: sum(values) / len(values) for binary, values in component_scores.items() if values})
+    return draws
 
 
 def write_summary(path: Path, publication_id: str, cfg: RunnerConfig, results: list[dict[str, str]], audit_rows: list[dict[str, str]], samples_path: Path) -> None:
@@ -952,10 +1133,10 @@ def write_summary(path: Path, publication_id: str, cfg: RunnerConfig, results: l
         handle.write(f"- Audited publication rows: {len(audit_rows)}\n")
         if not_ready_results:
             handle.write("\n## Not Ready Results\n\n")
-            handle.write("| Binary | Scenario | Network | Selected | Reason |\n")
-            handle.write("|---|---|---|---:|---|\n")
+            handle.write("| Binary | Scenario | Network | Path | Selected | Reason |\n")
+            handle.write("|---|---|---|---|---:|---|\n")
             for row in not_ready_results:
-                handle.write(f"| `{row['binary']}` | `{row['scenario']}` | `{row['network']}` | {row.get('selected_threads', '')} | {row.get('reason', '')} |\n")
+                handle.write(f"| `{row['binary']}` | `{row['scenario']}` | `{row['network']}` | `{row.get('path_profile', 'loopback')}` | {row.get('selected_threads', '')} | {row.get('reason', '')} |\n")
 
 
 def main() -> int:
@@ -977,18 +1158,20 @@ def main() -> int:
     machine_sig = machine_hash()
     randomizer = random.Random(cfg.random_seed)
 
-    decisions: dict[tuple[str, str, str], SaturationDecision] = {}
+    path_profiles = unique_preserve(split_words(os.environ.get("QUICPERF_ADAPTIVE_PATH_PROFILES", os.environ.get("QUICPERF_PATH_PROFILES", os.environ.get("QUICPERF_PATH_PROFILE", "loopback")))))
+    decisions: dict[tuple[str, str, str, str], SaturationDecision] = {}
     start_round = 1
     block_ordinal = 0
     if resume:
         existing_samples = load_samples(samples_path)
-        block_failures = load_block_failures(out_root, networks)
-        last_round, block_ordinal = resume_positions(out_root, existing_samples, networks)
+        block_failures = load_block_failures(out_root, networks, path_profiles)
+        last_round, block_ordinal = resume_positions(out_root, existing_samples, networks, path_profiles)
         start_round = last_round + 1
         row_state, row_reason, group_state, active = initialize_resume_state(
             binaries=binaries,
             scenarios=scenarios,
             networks=networks,
+            path_profiles=path_profiles,
             samples=existing_samples,
             block_failures=block_failures,
             cfg=cfg,
@@ -1001,11 +1184,12 @@ def main() -> int:
         for binary in binaries:
             for scenario in scenarios:
                 for network in networks:
-                    group = (binary, scenario, network)
-                    group_state[group] = "active"
-                    target = Target(binary, scenario, network, 1)
-                    active.add(target)
-                    row_state[target] = "active"
+                    for path_profile in path_profiles:
+                        group = (binary, scenario, network, path_profile)
+                        group_state[group] = "active"
+                        target = Target(binary, scenario, network, path_profile, 1)
+                        active.add(target)
+                        row_state[target] = "active"
 
     environment_path = out_root / "adaptive-environment.txt"
     with environment_path.open("w", encoding="utf-8") as handle:
@@ -1021,7 +1205,7 @@ def main() -> int:
     print(
         "quicperf_adaptive_run "
         f"out_dir={out_root} binaries=\"{' '.join(binaries)}\" scenarios=\"{' '.join(scenarios)}\" "
-        f"networks=\"{' '.join(networks)}\" block_size={cfg.block_size} min_samples={cfg.min_samples} "
+        f"networks=\"{' '.join(networks)}\" path_profiles=\"{' '.join(path_profiles)}\" block_size={cfg.block_size} min_samples={cfg.min_samples} "
         f"max_samples={cfg.max_samples} confirm_blocks={cfg.confirm_blocks} random_seed={cfg.random_seed} "
         f"high_variance_min_blocks={cfg.high_variance_min_blocks} "
         f"high_variance_min_samples={cfg.high_variance_min_samples} "
@@ -1118,7 +1302,7 @@ def main() -> int:
                 group_state[group] = "ready"
                 continue
             if tested and tested[-1] < cfg.max_threads:
-                next_target = Target(group[0], group[1], group[2], tested[-1] + 1)
+                next_target = Target(group[0], group[1], group[2], group[3], tested[-1] + 1)
                 if next_target not in row_state:
                     row_state[next_target] = "active"
                     active.add(next_target)
@@ -1152,10 +1336,10 @@ def main() -> int:
         if decision.selected_threads <= 0:
             continue
         for threads in range(1, decision.selected_threads + 1):
-            confirm_targets.add(Target(group[0], group[1], group[2], threads))
+            confirm_targets.add(Target(group[0], group[1], group[2], group[3], threads))
         for threads in (decision.best_threads, decision.boundary_threads):
             if threads > 0:
-                confirm_targets.add(Target(group[0], group[1], group[2], threads))
+                confirm_targets.add(Target(group[0], group[1], group[2], group[3], threads))
     confirm_targets = {target for target in confirm_targets if group_state.get(target.group) == "ready"}
 
     for confirm_round in range(1, cfg.confirm_blocks + 1):
@@ -1186,6 +1370,7 @@ def main() -> int:
     write_saturation_decisions(out_root / "saturation-decisions.tsv", decisions, samples)
     results, audit_rows = write_publication_tables(out_root, samples, row_stats_map, decisions, cfg)
     write_pairwise(out_root / "pairwise-comparisons.tsv", samples, results, cfg)
+    write_rankings(out_root, samples, results, decisions, cfg)
     write_summary(out_root / "adaptive-run-summary.md", publication_id, cfg, results, audit_rows, samples_path)
     print(f"quicperf_adaptive_summary path={out_root / 'adaptive-run-summary.md'} status=complete")
     return 0

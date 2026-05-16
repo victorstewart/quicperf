@@ -12,6 +12,7 @@ FIELDS = [
     "binary",
     "scenario",
     "network",
+    "path_profile",
     "client_threads",
     "metric",
     "phase",
@@ -43,7 +44,7 @@ def emit(samples_path: Path, output_path: Path, cfg: StatsConfig, confirm_cfg: S
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, delimiter="\t", fieldnames=FIELDS)
         writer.writeheader()
-        for key in sorted(grouped, key=lambda item: (item.binary, item.scenario, item.network, item.client_threads, item.metric)):
+        for key in sorted(grouped, key=lambda item: (item.binary, item.scenario, item.network, item.path_profile, item.client_threads, item.metric)):
             for phase in ("discovery", "confirm", "combined"):
                 if phase == "combined":
                     phase_samples = [sample for sample in grouped[key] if sample.phase in {"discovery", "confirm"}]
@@ -56,6 +57,7 @@ def emit(samples_path: Path, output_path: Path, cfg: StatsConfig, confirm_cfg: S
                     "binary": key.binary,
                     "scenario": key.scenario,
                     "network": key.network,
+                    "path_profile": key.path_profile,
                     "client_threads": key.client_threads,
                     "metric": key.metric,
                     "phase": phase,

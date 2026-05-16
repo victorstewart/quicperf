@@ -17,6 +17,7 @@ class CombinedRow:
     binary: str
     scenario: str
     network: str
+    path_profile: str
     threads: int
     status: str
     reason: str
@@ -90,8 +91,8 @@ def link_client_logs(source: Path, target: Path, label: str) -> None:
                 shutil.copy2(path, destination)
 
 
-def row_sort_key(row: CombinedRow) -> tuple[str, str, str, int]:
-    return (row.binary, row.scenario, row.network, row.threads)
+def row_sort_key(row: CombinedRow) -> tuple[str, str, str, str, int]:
+    return (row.binary, row.scenario, row.network, row.path_profile, row.threads)
 
 
 def incremental_plateau_reason(previous: CombinedRow | None, row: CombinedRow, min_improvement: float) -> str:
@@ -169,23 +170,23 @@ def selected_row(group: list[CombinedRow], tolerance: float) -> tuple[str, Combi
 
 
 def combine_rows(repo_root: Path, combined_root: Path, sweep_dirs: list[Path]) -> list[CombinedRow]:
-    grouped: dict[tuple[str, str, str, int], list[tuple[Path, dict[str, str]]]] = {}
+    grouped: dict[tuple[str, str, str, str, int], list[tuple[Path, dict[str, str]]]] = {}
     for sweep_dir in sweep_dirs:
         samples_path = sweep_dir / "saturation-samples.tsv"
         if not samples_path.exists():
             continue
         for row in read_rows(samples_path):
             try:
-                key = (row["binary"], row["scenario"], row["network"], int(row["threads"]))
+                key = (row["binary"], row["scenario"], row["network"], row.get("path_profile", "loopback") or "loopback", int(row["threads"]))
             except (KeyError, ValueError):
                 continue
             grouped.setdefault(key, []).append((sweep_dir, row))
 
     combined_rows = []
     for key, source_rows in sorted(grouped.items()):
-        binary, scenario, network, threads = key
+        binary, scenario, network, path_profile, threads = key
         metric = next((row.get("metric", "") for _, row in source_rows if row.get("metric")), "")
-        target_dir = combined_root / f"{binary}-{scenario}-{network}-t{threads}"
+        target_dir = combined_root / f"{binary}-{scenario}-{network}-{path_profile}-t{threads}"
         values: list[float] = []
         source_statuses = []
         source_reasons = []
@@ -211,6 +212,7 @@ def combine_rows(repo_root: Path, combined_root: Path, sweep_dirs: list[Path]) -
                 binary=binary,
                 scenario=scenario,
                 network=network,
+                path_profile=path_profile,
                 threads=threads,
                 status="ok",
                 reason="",
@@ -235,19 +237,20 @@ def combine_rows(repo_root: Path, combined_root: Path, sweep_dirs: list[Path]) -
         else:
             status = "plateau"
         reason = next((item for item in source_reasons if item), f"combined_no_samples_{status}")
-        combined_rows.append(CombinedRow(binary, scenario, network, threads, status, reason, metric=metric))
+        combined_rows.append(CombinedRow(binary, scenario, network, path_profile, threads, status, reason, metric=metric))
     return combined_rows
 
 
 def write_samples(path: Path, rows: list[CombinedRow]) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, delimiter="\t")
-        writer.writerow(["binary", "scenario", "network", "threads", "status", "reason", "metric", "samples", "min", "p50", "p90", "p99", "max", "spread_ratio", "out_dir"])
+        writer.writerow(["binary", "scenario", "network", "path_profile", "threads", "status", "reason", "metric", "samples", "min", "p50", "p90", "p99", "max", "spread_ratio", "out_dir"])
         for row in sorted(rows, key=row_sort_key):
             writer.writerow([
                 row.binary,
                 row.scenario,
                 row.network,
+                row.path_profile,
                 row.threads,
                 row.status,
                 row.reason,
@@ -264,9 +267,9 @@ def write_samples(path: Path, rows: list[CombinedRow]) -> None:
 
 
 def write_summary(path: Path, rows: list[CombinedRow], tolerance: float) -> None:
-    groups: dict[tuple[str, str, str], list[CombinedRow]] = {}
+    groups: dict[tuple[str, str, str, str], list[CombinedRow]] = {}
     for row in rows:
-        groups.setdefault((row.binary, row.scenario, row.network), []).append(row)
+        groups.setdefault((row.binary, row.scenario, row.network, row.path_profile), []).append(row)
 
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, delimiter="\t")
@@ -274,6 +277,7 @@ def write_summary(path: Path, rows: list[CombinedRow], tolerance: float) -> None
             "binary",
             "scenario",
             "network",
+            "path_profile",
             "status",
             "metric",
             "selected_threads",
@@ -385,9 +389,9 @@ def main() -> int:
     tolerance = float(os.environ.get("QUICPERF_SATURATION_TOLERANCE", "0.01"))
     rows = combine_rows(repo_root, combined_root, sweep_dirs)
 
-    groups: dict[tuple[str, str, str], list[CombinedRow]] = {}
+    groups: dict[tuple[str, str, str, str], list[CombinedRow]] = {}
     for row in rows:
-        groups.setdefault((row.binary, row.scenario, row.network), []).append(row)
+        groups.setdefault((row.binary, row.scenario, row.network, row.path_profile), []).append(row)
     normalized = []
     for group in groups.values():
         normalized.extend(normalize_group(group, min_improvement))

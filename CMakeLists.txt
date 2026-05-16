@@ -134,6 +134,10 @@ endfunction()
 
 if(BUILD_PICOPERF)
   quicperf_target(picoperf PICOPERF)
+  target_sources(picoperf PRIVATE perf.picoquic_seed.c)
+  target_include_directories(picoperf PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/.depos/.root/downloads/picoquic/release/master/src/picoquic"
+  )
   depos_link(picoperf PRIVATE picoquic liburing)
   target_link_libraries(picoperf PRIVATE dl)
 endif()

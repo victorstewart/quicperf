@@ -1,15 +1,109 @@
 #include "picoquic.h"
 #include "picoquic_utils.h"
 #include "picoquic_config.h"
-#include "picoquic_bbr.h"
-#include "picoquic_bbr1.h"
 #include "picotls.h"
 
+#include <algorithm>
 #include <array>
+#include <cstdio>
+#include <cstring>
 #include <memory>
 #include <vector>
 
 #pragma once
+
+extern "C" void picoquic_seed_bandwidth(
+	picoquic_cnx_t* cnx,
+	uint64_t rtt_min,
+	uint64_t cwin,
+	const uint8_t *ip_addr,
+	uint8_t ip_addr_length);
+
+extern "C" void quicperf_picoquic_seed_sender_now(
+	picoquic_cnx_t* cnx,
+	uint64_t cwin,
+	uint64_t pacing_rate,
+	uint64_t current_time);
+
+static inline const char *benchmarkPicoquicCongestionAlgorithmName(void)
+{
+	if (strcmp(benchmarkCongestionProfile, "path-auto") == 0 ||
+	    strcmp(benchmarkCongestionProfile, "auto") == 0)
+	{
+		if (strcmp(benchmarkPathProfile, "dc-fabric-10g") == 0)
+		{
+			return "cubic";
+		}
+		if (strcmp(benchmarkPathProfile, "dc-fabric-1ms") == 0 ||
+		    strcmp(benchmarkPathProfile, "lte-good") == 0 ||
+		    strcmp(benchmarkPathProfile, "5g-sub6-good") == 0 ||
+		    strcmp(benchmarkPathProfile, "5g-mmwave-bursty") == 0)
+		{
+			return "fastcc";
+		}
+		if (strcmp(benchmarkPathProfile, "lte-congested") == 0)
+		{
+			return "bbr1";
+		}
+		return "bbr";
+	}
+	if (strcmp(benchmarkCongestionProfile, "bbr1") == 0)
+	{
+		return "bbr1";
+	}
+	if (strcmp(benchmarkCongestionProfile, "cubic") == 0)
+	{
+		return "cubic";
+	}
+	if (strcmp(benchmarkCongestionProfile, "dcubic") == 0)
+	{
+		return "dcubic";
+	}
+	if (strcmp(benchmarkCongestionProfile, "newreno") == 0 ||
+	    strcmp(benchmarkCongestionProfile, "reno") == 0)
+	{
+		return "newreno";
+	}
+	if (strcmp(benchmarkCongestionProfile, "fastcc") == 0)
+	{
+		return "fastcc";
+	}
+	if (strcmp(benchmarkCongestionProfile, "prague") == 0)
+	{
+		return "prague";
+	}
+	if (strcmp(benchmarkCongestionProfile, "c4") == 0)
+	{
+		return "c4";
+	}
+	return "bbr";
+}
+
+static inline picoquic_congestion_algorithm_t const *benchmarkPicoquicCongestionAlgorithm(void)
+{
+	picoquic_register_all_congestion_control_algorithms();
+	picoquic_congestion_algorithm_t const *algorithm =
+		picoquic_get_congestion_algorithm(benchmarkPicoquicCongestionAlgorithmName());
+	if (algorithm == nullptr)
+	{
+		algorithm = picoquic_get_congestion_algorithm("bbr");
+	}
+	return algorithm;
+}
+
+static inline const char *benchmarkPicoquicAdapterFeatures(void)
+{
+	static thread_local char features[256];
+	snprintf(features, sizeof(features),
+		"cc=%s|pmtud=off|packet_train=%s|bdp_frame=%s|bdp_seed=%s|seed_now=%s|mtu=%u|null_verifier=ed25519_sigalgs",
+		benchmarkPicoquicCongestionAlgorithmName(),
+		benchmarkPicoquicPacketTrainMode ? "on" : "off",
+		benchmarkPicoquicBdpFrameMode ? "on" : "off",
+		benchmarkPicoquicBdpSeedMode ? "on" : "off",
+		benchmarkPicoquicBdpSeedImmediateMode ? "on" : "off",
+		static_cast<unsigned>(benchmarkUdpPayloadSize));
+	return features;
+}
 
 template <Mode mode>
 class Picoquic : public QuicLibrary<mode> {
@@ -26,6 +120,8 @@ private:
 		bool requestParsed = false;
 			bool ready = false;
 			bool clientDone = false;
+			bool downloadDoneSignalSent = false;
+			bool downloadCompletionAckRead = false;
 			bool uploadFinSent = false;
 			uint32_t serverCompletedConnections = 0;
 
@@ -99,6 +195,7 @@ private:
 				bool requestParsed = false;
 				bool clientDone = false;
 				bool uploadFinSent = false;
+				bool completionAckSent = false;
 				uint64_t serverDrainDeadlineUs = 0;
 				bool complete = false;
 			};
@@ -155,7 +252,9 @@ private:
 							datagramClientDrainDeadlineUs != 0 &&
 							timeNowUs() >= datagramClientDrainDeadlineUs;
 					}
-					return benchmarkIsUpload() ? clientDone : bytesInFlight == 0;
+					return benchmarkIsUpload()
+						? clientDone
+						: bytesInFlight == 0;
 				}
 			}
 
@@ -185,12 +284,61 @@ private:
 				}
 			}
 				else if (!state->requestParsed || state->bytesInFlight != 0 ||
+				         !state->clientDone || !state->completionAckSent ||
 				         state->serverDrainDeadlineUs == 0 || timeNowUs() < state->serverDrainDeadlineUs)
 				{
 					return;
 				}
 			state->complete = true;
 			++serverCompletedConnections;
+		}
+
+		static uint64_t picoquicBdpSeedCwin(void)
+		{
+			if (benchmarkPathRttUs == 0 || benchmarkPathMaxRateBps == 0)
+			{
+				return 0;
+			}
+			const uint64_t seedRateBps = picoquicBdpSeedRate();
+			const uint64_t bdpBytes = ((seedRateBps * benchmarkPathRttUs) + 7'999'999ULL) / 8'000'000ULL;
+			return std::clamp<uint64_t>(bdpBytes * 2ULL, 64ULL * 1024ULL, 16ULL * 1024ULL * 1024ULL);
+		}
+
+		static uint64_t picoquicBdpSeedRate(void)
+		{
+			if (strcmp(benchmarkPathProfile, "lte-good") == 0 &&
+			    benchmarkPathDownlinkBps != 0)
+			{
+				return benchmarkPathDownlinkBps;
+			}
+			return benchmarkPathMaxRateBps;
+		}
+
+		static uint64_t picoquicBdpSeedPacingRate(void)
+		{
+			return picoquicBdpSeedRate() / 8ULL;
+		}
+
+		static void seedServerBandwidth(picoquic_cnx_t *activeConnection)
+		{
+			if constexpr (mode & Mode::server)
+			{
+				if (!benchmarkPicoquicBdpSeedMode ||
+				    strcmp(benchmarkPathProfile, "loopback") == 0)
+				{
+					return;
+				}
+				const uint64_t seedCwin = picoquicBdpSeedCwin();
+				if (seedCwin != 0)
+				{
+					picoquic_seed_bandwidth(activeConnection, benchmarkPathRttUs, seedCwin, serverAddress.s6_addr, 16);
+					if (benchmarkPicoquicBdpSeedImmediateMode)
+					{
+						quicperf_picoquic_seed_sender_now(
+							activeConnection, seedCwin, picoquicBdpSeedPacingRate(), timeNowUs());
+					}
+				}
+			}
 		}
 
 		static void encodeU64(uint64_t value, std::array<uint8_t, sizeof(uint64_t)>& out)
@@ -613,10 +761,28 @@ private:
 				}
 				if constexpr (mode & Mode::client)
 				{
-					instance->bytesInFlight -= length;
-					if (benchmarkIsUpload() && fin_or_event == picoquic_callback_stream_fin)
+					if (benchmarkIsUpload())
 					{
-						instance->clientDone = true;
+						instance->bytesInFlight -= length;
+						if (fin_or_event == picoquic_callback_stream_fin)
+						{
+							instance->clientDone = true;
+						}
+					}
+					else if (instance->bytesInFlight > 0)
+					{
+						const int64_t copied = std::min<int64_t>(
+							instance->bytesInFlight, static_cast<int64_t>(length));
+						instance->bytesInFlight -= copied;
+						if (instance->bytesInFlight == 0)
+						{
+							picoquic_mark_active_stream(cnx, stream_id, true, instance);
+						}
+					}
+					else if (instance->downloadDoneSignalSent &&
+					         !instance->downloadCompletionAckRead && length > 0)
+					{
+						instance->downloadCompletionAckRead = true;
 					}
 					//if ((rand() % 250) == 0) printf("received %.1f%%\n", 100.0 * (double)(_1GB - instance->bytesInFlight)/(double)_1GB );
 				}
@@ -636,6 +802,7 @@ private:
 							serverState->requestParsed = true;
 							if (!benchmarkIsUpload())
 							{
+								seedServerBandwidth(cnx);
 								picoquic_mark_active_stream(cnx, stream_id, true, serverState);
 							}
 						}
@@ -651,6 +818,10 @@ private:
 							if (fin_or_event == picoquic_callback_stream_fin)
 						{
 							serverState->clientDone = true;
+							if (!benchmarkIsUpload())
+							{
+								picoquic_mark_active_stream(cnx, stream_id, true, serverState);
+							}
 						}
 					}
 
@@ -803,11 +974,30 @@ private:
 							}
 						}
 					}
-					else if (instance->bytesInFlight)
+					else if (instance->requestBytesWritten < instance->requestBytes.size())
 					{
-						uint8_t* buffer = picoquic_provide_stream_data_buffer(bytes, 8, 1, 0);
-						memcpy(buffer, instance->requestBytes.data(), instance->requestBytes.size());
-						picoquic_mark_active_stream(cnx, stream_id, false, instance);
+						const size_t left = instance->requestBytes.size() - instance->requestBytesWritten;
+						const size_t sendLength = std::min<size_t>(length, left);
+						uint8_t* buffer = picoquic_provide_stream_data_buffer(bytes, sendLength, false, sendLength < left);
+						if (buffer != nullptr && sendLength > 0)
+						{
+							memcpy(buffer, instance->requestBytes.data() + instance->requestBytesWritten, sendLength);
+							instance->requestBytesWritten += sendLength;
+							if (instance->requestBytesWritten == instance->requestBytes.size())
+							{
+								picoquic_mark_active_stream(cnx, stream_id, false, instance);
+							}
+						}
+					}
+					else if (!instance->downloadDoneSignalSent)
+					{
+						static const uint8_t done = 0;
+						uint8_t* buffer = picoquic_provide_stream_data_buffer(bytes, sizeof(done), true, false);
+						if (buffer != nullptr)
+						{
+							buffer[0] = done;
+							instance->downloadDoneSignalSent = true;
+						}
 					}
 					else
 					{
@@ -818,9 +1008,9 @@ private:
 					{
 							if (serverState->bytesInFlight <= 0)
 							{
-								picoquic_provide_stream_data_buffer(bytes, 0, true, false);
 								if (benchmarkIsUpload())
 								{
+									picoquic_provide_stream_data_buffer(bytes, 0, true, false);
 									serverState->uploadFinSent = true;
 									if (serverState->serverDrainDeadlineUs == 0)
 									{
@@ -828,18 +1018,36 @@ private:
 									}
 									instance->markServerStateComplete(serverState);
 								}
+								else if (serverState->clientDone && !serverState->completionAckSent)
+								{
+									static const uint8_t ack = 0;
+									uint8_t *buffer = picoquic_provide_stream_data_buffer(bytes, sizeof(ack), true, false);
+									if (buffer != nullptr)
+									{
+										buffer[0] = ack;
+										serverState->completionAckSent = true;
+										serverState->serverDrainDeadlineUs = timeNowUs() + 100'000;
+										instance->markServerStateComplete(serverState);
+									}
+								}
+								else
+								{
+									picoquic_provide_stream_data_buffer(bytes, 0, false, false);
+									picoquic_mark_active_stream(cnx, stream_id, false, serverState);
+								}
 								break;
 							}
 
 							size_t bytesSending = serverState->bytesInFlight > (int64_t)length ? length : serverState->bytesInFlight;
-							bool finished = bytesSending == (size_t)serverState->bytesInFlight;
-							uint8_t *buffer = picoquic_provide_stream_data_buffer(bytes, bytesSending, finished, !finished);
+							bool stillActive = bytesSending < (size_t)serverState->bytesInFlight;
+							bool finished = benchmarkIsUpload() && !stillActive;
+							uint8_t *buffer = picoquic_provide_stream_data_buffer(bytes, bytesSending, finished, stillActive);
 
 							if (buffer != nullptr)
 							{
 								memset(buffer, 7, bytesSending);
 								serverState->bytesInFlight -= bytesSending;
-								if (serverState->bytesInFlight == 0 && serverState->serverDrainDeadlineUs == 0)
+								if (benchmarkIsUpload() && serverState->bytesInFlight == 0 && serverState->serverDrainDeadlineUs == 0)
 								{
 									serverState->serverDrainDeadlineUs = timeNowUs() + 100'000;
 								}
@@ -855,6 +1063,7 @@ private:
 				case picoquic_callback_ready:
 				{
 					instance->ready = true;
+					instance->seedServerBandwidth(cnx);
 					break;
 				}
 				// version negotiation requested
@@ -1042,18 +1251,20 @@ public:
 		transportParams.max_idle_timeout = benchmarkIdleTimeoutMs;
 			transportParams.max_packet_size = benchmarkUdpPayloadSize;
 			transportParams.max_datagram_frame_size = benchmarkUdpPayloadSize;
-			transportParams.max_ack_delay = benchmarkMaxAckDelayUs;
+		transportParams.max_ack_delay = benchmarkMaxAckDelayUs;
 		transportParams.ack_delay_exponent = benchmarkAckDelayExponent;
 		transportParams.migration_disabled = 1;
+		transportParams.enable_bdp_frame = benchmarkPicoquicBdpFrameMode;
 		picoquic_set_default_tp(engine, &transportParams);
 		picoquic_set_default_idle_timeout(engine, benchmarkIdleTimeoutMs);
-			picoquic_set_default_congestion_algorithm(engine, picoquic_bbr1_algorithm);
+			picoquic_set_default_congestion_algorithm(engine, benchmarkPicoquicCongestionAlgorithm());
+			picoquic_set_default_bdp_frame_option(engine, benchmarkPicoquicBdpFrameMode);
 		picoquic_set_default_pmtud_policy(engine, picoquic_pmtud_blocked);
 		picoquic_set_mtu_max(engine, benchmarkUdpPayloadSize);
 		picoquic_set_max_data_control(engine, benchmarkConnectionWindow);
-			// Packet-train mode is good for pacing trains on real paths, but it throttles
-			// the loopback bidi row: p50 moved from 1.586 Gbps to 5.616 Gbps with it off.
-			picoquic_set_packet_train_mode(engine, 0);
+				// Packet-train mode is useful to compare on shaped paths, but it has historically
+				// throttled some loopback rows, so the default remains off.
+				picoquic_set_packet_train_mode(engine, benchmarkPicoquicPacketTrainMode);
 		//picoquic_set_log_level(engine, 1);
 		//picoquic_set_textlog(engine, "/dev/stdout");
 		//picoquic_set_client_authentication(engine, 1);
@@ -1068,7 +1279,7 @@ public:
 		cnx = picoquic_create_cnx(engine, picoquic_null_connection_id, picoquic_null_connection_id, address, timeNowUs(), 0, "localhost", "perf", true);
 
 		picoquic_set_callback(cnx, datain, this);
-		picoquic_set_congestion_algorithm(cnx, picoquic_bbr1_algorithm);
+		picoquic_set_congestion_algorithm(cnx, benchmarkPicoquicCongestionAlgorithm());
 
 			picoquic_start_client_cnx(cnx);
 
@@ -1092,6 +1303,25 @@ public:
 		// } while (ready == false);
 
 		// picoquic_mark_active_stream(cnx, 0, false, this);
+	}
+
+	void postPerfTest(void) override
+	{
+		if constexpr (mode & Mode::client)
+		{
+			if (!benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario) &&
+			    benchmarkScenario != BenchmarkScenario::datagram &&
+			    !benchmarkIsUpload() &&
+			    requestBytesWritten == requestBytes.size() &&
+			    !downloadCompletionAckRead)
+			{
+				picoquic_mark_active_stream(cnx, 0, true, this);
+				while (!downloadDoneSignalSent || !downloadCompletionAckRead)
+				{
+					advance(1);
+				}
+			}
+		}
 	}
 
 	void startPerfTest(uint64_t nBytes)
@@ -1126,6 +1356,9 @@ public:
 					return;
 				}
 				bytesInFlight = nBytes;
+				clientDone = false;
+				downloadDoneSignalSent = false;
+				downloadCompletionAckRead = false;
 			uint64_t request = bswap_64(nBytes);
 			memcpy(requestBytes.data(), &request, requestBytes.size());
 			requestBytesWritten = 0;

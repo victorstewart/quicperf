@@ -15,6 +15,7 @@ class SweepRow:
     binary: str
     scenario: str
     network: str
+    path_profile: str
     threads: int
     status: str
     reason: str
@@ -62,8 +63,8 @@ def parse_summary(path: Path) -> dict[str, str] | None:
     return None
 
 
-def load_existing_samples(path: Path) -> dict[tuple[str, str, str, int], SweepRow]:
-    rows: dict[tuple[str, str, str, int], SweepRow] = {}
+def load_existing_samples(path: Path) -> dict[tuple[str, str, str, str, int], SweepRow]:
+    rows: dict[tuple[str, str, str, str, int], SweepRow] = {}
     if not path.exists():
         return rows
 
@@ -85,6 +86,7 @@ def load_existing_samples(path: Path) -> dict[tuple[str, str, str, int], SweepRo
                 binary=row.get("binary", ""),
                 scenario=row.get("scenario", ""),
                 network=row.get("network", ""),
+                path_profile=row.get("path_profile", "loopback") or "loopback",
                 threads=threads,
                 status=row.get("status", ""),
                 reason=row.get("reason", ""),
@@ -98,7 +100,7 @@ def load_existing_samples(path: Path) -> dict[tuple[str, str, str, int], SweepRo
                 spread_ratio=spread_ratio,
                 out_dir=row.get("out_dir", ""),
             )
-            rows[(sample.binary, sample.scenario, sample.network, sample.threads)] = sample
+            rows[(sample.binary, sample.scenario, sample.network, sample.path_profile, sample.threads)] = sample
     return rows
 
 
@@ -127,14 +129,15 @@ def incremental_plateau_reason(previous: SweepRow | None, row: SweepRow, min_imp
     return f"incremental_improvement_{improvement * 100.0:.2f}pct_le_{min_improvement * 100.0:.2f}pct"
 
 
-def run_one(root: Path, sweep_root: Path, binary: str, scenario: str, network: str, threads: int) -> SweepRow:
-    out_dir = sweep_root / f"{binary}-{scenario}-{network}-t{threads}"
+def run_one(root: Path, sweep_root: Path, binary: str, scenario: str, network: str, path_profile: str, threads: int) -> SweepRow:
+    out_dir = sweep_root / f"{binary}-{scenario}-{network}-{path_profile}-t{threads}"
     env = os.environ.copy()
     env.update(
         {
             "QUICPERF_BINARIES": binary,
             "QUICPERF_SCENARIOS": scenario,
             "QUICPERF_NETWORKS": network,
+            "QUICPERF_PATH_PROFILES": path_profile,
             "QUICPERF_CLIENT_THREADS": str(threads),
             "QUICPERF_SERVER_CONNECTIONS": str(threads),
             "QUICPERF_REPEAT": env.get("QUICPERF_SATURATION_REPEAT", env.get("QUICPERF_REPEAT", "3")),
@@ -165,6 +168,7 @@ def run_one(root: Path, sweep_root: Path, binary: str, scenario: str, network: s
             binary=binary,
             scenario=scenario,
             network=network,
+            path_profile=row.get("path_profile", path_profile) or path_profile,
             threads=threads,
             status="failed" if reason else "ok",
             reason=reason,
@@ -181,9 +185,9 @@ def run_one(root: Path, sweep_root: Path, binary: str, scenario: str, network: s
 
     reason = unsupported_reason(completed.stdout)
     if reason:
-        return SweepRow(binary, scenario, network, threads, "unsupported", reason, out_dir=str(out_dir))
+        return SweepRow(binary, scenario, network, path_profile, threads, "unsupported", reason, out_dir=str(out_dir))
     reason = failure_reason(completed.stdout, completed.returncode)
-    return SweepRow(binary, scenario, network, threads, "failed", reason or f"exit_{completed.returncode}", out_dir=str(out_dir))
+    return SweepRow(binary, scenario, network, path_profile, threads, "failed", reason or f"exit_{completed.returncode}", out_dir=str(out_dir))
 
 
 def selected_row(rows: list[SweepRow], tolerance: float) -> tuple[str, SweepRow | None, SweepRow | None, str, SweepRow | None]:
@@ -238,6 +242,7 @@ def main() -> int:
     thread_counts = [int(item) for item in split_words(os.environ.get("QUICPERF_SATURATION_THREADS", "1 2 4 8"))]
     scenarios = unique_preserve(split_words(os.environ.get("QUICPERF_SATURATION_SCENARIOS", os.environ.get("QUICPERF_SCENARIOS", "download upload connect"))))
     networks = unique_preserve(split_words(os.environ.get("QUICPERF_SATURATION_NETWORKS", os.environ.get("QUICPERF_NETWORKS", "syscall"))))
+    path_profiles = unique_preserve(split_words(os.environ.get("QUICPERF_SATURATION_PATH_PROFILES", os.environ.get("QUICPERF_PATH_PROFILES", os.environ.get("QUICPERF_PATH_PROFILE", "loopback")))))
     tolerance = float(os.environ.get("QUICPERF_SATURATION_TOLERANCE", "0.01"))
     min_incremental_improvement = float(os.environ.get("QUICPERF_SATURATION_MIN_INCREMENTAL_IMPROVEMENT", "0.01"))
     stop_after_blocked = os.environ.get("QUICPERF_SATURATION_STOP_AFTER_BLOCKED", "0") == "1"
@@ -248,10 +253,11 @@ def main() -> int:
     selected_binaries = binaries(root)
 
     group_order = [
-        (binary, scenario, network)
+        (binary, scenario, network, path_profile)
         for binary in selected_binaries
         for scenario in scenarios
         for network in networks
+        for path_profile in path_profiles
     ]
     if randomize_groups:
         random.Random(random_seed).shuffle(group_order)
@@ -275,14 +281,14 @@ def main() -> int:
     print(
         "quicperf_saturation_run "
         f"out_dir={sweep_root} binaries=\"{' '.join(selected_binaries)}\" "
-        f"scenarios=\"{' '.join(scenarios)}\" networks=\"{' '.join(networks)}\" "
+        f"scenarios=\"{' '.join(scenarios)}\" networks=\"{' '.join(networks)}\" path_profiles=\"{' '.join(path_profiles)}\" "
         f"threads=\"{' '.join(str(t) for t in thread_counts)}\" tolerance={tolerance:.3f} "
         f"min_incremental_improvement={min_incremental_improvement:.3f} "
         f"max_pre_ok_failures={max_pre_ok_failures} "
         f"randomize_groups={int(randomize_groups)} random_seed={random_seed}"
     )
 
-    selections: list[tuple[str, str, str, str, SweepRow | None, SweepRow | None, str, SweepRow | None]] = []
+    selections: list[tuple[str, str, str, str, str, SweepRow | None, SweepRow | None, str, SweepRow | None]] = []
 
     samples_path = sweep_root / "saturation-samples.tsv"
     existing_rows = load_existing_samples(samples_path) if resume else {}
@@ -291,9 +297,9 @@ def main() -> int:
     with samples_path.open(mode, encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, delimiter="\t")
         if write_header:
-            writer.writerow(["binary", "scenario", "network", "threads", "status", "reason", "metric", "samples", "min", "p50", "p90", "p99", "max", "spread_ratio", "out_dir"])
+            writer.writerow(["binary", "scenario", "network", "path_profile", "threads", "status", "reason", "metric", "samples", "min", "p50", "p90", "p99", "max", "spread_ratio", "out_dir"])
         handle.flush()
-        for binary, scenario, network in group_order:
+        for binary, scenario, network, path_profile in group_order:
             group: list[SweepRow] = []
             stop_after_unsupported = False
             stop_after_failed = False
@@ -302,19 +308,19 @@ def main() -> int:
             for threads in thread_counts:
                 write_sample = False
                 if stop_after_unsupported:
-                    row = SweepRow(binary, scenario, network, threads, "unsupported", "lower_thread_count_unsupported")
+                    row = SweepRow(binary, scenario, network, path_profile, threads, "unsupported", "lower_thread_count_unsupported")
                     write_sample = True
                 elif stop_after_failed:
-                    row = SweepRow(binary, scenario, network, threads, "blocked", "lower_thread_count_failed")
+                    row = SweepRow(binary, scenario, network, path_profile, threads, "blocked", "lower_thread_count_failed")
                     write_sample = True
                 elif stop_after_plateau:
-                    row = SweepRow(binary, scenario, network, threads, "plateau", "lower_thread_count_plateau")
+                    row = SweepRow(binary, scenario, network, path_profile, threads, "plateau", "lower_thread_count_plateau")
                     write_sample = True
                 else:
-                    key = (binary, scenario, network, threads)
+                    key = (binary, scenario, network, path_profile, threads)
                     row = existing_rows.get(key)
                     if row is None:
-                        row = run_one(root, sweep_root, binary, scenario, network, threads)
+                        row = run_one(root, sweep_root, binary, scenario, network, path_profile, threads)
                         write_sample = True
                     previous_ok = next((previous for previous in reversed(group) if previous.status == "ok"), None)
                     reason = incremental_plateau_reason(previous_ok, row, min_incremental_improvement)
@@ -323,6 +329,7 @@ def main() -> int:
                             row.binary,
                             row.scenario,
                             row.network,
+                            row.path_profile,
                             row.threads,
                             "plateau",
                             reason,
@@ -341,6 +348,7 @@ def main() -> int:
                         row.binary,
                         row.scenario,
                         row.network,
+                        row.path_profile,
                         row.threads,
                         row.status,
                         row.reason,
@@ -358,7 +366,7 @@ def main() -> int:
                 group.append(row)
                 print(
                     "quicperf_saturation_sample "
-                    f"binary={row.binary} scenario={row.scenario} network={row.network} "
+                    f"binary={row.binary} scenario={row.scenario} network={row.network} path_profile={row.path_profile} "
                     f"threads={row.threads} status={row.status} reason={row.reason or '-'} "
                     f"metric={row.metric or '-'} samples={row.samples} min={row.min_value:.6f} "
                     f"p50={row.p50:.6f} p90={row.p90:.6f} p99={row.p99:.6f} "
@@ -383,7 +391,7 @@ def main() -> int:
                 ):
                     stop_after_failed = True
             status, selected, best, reason, boundary = selected_row(group, tolerance)
-            selections.append((binary, scenario, network, status, selected, best, reason, boundary))
+            selections.append((binary, scenario, network, path_profile, status, selected, best, reason, boundary))
 
     summary_path = sweep_root / "saturation-summary.tsv"
     with summary_path.open("w", encoding="utf-8", newline="") as handle:
@@ -392,6 +400,7 @@ def main() -> int:
             "binary",
             "scenario",
             "network",
+            "path_profile",
             "status",
             "metric",
             "selected_threads",
@@ -409,7 +418,7 @@ def main() -> int:
             "boundary_reason",
             "reason",
         ])
-        for binary, scenario, network, status, selected, best, reason, boundary in selections:
+        for binary, scenario, network, path_profile, status, selected, best, reason, boundary in selections:
             boundary_threads = boundary.threads if boundary else ""
             boundary_status = boundary.status if boundary else ""
             boundary_reason = boundary.reason if boundary else ""
@@ -418,6 +427,7 @@ def main() -> int:
                     binary,
                     scenario,
                     network,
+                    path_profile,
                     status,
                     selected.metric,
                     selected.threads,
@@ -437,7 +447,7 @@ def main() -> int:
                 ])
                 print(
                     "quicperf_saturation_selected "
-                    f"binary={binary} scenario={scenario} network={network} status={status} "
+                    f"binary={binary} scenario={scenario} network={network} path_profile={path_profile} status={status} "
                     f"metric={selected.metric} selected_threads={selected.threads} "
                     f"selected_samples={selected.samples} selected_p50={selected.p50:.6f} "
                     f"selected_spread_ratio={selected.spread_ratio:.6f} best_threads={best.threads} "
@@ -455,6 +465,7 @@ def main() -> int:
                     binary,
                     scenario,
                     network,
+                    path_profile,
                     status,
                     metric,
                     "",
@@ -474,7 +485,7 @@ def main() -> int:
                 ])
                 print(
                     "quicperf_saturation_selected "
-                    f"binary={binary} scenario={scenario} network={network} status={status} "
+                    f"binary={binary} scenario={scenario} network={network} path_profile={path_profile} status={status} "
                     f"boundary_threads={boundary_threads or '-'} "
                     f"boundary_status={boundary_status or '-'} "
                     f"boundary_reason={boundary_reason or '-'} reason={reason}"

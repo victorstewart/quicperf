@@ -1,0 +1,115 @@
+{
+  "profiles": {
+    "loopback": {
+      "kind": "loopback",
+      "description": "Existing direct loopback path with no namespace or tc shaping.",
+      "rtt_us": 0,
+      "downlink_bps": 0,
+      "uplink_bps": 0
+    },
+    "dc-fabric-10g": {
+      "kind": "namespace",
+      "description": "Low-latency symmetric datacenter fabric.",
+      "one_way_delay_us": 250,
+      "one_way_jitter_us": 50,
+      "jitter_correlation_percent": 10,
+      "loss_percent": 0.0,
+      "loss_correlation_percent": 0,
+      "downlink_bps": 10000000000,
+      "uplink_bps": 10000000000,
+      "queue_bdp": 1.0,
+      "mtu_bytes": 1500,
+      "trace": []
+    },
+    "dc-fabric-1ms": {
+      "kind": "namespace",
+      "description": "Datacenter fabric fallback for kernels where sub-millisecond netem is too noisy.",
+      "one_way_delay_us": 500,
+      "one_way_jitter_us": 50,
+      "jitter_correlation_percent": 10,
+      "loss_percent": 0.0,
+      "loss_correlation_percent": 0,
+      "downlink_bps": 10000000000,
+      "uplink_bps": 10000000000,
+      "queue_bdp": 1.0,
+      "mtu_bytes": 1500,
+      "trace": []
+    },
+    "lte-good": {
+      "kind": "namespace",
+      "description": "Good LTE access: asymmetric bandwidth, correlated jitter, and deterministic capacity movement.",
+      "one_way_delay_us": 22500,
+      "one_way_jitter_us": 8000,
+      "jitter_correlation_percent": 35,
+      "loss_percent": 0.08,
+      "loss_correlation_percent": 25,
+      "downlink_bps": 50000000,
+      "uplink_bps": 12000000,
+      "queue_bdp": 1.5,
+      "mtu_bytes": 1500,
+      "trace": [
+        {"duration_ms": 700, "downlink_bps": 80000000, "uplink_bps": 20000000, "one_way_delay_us": 18000, "one_way_jitter_us": 5000, "loss_percent": 0.02, "queue_bdp": 1.25},
+        {"duration_ms": 900, "downlink_bps": 45000000, "uplink_bps": 10000000, "one_way_delay_us": 22500, "one_way_jitter_us": 8000, "loss_percent": 0.08, "queue_bdp": 1.5},
+        {"duration_ms": 500, "downlink_bps": 20000000, "uplink_bps": 5000000, "one_way_delay_us": 35000, "one_way_jitter_us": 15000, "loss_percent": 0.25, "queue_bdp": 1.8},
+        {"duration_ms": 1100, "downlink_bps": 60000000, "uplink_bps": 14000000, "one_way_delay_us": 21000, "one_way_jitter_us": 7000, "loss_percent": 0.05, "queue_bdp": 1.4}
+      ]
+    },
+    "lte-congested": {
+      "kind": "namespace",
+      "description": "Congested LTE edge case for resilience and UX-sensitive rows.",
+      "one_way_delay_us": 50000,
+      "one_way_jitter_us": 25000,
+      "jitter_correlation_percent": 50,
+      "loss_percent": 0.7,
+      "loss_correlation_percent": 45,
+      "downlink_bps": 8000000,
+      "uplink_bps": 2000000,
+      "queue_bdp": 2.0,
+      "mtu_bytes": 1500,
+      "trace": [
+        {"duration_ms": 900, "downlink_bps": 15000000, "uplink_bps": 5000000, "one_way_delay_us": 42000, "one_way_jitter_us": 18000, "loss_percent": 0.35, "queue_bdp": 1.8},
+        {"duration_ms": 1200, "downlink_bps": 7000000, "uplink_bps": 1500000, "one_way_delay_us": 55000, "one_way_jitter_us": 30000, "loss_percent": 0.85, "queue_bdp": 2.2},
+        {"duration_ms": 600, "downlink_bps": 2000000, "uplink_bps": 500000, "one_way_delay_us": 85000, "one_way_jitter_us": 50000, "loss_percent": 2.5, "queue_bdp": 2.8},
+        {"duration_ms": 1000, "downlink_bps": 10000000, "uplink_bps": 2500000, "one_way_delay_us": 50000, "one_way_jitter_us": 25000, "loss_percent": 0.7, "queue_bdp": 2.0}
+      ]
+    },
+    "5g-sub6-good": {
+      "kind": "namespace",
+      "description": "Good 5G sub-6 mobile broadband with scheduler-style capacity movement.",
+      "one_way_delay_us": 10000,
+      "one_way_jitter_us": 3000,
+      "jitter_correlation_percent": 25,
+      "loss_percent": 0.02,
+      "loss_correlation_percent": 15,
+      "downlink_bps": 200000000,
+      "uplink_bps": 40000000,
+      "queue_bdp": 1.25,
+      "mtu_bytes": 1500,
+      "trace": [
+        {"duration_ms": 300, "downlink_bps": 500000000, "uplink_bps": 100000000, "one_way_delay_us": 7000, "one_way_jitter_us": 1500, "loss_percent": 0.005, "queue_bdp": 1.0},
+        {"duration_ms": 400, "downlink_bps": 180000000, "uplink_bps": 35000000, "one_way_delay_us": 10000, "one_way_jitter_us": 3000, "loss_percent": 0.02, "queue_bdp": 1.25},
+        {"duration_ms": 250, "downlink_bps": 80000000, "uplink_bps": 10000000, "one_way_delay_us": 18000, "one_way_jitter_us": 9000, "loss_percent": 0.12, "queue_bdp": 1.6},
+        {"duration_ms": 500, "downlink_bps": 260000000, "uplink_bps": 50000000, "one_way_delay_us": 9000, "one_way_jitter_us": 2500, "loss_percent": 0.015, "queue_bdp": 1.15}
+      ]
+    },
+    "5g-mmwave-bursty": {
+      "kind": "namespace",
+      "description": "Bursty 5G mmWave-style capacity with deterministic obstruction drops.",
+      "one_way_delay_us": 7500,
+      "one_way_jitter_us": 5000,
+      "jitter_correlation_percent": 30,
+      "loss_percent": 0.05,
+      "loss_correlation_percent": 25,
+      "downlink_bps": 1000000000,
+      "uplink_bps": 100000000,
+      "queue_bdp": 1.25,
+      "mtu_bytes": 1500,
+      "trace": [
+        {"duration_ms": 250, "downlink_bps": 2000000000, "uplink_bps": 200000000, "one_way_delay_us": 5000, "one_way_jitter_us": 1000, "loss_percent": 0.005, "queue_bdp": 1.0},
+        {"duration_ms": 200, "downlink_bps": 800000000, "uplink_bps": 80000000, "one_way_delay_us": 8000, "one_way_jitter_us": 4000, "loss_percent": 0.05, "queue_bdp": 1.25},
+        {"duration_ms": 120, "downlink_bps": 120000000, "uplink_bps": 30000000, "one_way_delay_us": 35000, "one_way_jitter_us": 25000, "loss_percent": 2.5, "queue_bdp": 0.75},
+        {"duration_ms": 350, "downlink_bps": 1500000000, "uplink_bps": 150000000, "one_way_delay_us": 6500, "one_way_jitter_us": 2000, "loss_percent": 0.02, "queue_bdp": 1.1}
+      ]
+    }
+  }
+}

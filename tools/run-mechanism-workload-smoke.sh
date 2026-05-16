@@ -9,6 +9,7 @@ log="$out_dir/run.stdout"
 all_primary_binaries="${QUICPERF_MECHANISM_SMOKE_BINARIES:-ngtcp2perf lsperf tquicperf quicheperf picoperf xquicperf quinnperf s2nperf neqoperf noqperf quiczigperf mvfstperf}"
 production_scenarios="${QUICPERF_MECHANISM_SMOKE_SCENARIOS:-reqresp stream_churn multistream_download multistream_upload bidi small_payload_pps loss_recovery flow_control idle_footprint close_reset_cleanup}"
 networks="${QUICPERF_MECHANISM_SMOKE_NETWORKS:-syscall iouring}"
+path_profiles="${QUICPERF_MECHANISM_SMOKE_PATH_PROFILES:-${QUICPERF_PATH_PROFILES:-${QUICPERF_PATH_PROFILE:-loopback}}}"
 repeat="${QUICPERF_MECHANISM_SMOKE_REPEAT:-1}"
 warmup="${QUICPERF_MECHANISM_SMOKE_WARMUP:-0}"
 test_bytes="${QUICPERF_MECHANISM_SMOKE_TEST_BYTES:-4096}"
@@ -31,6 +32,7 @@ QUICPERF_OUT_DIR="$out_dir/run" \
 QUICPERF_BINARIES="$all_primary_binaries" \
 QUICPERF_SCENARIOS="$production_scenarios" \
 QUICPERF_NETWORKS="$networks" \
+QUICPERF_PATH_PROFILES="$path_profiles" \
 QUICPERF_REPEAT="$repeat" \
 QUICPERF_WARMUP="$warmup" \
 QUICPERF_TEST_BYTES="$test_bytes" \
@@ -48,7 +50,7 @@ QUICPERF_RANDOMIZE_ORDER="${QUICPERF_MECHANISM_SMOKE_RANDOMIZE_ORDER:-1}" \
 run_status=$?
 set -e
 
-python3 - "$out_dir/run/summary.tsv" "$all_primary_binaries" "$production_scenarios" "$networks" "$repeat" "$log" <<'PY'
+python3 - "$out_dir/run/summary.tsv" "$all_primary_binaries" "$production_scenarios" "$networks" "$path_profiles" "$repeat" "$log" <<'PY'
 import csv
 import sys
 from pathlib import Path
@@ -57,8 +59,9 @@ summary_path = Path(sys.argv[1])
 binaries = sys.argv[2].split()
 scenarios = sys.argv[3].split()
 networks = sys.argv[4].split()
-repeat = int(sys.argv[5])
-log_path = Path(sys.argv[6])
+path_profiles = sys.argv[5].split()
+repeat = int(sys.argv[6])
+log_path = Path(sys.argv[7])
 
 rows = []
 if summary_path.exists():
@@ -66,7 +69,7 @@ if summary_path.exists():
         rows = list(csv.DictReader(handle, delimiter="\t"))
 
 by_key = {
-    (row.get("binary"), row.get("scenario"), row.get("network")): row
+    (row.get("binary"), row.get("scenario"), row.get("network"), row.get("path_profile") or "loopback"): row
     for row in rows
 }
 
@@ -75,16 +78,17 @@ short = []
 for binary in binaries:
     for scenario in scenarios:
         for network in networks:
-            row = by_key.get((binary, scenario, network))
-            if row is None:
-                missing.append(f"{binary}/{scenario}/{network}")
-                continue
-            try:
-                samples = int(row.get("samples", "0") or "0")
-            except ValueError:
-                samples = 0
-            if samples < repeat:
-                short.append(f"{binary}/{scenario}/{network}:{samples}_of_{repeat}")
+            for path_profile in path_profiles:
+                row = by_key.get((binary, scenario, network, path_profile))
+                if row is None:
+                    missing.append(f"{binary}/{scenario}/{network}/{path_profile}")
+                    continue
+                try:
+                    samples = int(row.get("samples", "0") or "0")
+                except ValueError:
+                    samples = 0
+                if samples < repeat:
+                    short.append(f"{binary}/{scenario}/{network}/{path_profile}:{samples}_of_{repeat}")
 
 log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
 bad_markers = []

@@ -24,6 +24,7 @@ static const char *tls_cert;
 static const char *tls_key;
 static const char *tls_chain;
 static struct in6_addr serverAddress = {};
+static struct in6_addr localAddress = {};
 
 #include "perf.services.h"
 
@@ -78,7 +79,7 @@ static const char *benchmarkAdapterFeatures(void)
 	return "cc=bbr|pacing=on|spin=on|ql_bits=2|ecn=off|pmtud=off|send_batch=50";
 #endif
 #ifdef PICOPERF
-	return "cc=bbr1|pmtud=off|packet_train=off|mtu=1452|null_verifier=ed25519_sigalgs";
+	return benchmarkPicoquicAdapterFeatures();
 #endif
 #ifdef QUICHEPERF
 	return "cc=bbr2_gcongestion|migration=off|pmtud=off|max_windows=profile";
@@ -133,6 +134,26 @@ static uint64_t envU64(const char *name, uint64_t fallback)
 	}
 
 	return parsed;
+}
+
+static bool envFlag(const char *name, bool fallback)
+{
+	const char *value = getenv(name);
+	if (value == nullptr || value[0] == '\0')
+	{
+		return fallback;
+	}
+	if (strcmp(value, "1") == 0 || strcmp(value, "true") == 0 ||
+	    strcmp(value, "yes") == 0 || strcmp(value, "on") == 0)
+	{
+		return true;
+	}
+	if (strcmp(value, "0") == 0 || strcmp(value, "false") == 0 ||
+	    strcmp(value, "no") == 0 || strcmp(value, "off") == 0)
+	{
+		return false;
+	}
+	return fallback;
 }
 
 static uint16_t envPort(const char *name, uint16_t fallback)
@@ -258,12 +279,49 @@ static bool tlsVerifyModeIsKnown(const char *mode)
 	return strcmp(mode, "disabled") == 0 || strcmp(mode, "peer") == 0 || strcmp(mode, "chain") == 0;
 }
 
+static bool parseBenchmarkAddress(const char *value, struct in6_addr& address)
+{
+	if (strcmp(value, "any") == 0)
+	{
+		address = in6addr_any;
+		return true;
+	}
+	if (strcmp(value, "loopback") == 0)
+	{
+		address = in6addr_loopback;
+		return true;
+	}
+	return inet_pton(AF_INET6, value, &address) == 1;
+}
+
+static uint64_t benchmarkBdpWindowBytes(void)
+{
+	if (benchmarkPathRttUs == 0 || benchmarkPathMaxRateBps == 0)
+	{
+		return benchmarkDefaultConnectionWindow;
+	}
+
+	const uint64_t bdpBytes = ((benchmarkPathMaxRateBps * benchmarkPathRttUs) + 7'999'999ULL) / 8'000'000ULL;
+	const uint64_t minWindow = 1ULL * 1024ULL * 1024ULL;
+	const uint64_t maxWindow = 512ULL * 1024ULL * 1024ULL;
+	return std::clamp<uint64_t>(bdpBytes * 4ULL, minWindow, maxWindow);
+}
+
+static void applyBenchmarkBdpWindowProfile(void)
+{
+	const uint64_t window = benchmarkBdpWindowBytes();
+	benchmarkConnectionWindow = window;
+	benchmarkStreamWindow = window;
+	benchmarkWindowProfile = "wan-bdp";
+}
+
 static void configureBenchmarkProfiles(std::string_view requestedNetwork)
 {
 	benchmarkBuildProfile = envString("QUICPERF_BUILD_PROFILE", "native-lto");
 	benchmarkWindowProfile = envString("QUICPERF_WINDOW_PROFILE", "default");
 	benchmarkCongestionProfile = envString("QUICPERF_CONGESTION_PROFILE", "default-bbr");
 	benchmarkNetworkProfile = envString("QUICPERF_NETWORK_PROFILE", requestedNetwork == "iouring" ? requestedNetwork.data() : "syscall");
+	benchmarkPathProfile = envString("QUICPERF_PATH_PROFILE", "loopback");
 	benchmarkTlsVerifyMode = envString("QUICPERF_TLS_VERIFY_MODE", envString("QUICPERF_TLS_VERIFY", "disabled"));
 	if (!tlsVerifyModeIsKnown(benchmarkTlsVerifyMode))
 	{
@@ -271,11 +329,31 @@ static void configureBenchmarkProfiles(std::string_view requestedNetwork)
 	}
 	benchmarkTlsCertProfile = envString("QUICPERF_TLS_CERT_PROFILE", "ed25519");
 	benchmarkServerTargetConnections = static_cast<uint32_t>(envU64("QUICPERF_SERVER_CONNECTIONS", 1));
+	benchmarkPathRttUs = envU64("QUICPERF_PATH_RTT_US", 0);
+	benchmarkPathDownlinkBps = envU64("QUICPERF_PATH_DOWNLINK_BPS", 0);
+	benchmarkPathUplinkBps = envU64("QUICPERF_PATH_UPLINK_BPS", 0);
+	benchmarkPathMaxRateBps = envU64("QUICPERF_PATH_MAX_RATE_BPS", std::max(benchmarkPathDownlinkBps, benchmarkPathUplinkBps));
+	benchmarkPicoquicPacketTrainMode = static_cast<uint32_t>(envFlag("QUICPERF_PICOQUIC_PACKET_TRAIN", false));
+	benchmarkPicoquicBdpFrameMode = static_cast<uint32_t>(envFlag("QUICPERF_PICOQUIC_BDP_FRAME", true));
+	const bool pathAutoCongestion =
+		strcmp(benchmarkCongestionProfile, "path-auto") == 0 ||
+		strcmp(benchmarkCongestionProfile, "auto") == 0;
+	const bool pathCanSeedBdp =
+		pathAutoCongestion &&
+		strcmp(benchmarkPathProfile, "loopback") != 0 &&
+		benchmarkPathRttUs != 0 &&
+		benchmarkPathMaxRateBps != 0;
+	benchmarkPicoquicBdpSeedMode = static_cast<uint32_t>(envFlag("QUICPERF_PICOQUIC_BDP_SEED", pathCanSeedBdp));
+	benchmarkPicoquicBdpSeedImmediateMode = static_cast<uint32_t>(envFlag("QUICPERF_PICOQUIC_BDP_SEED_IMMEDIATE", pathCanSeedBdp));
 
 	if (strcmp(benchmarkWindowProfile, "large") == 0)
 	{
 		benchmarkConnectionWindow = benchmarkLargeConnectionWindow;
 		benchmarkStreamWindow = benchmarkLargeStreamWindow;
+	}
+	else if (strcmp(benchmarkWindowProfile, "bdp") == 0 || strcmp(benchmarkWindowProfile, "wan-bdp") == 0)
+	{
+		applyBenchmarkBdpWindowProfile();
 	}
 	else
 	{
@@ -298,6 +376,13 @@ static void configureBenchmarkScenarioProfile(void)
 	benchmarkScenarioResponseBytes = static_cast<uint32_t>(envU64("QUICPERF_RESPONSE_BYTES", 1024));
 	benchmarkScenarioMessageBytes = static_cast<uint32_t>(envU64("QUICPERF_MESSAGE_BYTES", 64));
 	benchmarkIdleHoldMs = envU64("QUICPERF_IDLE_HOLD_MS", 1000);
+
+	if (strcmp(benchmarkWindowProfile, "default") == 0 &&
+	    strcmp(benchmarkPathProfile, "loopback") != 0 &&
+	    !benchmarkIsFlowControl())
+	{
+		applyBenchmarkBdpWindowProfile();
+	}
 
 	if (benchmarkIsFlowControl())
 	{
@@ -559,17 +644,17 @@ int main (int argc, char *argv[])
 	char **extraArgv = argc > 5 ? argv + 5 : argv + argc;
 	const uint16_t serverPort = envPort("QUICPERF_SERVER_PORT", 4433);
 
-	if (strcmp(argv[3], "any") == 0)
+	const char *localAddressText = envString("QUICPERF_LOCAL_ADDRESS", argv[3]);
+	const char *remoteAddressText = envString("QUICPERF_REMOTE_ADDRESS", argv[3]);
+	if (!parseBenchmarkAddress(localAddressText, localAddress))
 	{
-		serverAddress = in6addr_any;
+		fprintf(stderr, "invalid local IPv6 address: %s\n", localAddressText);
+		return 2;
 	}
-	else if (strcmp(argv[3], "loopback") == 0)
+	if (!parseBenchmarkAddress(remoteAddressText, serverAddress))
 	{
-		serverAddress = in6addr_loopback;
-	}
-	else
-	{
-		inet_pton(AF_INET6, argv[3], &serverAddress);
+		fprintf(stderr, "invalid remote IPv6 address: %s\n", remoteAddressText);
+		return 2;
 	}
 
 	if (role == "server")
@@ -588,9 +673,9 @@ int main (int argc, char *argv[])
 		auto runServerTest = [&] <Mode mode> (QuicLibrary<mode> *server) -> void {
 
 			server->instanceSetup(serverPort, extraArgc, extraArgv);
-			printf("quicperf_server_ready library=%s scenario=%s role=server network=%s address=%s port=%u\n",
+			printf("quicperf_server_ready library=%s scenario=%s role=server network=%s address=%s local_address=%s remote_address=%s path_profile=%s port=%u\n",
 				benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario),
-				benchmarkNetworkLabel(network), argv[3], static_cast<unsigned>(serverPort));
+				benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, benchmarkPathProfile, static_cast<unsigned>(serverPort));
 			server->startPerfTest();
 			delete server;
 			verifyThreadCount(argv[1], "complete", 1);
@@ -601,8 +686,8 @@ int main (int argc, char *argv[])
 				const uint64_t udpPacketsReceived = benchmarkUdpPacketsReceivedTotal.load(std::memory_order_relaxed);
 				const uint64_t udpSendSyscalls = benchmarkUdpSendSyscallsTotal.load(std::memory_order_relaxed);
 				const uint64_t udpRecvPolls = benchmarkUdpRecvPollsTotal.load(std::memory_order_relaxed);
-				printf("quicperf_result library=%s scenario=%s role=server network=%s address=%s "
-						"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s "
+				printf("quicperf_result library=%s scenario=%s role=server network=%s address=%s local_address=%s remote_address=%s "
+						"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s path_profile=%s "
 						"app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
 						"adapter_features=%s initial_cwnd_packets=%u ack_frequency_packets=%u "
 						"socket_sndbuf_requested=%" PRIu64 " socket_sndbuf_effective=%d "
@@ -610,8 +695,8 @@ int main (int argc, char *argv[])
 						"scenario_profile=%s loss_drop_every_packets=%" PRIu64 " loss_warmup_packets=%" PRIu64 " "
 						"udp_packets_sent=%" PRIu64 " udp_packets_received=%" PRIu64 " "
 						"udp_send_syscalls=%" PRIu64 " udp_recv_polls=%" PRIu64 " status=complete\n",
-						benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3],
-						benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile,
+						benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText,
+						benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile, benchmarkPathProfile,
 						benchmarkAppChunkSize, benchmarkServerTargetConnections, benchmarkTlsVerifyMode, benchmarkTlsCertProfile,
 						benchmarkAdapterFeatures(), benchmarkAdapterInitialCwndPackets(), benchmarkAdapterAckFrequencyPackets(),
 						benchmarkConnectionWindow, benchmarkSocketSndbufEffective.load(std::memory_order_relaxed),
@@ -619,24 +704,24 @@ int main (int argc, char *argv[])
 						benchmarkScenarioProfile, benchmarkLossDropEveryPackets, benchmarkLossWarmupPackets,
 						udpPacketsSent, udpPacketsReceived, udpSendSyscalls, udpRecvPolls);
 				return;
-			}
+				}
 
-			printf("quicperf_result library=%s scenario=%s role=server network=%s address=%s "
-				"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s "
-				"app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
-				"adapter_features=%s initial_cwnd_packets=%u ack_frequency_packets=%u "
-				"socket_sndbuf_requested=%" PRIu64 " socket_sndbuf_effective=%d "
+				printf("quicperf_result library=%s scenario=%s role=server network=%s address=%s local_address=%s remote_address=%s "
+					"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s path_profile=%s "
+					"app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
+					"adapter_features=%s initial_cwnd_packets=%u ack_frequency_packets=%u "
+					"socket_sndbuf_requested=%" PRIu64 " socket_sndbuf_effective=%d "
 				"socket_rcvbuf_requested=%" PRIu64 " socket_rcvbuf_effective=%d "
-				"scenario_profile=%s loss_drop_every_packets=%" PRIu64 " loss_warmup_packets=%" PRIu64 " "
-				"status=complete\n",
-				benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3],
-				benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile,
-				benchmarkAppChunkSize, benchmarkServerTargetConnections, benchmarkTlsVerifyMode, benchmarkTlsCertProfile,
-				benchmarkAdapterFeatures(), benchmarkAdapterInitialCwndPackets(), benchmarkAdapterAckFrequencyPackets(),
-				benchmarkConnectionWindow, benchmarkSocketSndbufEffective.load(std::memory_order_relaxed),
-				benchmarkConnectionWindow, benchmarkSocketRcvbufEffective.load(std::memory_order_relaxed),
-				benchmarkScenarioProfile, benchmarkLossDropEveryPackets, benchmarkLossWarmupPackets);
-			};
+					"scenario_profile=%s loss_drop_every_packets=%" PRIu64 " loss_warmup_packets=%" PRIu64 " "
+					"status=complete\n",
+					benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText,
+					benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile, benchmarkPathProfile,
+					benchmarkAppChunkSize, benchmarkServerTargetConnections, benchmarkTlsVerifyMode, benchmarkTlsCertProfile,
+					benchmarkAdapterFeatures(), benchmarkAdapterInitialCwndPackets(), benchmarkAdapterAckFrequencyPackets(),
+					benchmarkConnectionWindow, benchmarkSocketSndbufEffective.load(std::memory_order_relaxed),
+					benchmarkConnectionWindow, benchmarkSocketRcvbufEffective.load(std::memory_order_relaxed),
+					benchmarkScenarioProfile, benchmarkLossDropEveryPackets, benchmarkLossWarmupPackets);
+		};
 
 		if (network == "iouring")
 		{
@@ -711,8 +796,8 @@ int main (int argc, char *argv[])
 					client->postPerfTest();
 					delete client;
 
-					printf("quicperf_thread library=%s scenario=%s role=client network=%s address=%s thread=%u connections=1 seconds=%.9f connections_per_second=%.6f\n",
-							benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], threadIndex, time, connectionsPerSecond);
+					printf("quicperf_thread library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s path_profile=%s thread=%u connections=1 seconds=%.9f connections_per_second=%.6f\n",
+							benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, benchmarkPathProfile, threadIndex, time, connectionsPerSecond);
 
 						seconds[threadIndex] = time;
 						return;
@@ -749,8 +834,8 @@ int main (int argc, char *argv[])
 						client->postPerfTest();
 						delete client;
 
-						printf("quicperf_thread library=%s scenario=%s role=client network=%s address=%s thread=%u units=1 seconds=%.9f idle_hold_seconds=%.9f\n",
-							benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], threadIndex, time, time);
+						printf("quicperf_thread library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s path_profile=%s thread=%u units=1 seconds=%.9f idle_hold_seconds=%.9f idle_connections=1\n",
+							benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, benchmarkPathProfile, threadIndex, time, time);
 
 						seconds[threadIndex] = time;
 						return;
@@ -791,8 +876,8 @@ int main (int argc, char *argv[])
 						: ((double)unitsForTest) / time;
 					delete client;
 
-					printf("quicperf_thread library=%s scenario=%s role=client network=%s address=%s thread=%u units=%" PRIu64 " seconds=%.9f %s=%.6f\n",
-							benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], threadIndex,
+					printf("quicperf_thread library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s path_profile=%s thread=%u units=%" PRIu64 " seconds=%.9f %s=%.6f\n",
+							benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, benchmarkPathProfile, threadIndex,
 							unitsForTest, time, benchmarkScenarioMetricName(benchmarkScenario), metricValue);
 					seconds[threadIndex] = time;
 				};
@@ -855,16 +940,16 @@ int main (int argc, char *argv[])
 				if (benchmarkIsConnect())
 				{
 					const double connectionsPerSecond = ((double)nThreads) / maxSeconds;
-						printf("quicperf_result library=%s scenario=%s role=client network=%s address=%s threads=%u "
-							"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s "
+						printf("quicperf_result library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s threads=%u "
+							"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s path_profile=%s "
 							"app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
 							"adapter_features=%s initial_cwnd_packets=%u ack_frequency_packets=%u "
 							"socket_sndbuf_requested=%" PRIu64 " socket_sndbuf_effective=%d "
 							"socket_rcvbuf_requested=%" PRIu64 " socket_rcvbuf_effective=%d "
 							"scenario_profile=%s loss_drop_every_packets=%" PRIu64 " loss_warmup_packets=%" PRIu64 " "
 							"connections=%u wall_seconds=%.9f connections_per_second=%.6f\n",
-							benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], nThreads,
-							benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile,
+							benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, nThreads,
+							benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile, benchmarkPathProfile,
 							benchmarkAppChunkSize, benchmarkServerTargetConnections, benchmarkTlsVerifyMode, benchmarkTlsCertProfile,
 							benchmarkAdapterFeatures(), benchmarkAdapterInitialCwndPackets(), benchmarkAdapterAckFrequencyPackets(),
 							benchmarkConnectionWindow, benchmarkSocketSndbufEffective.load(std::memory_order_relaxed),
@@ -877,22 +962,22 @@ int main (int argc, char *argv[])
 				if (benchmarkIsIdleFootprint())
 				{
 					const uint64_t idleConnections = nThreads;
-					printf("quicperf_result library=%s scenario=%s role=client network=%s address=%s threads=%u "
-						"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s "
+					printf("quicperf_result library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s threads=%u "
+						"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s path_profile=%s "
 						"app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
 						"adapter_features=%s initial_cwnd_packets=%u ack_frequency_packets=%u "
 						"socket_sndbuf_requested=%" PRIu64 " socket_sndbuf_effective=%d "
 						"socket_rcvbuf_requested=%" PRIu64 " socket_rcvbuf_effective=%d "
 						"scenario_profile=%s loss_drop_every_packets=%" PRIu64 " loss_warmup_packets=%" PRIu64 " "
-						"units_per_thread=1 total_units=%" PRIu64 " wall_seconds=%.9f idle_hold_seconds=%.9f\n",
-						benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], nThreads,
-						benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile,
+						"units_per_thread=1 total_units=%" PRIu64 " wall_seconds=%.9f idle_hold_seconds=%.9f idle_connections=%" PRIu64 "\n",
+						benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, nThreads,
+						benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile, benchmarkPathProfile,
 						benchmarkAppChunkSize, benchmarkServerTargetConnections, benchmarkTlsVerifyMode, benchmarkTlsCertProfile,
 						benchmarkAdapterFeatures(), benchmarkAdapterInitialCwndPackets(), benchmarkAdapterAckFrequencyPackets(),
 						benchmarkConnectionWindow, benchmarkSocketSndbufEffective.load(std::memory_order_relaxed),
 						benchmarkConnectionWindow, benchmarkSocketRcvbufEffective.load(std::memory_order_relaxed),
 						benchmarkScenarioProfile, benchmarkLossDropEveryPackets, benchmarkLossWarmupPackets,
-						idleConnections, maxSeconds, maxSeconds);
+						idleConnections, maxSeconds, maxSeconds, idleConnections);
 					return 0;
 				}
 
@@ -914,8 +999,8 @@ int main (int argc, char *argv[])
 						const uint64_t udpSendSyscalls = benchmarkUdpSendSyscallsTotal.load(std::memory_order_relaxed);
 						const uint64_t udpRecvPolls = benchmarkUdpRecvPollsTotal.load(std::memory_order_relaxed);
 						const double datagramsPerUdpPacket = udpPacketsReceived == 0 ? 0.0 : (double)datagramReceived / (double)udpPacketsReceived;
-						printf("quicperf_result library=%s scenario=%s role=client network=%s address=%s threads=%u "
-							"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s "
+						printf("quicperf_result library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s threads=%u "
+							"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s path_profile=%s "
 							"app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
 						"adapter_features=%s initial_cwnd_packets=%u ack_frequency_packets=%u "
 						"socket_sndbuf_requested=%" PRIu64 " socket_sndbuf_effective=%d "
@@ -925,8 +1010,8 @@ int main (int argc, char *argv[])
 							"datagram_sent=%" PRIu64 " datagram_received=%" PRIu64 " datagram_lost=%" PRIu64 " "
 							"datagram_delivery_ratio=%.9f udp_packets_sent=%" PRIu64 " udp_packets_received=%" PRIu64 " "
 							"udp_send_syscalls=%" PRIu64 " udp_recv_polls=%" PRIu64 " datagrams_per_udp_packet=%.9f %s=%.6f\n",
-							benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], nThreads,
-							benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile,
+							benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, nThreads,
+							benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile, benchmarkPathProfile,
 							benchmarkAppChunkSize, benchmarkServerTargetConnections, benchmarkTlsVerifyMode, benchmarkTlsCertProfile,
 							benchmarkAdapterFeatures(), benchmarkAdapterInitialCwndPackets(), benchmarkAdapterAckFrequencyPackets(),
 						benchmarkConnectionWindow, benchmarkSocketSndbufEffective.load(std::memory_order_relaxed),
@@ -938,16 +1023,16 @@ int main (int argc, char *argv[])
 					return 0;
 				}
 
-				printf("quicperf_result library=%s scenario=%s role=client network=%s address=%s threads=%u "
-					"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s "
+				printf("quicperf_result library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s threads=%u "
+					"build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s path_profile=%s "
 					"app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
 					"adapter_features=%s initial_cwnd_packets=%u ack_frequency_packets=%u "
 					"socket_sndbuf_requested=%" PRIu64 " socket_sndbuf_effective=%d "
 					"socket_rcvbuf_requested=%" PRIu64 " socket_rcvbuf_effective=%d "
 					"scenario_profile=%s loss_drop_every_packets=%" PRIu64 " loss_warmup_packets=%" PRIu64 " "
 					"units_per_thread=%" PRIu64 " total_units=%" PRIu64 " wall_seconds=%.9f %s=%.6f\n",
-					benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], nThreads,
-					benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile,
+					benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, nThreads,
+					benchmarkBuildProfile, benchmarkWindowProfile, benchmarkCongestionProfile, benchmarkNetworkProfile, benchmarkPathProfile,
 					benchmarkAppChunkSize, benchmarkServerTargetConnections, benchmarkTlsVerifyMode, benchmarkTlsCertProfile,
 					benchmarkAdapterFeatures(), benchmarkAdapterInitialCwndPackets(), benchmarkAdapterAckFrequencyPackets(),
 					benchmarkConnectionWindow, benchmarkSocketSndbufEffective.load(std::memory_order_relaxed),

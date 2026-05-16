@@ -41,13 +41,17 @@ def raw_values(out_dir: Path, expected_metric: str) -> list[float]:
     return values
 
 
-def sample_lookup(samples_path: Path) -> tuple[dict[tuple[str, str, str, str], dict[str, str]], list[dict[str, str]]]:
+def path_profile(row: dict[str, str]) -> str:
+    return row.get("path_profile", "loopback") or "loopback"
+
+
+def sample_lookup(samples_path: Path) -> tuple[dict[tuple[str, str, str, str, str], dict[str, str]], list[dict[str, str]]]:
     rows = {}
     if not samples_path.exists():
         return rows, []
     all_rows = read_rows(samples_path)
     for row in all_rows:
-        rows[(row["binary"], row["scenario"], row["network"], row["threads"])] = row
+        rows[(row["binary"], row["scenario"], row["network"], path_profile(row), row["threads"])] = row
     return rows, all_rows
 
 
@@ -80,6 +84,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
         binary = selected["binary"]
         scenario = selected["scenario"]
         network = selected["network"]
+        profile = path_profile(selected)
         status = selected["status"]
         metric = selected.get("metric", "")
         threads = selected.get("selected_threads", "")
@@ -92,6 +97,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
                 "binary": binary,
                 "scenario": scenario,
                 "network": network,
+                "path_profile": profile,
                 "selection_status": status,
                 "row_status": status,
                 "publication_role": "sidecar",
@@ -119,6 +125,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
                 "binary": binary,
                 "scenario": scenario,
                 "network": network,
+                "path_profile": profile,
                 "selection_status": status,
                 "publication_status": unsupported_note,
                 "metric": metric,
@@ -145,7 +152,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
             })
             continue
 
-        key = (binary, scenario, network, threads)
+        key = (binary, scenario, network, profile, threads)
         selected_thread = inum(selected, "selected_threads")
         boundary_thread = inum(selected, "boundary_threads")
         curve_limit = max(1, selected_thread, boundary_thread)
@@ -154,6 +161,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
             if row["binary"] == binary
             and row["scenario"] == scenario
             and row["network"] == network
+            and path_profile(row) == profile
             and 1 <= inum(row, "threads") <= curve_limit
         ]
         if not display_samples and samples.get(key):
@@ -174,7 +182,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
             p99 = quantile(values, 0.99) if values else fnum(sample, "p99")
             spread_low = quantile(values, args.spread_low_pct / 100.0) if values else 0.0
             spread_high = quantile(values, args.spread_high_pct / 100.0) if values else 0.0
-            ci_low, ci_high = flat_bootstrap_ci(values, median, args.bootstrap_iterations, stable_seed([binary, scenario, network, row_threads, "curve"])) if values else (0.0, 0.0)
+            ci_low, ci_high = flat_bootstrap_ci(values, median, args.bootstrap_iterations, stable_seed([binary, scenario, network, profile, row_threads, "curve"])) if values else (0.0, 0.0)
             ci_width = ((ci_high - ci_low) / p50) if values and p50 > 0 else 0.0
             middle_spread = (spread_high / spread_low) if spread_low > 0 else 0.0
 
@@ -190,6 +198,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
                 "binary": binary,
                 "scenario": scenario,
                 "network": network,
+                "path_profile": profile,
                 "selection_status": status,
                 "metric": row_metric,
                 "client_threads": str(row_threads),
@@ -218,6 +227,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
             if row["binary"] == binary
             and row["scenario"] == scenario
             and row["network"] == network
+            and path_profile(row) == profile
             and int(row.get("threads", "0") or "0") <= selected_thread
             and row.get("status") in ("ok", "plateau")
         ]
@@ -248,7 +258,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
             p50 = quantile(values, 0.50)
             spread_low = quantile(values, args.spread_low_pct / 100.0)
             spread_high = quantile(values, args.spread_high_pct / 100.0)
-            ci_low, ci_high = flat_bootstrap_ci(values, median, args.bootstrap_iterations, stable_seed([binary, scenario, network, row_threads]))
+            ci_low, ci_high = flat_bootstrap_ci(values, median, args.bootstrap_iterations, stable_seed([binary, scenario, network, profile, row_threads]))
             ci_width = ((ci_high - ci_low) / p50) if p50 > 0 else 0.0
             middle_spread = (spread_high / spread_low) if spread_low > 0 else 0.0
             minmax_spread = (values[-1] / values[0]) if values and values[0] > 0 else 0.0
@@ -267,6 +277,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
                 "binary": binary,
                 "scenario": scenario,
                 "network": network,
+                "path_profile": profile,
                 "selection_status": status,
                 "row_status": row_status,
                 "publication_role": publication_role,
@@ -301,6 +312,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
             "binary": binary,
             "scenario": scenario,
             "network": network,
+            "path_profile": profile,
             "selection_status": status,
             "publication_status": "ready" if result_ready else "not_ready",
             "metric": metric,
@@ -336,6 +348,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
         "binary",
         "scenario",
         "network",
+        "path_profile",
         "selection_status",
         "metric",
         "client_threads",
@@ -369,6 +382,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
         "binary",
         "scenario",
         "network",
+        "path_profile",
         "selection_status",
         "row_status",
         "publication_role",
@@ -401,6 +415,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
         "binary",
         "scenario",
         "network",
+        "path_profile",
         "selection_status",
         "publication_status",
         "metric",
@@ -447,11 +462,11 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
         handle.write(f"- Result stability table: `{results_path.name}`\n")
         if bad:
             handle.write("\n## Not Ready Rows\n\n")
-            handle.write("| Binary | Scenario | Network | Row | Role | Samples | p50 CI width | p80/p20 | Reason |\n")
-            handle.write("|---|---|---|---:|---|---:|---:|---:|---|\n")
+            handle.write("| Binary | Scenario | Network | Path | Row | Role | Samples | p50 CI width | p80/p20 | Reason |\n")
+            handle.write("|---|---|---|---|---:|---|---:|---:|---:|---|\n")
             for row in bad:
                 handle.write(
-                    f"| `{row['binary']}` | `{row['scenario']}` | `{row['network']}` | "
+                    f"| `{row['binary']}` | `{row['scenario']}` | `{row['network']}` | `{row.get('path_profile', 'loopback')}` | "
                     f"{row['row_threads']} | {row['publication_role']} | {row['samples']} | "
                     f"{row['p50_ci95_relative_width']} | {row['middle_spread_ratio']} | "
                     f"{row['reason']} |\n"

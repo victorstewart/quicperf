@@ -22,6 +22,7 @@ SAMPLE_FIELDS = [
     "library",
     "scenario",
     "network",
+    "path_profile",
     "client_threads",
     "server_connections",
     "metric",
@@ -55,7 +56,7 @@ SAMPLE_FIELDS = [
 RESULT_RE = re.compile(
     r"quicperf_result library=(\S+) scenario=(\S+) role=client network=(\S+) "
     r".*?threads=(\d+) .*?build_profile=(\S+) window_profile=(\S+) "
-    r"congestion_profile=(\S+) network_profile=(\S+) app_chunk=(\d+) "
+    r"congestion_profile=(\S+) network_profile=(\S+)(?: path_profile=(\S+))? app_chunk=(\d+) "
     r"server_connections=(\d+) tls_verify_mode=(\S+) tls_cert_profile=(\S+) "
     r"adapter_features=(\S+) initial_cwnd_packets=(\d+) ack_frequency_packets=(\d+) "
     r"socket_sndbuf_requested=(\d+) socket_sndbuf_effective=(-?\d+) "
@@ -75,6 +76,7 @@ class RowKey:
     binary: str
     scenario: str
     network: str
+    path_profile: str
     client_threads: int
     metric: str
 
@@ -84,6 +86,7 @@ class GroupKey:
     binary: str
     scenario: str
     network: str
+    path_profile: str
     metric: str
 
 
@@ -97,6 +100,7 @@ class Sample:
     library: str
     scenario: str
     network: str
+    path_profile: str
     client_threads: int
     server_connections: int
     metric: str
@@ -127,11 +131,11 @@ class Sample:
 
     @property
     def row_key(self) -> RowKey:
-        return RowKey(self.binary, self.scenario, self.network, self.client_threads, self.metric)
+        return RowKey(self.binary, self.scenario, self.network, self.path_profile, self.client_threads, self.metric)
 
     @property
     def group_key(self) -> GroupKey:
-        return GroupKey(self.binary, self.scenario, self.network, self.metric)
+        return GroupKey(self.binary, self.scenario, self.network, self.path_profile, self.metric)
 
     @property
     def measured(self) -> bool:
@@ -360,6 +364,7 @@ def load_samples(path: Path | str) -> list[Sample]:
                     library=row.get("library", ""),
                     scenario=row.get("scenario", ""),
                     network=row.get("network", ""),
+                    path_profile=row.get("path_profile", "loopback") or "loopback",
                     client_threads=_safe_int(row.get("client_threads")),
                     server_connections=_safe_int(row.get("server_connections")),
                     metric=row.get("metric", ""),
@@ -414,6 +419,7 @@ def sample_to_row(sample: Sample) -> dict[str, str]:
         "library": sample.library,
         "scenario": sample.scenario,
         "network": sample.network,
+        "path_profile": sample.path_profile,
         "client_threads": str(sample.client_threads),
         "server_connections": str(sample.server_connections),
         "metric": sample.metric,
@@ -496,6 +502,7 @@ def parse_client_log_samples(
             _window_profile,
             _congestion_profile,
             _network_profile,
+            path_profile,
             _app_chunk,
             server_connections,
             _tls_verify_mode,
@@ -521,6 +528,7 @@ def parse_client_log_samples(
                 library=library,
                 scenario=scenario,
                 network=network,
+                path_profile=path_profile or "loopback",
                 client_threads=int(client_threads),
                 server_connections=int(server_connections),
                 metric=metric,
@@ -609,7 +617,7 @@ def row_stats(samples: list[Sample], config: StatsConfig | None = None) -> RowSt
     block_median_ratio = (block_median_max / block_median_min) if block_median_min > 0.0 else 0.0
     drift_rel = _drift_rel(block_medians)
     lag1 = _lag1_autocorr(values)
-    seed = _stable_seed([samples[0].binary, samples[0].scenario, samples[0].network, samples[0].client_threads, samples[0].metric, cfg.bootstrap_seed])
+    seed = _stable_seed([samples[0].row_key, cfg.bootstrap_seed])
     ci_low, ci_high = hierarchical_bootstrap_ci(measured, median, cfg.bootstrap_iters, seed)
     ci_rel = ((ci_high - ci_low) / med) if med > 0.0 else 0.0
 

@@ -8,6 +8,7 @@ out_dir="${QUICPERF_HIGH_VALUE_SMOKE_OUT_DIR:-$root/.run/high-value-smoke-$(date
 primary_binaries="${QUICPERF_HIGH_VALUE_SMOKE_BINARIES:-ngtcp2perf lsperf tquicperf quicheperf picoperf xquicperf quinnperf s2nperf neqoperf noqperf quiczigperf mvfstperf}"
 capability_scenarios="${QUICPERF_HIGH_VALUE_CAPABILITY_SCENARIOS:-resumed_connect zero_rtt_reqresp datagram}"
 networks="${QUICPERF_HIGH_VALUE_SMOKE_NETWORKS:-syscall iouring}"
+path_profiles="${QUICPERF_HIGH_VALUE_SMOKE_PATH_PROFILES:-${QUICPERF_PATH_PROFILES:-${QUICPERF_PATH_PROFILE:-loopback}}}"
 repeat="${QUICPERF_HIGH_VALUE_SMOKE_REPEAT:-1}"
 warmup="${QUICPERF_HIGH_VALUE_SMOKE_WARMUP:-0}"
 test_bytes="${QUICPERF_HIGH_VALUE_SMOKE_TEST_BYTES:-4096}"
@@ -29,6 +30,7 @@ production_out="$out_dir/production"
 QUICPERF_MECHANISM_SMOKE_OUT_DIR="$production_out" \
 QUICPERF_MECHANISM_SMOKE_BINARIES="$primary_binaries" \
 QUICPERF_MECHANISM_SMOKE_NETWORKS="$networks" \
+QUICPERF_MECHANISM_SMOKE_PATH_PROFILES="$path_profiles" \
 QUICPERF_MECHANISM_SMOKE_REPEAT="$repeat" \
 QUICPERF_MECHANISM_SMOKE_WARMUP="$warmup" \
 QUICPERF_MECHANISM_SMOKE_TEST_BYTES="$test_bytes" \
@@ -45,6 +47,7 @@ QUICPERF_OUT_DIR="$capability_out" \
 QUICPERF_BINARIES="$primary_binaries" \
 QUICPERF_SCENARIOS="$capability_scenarios" \
 QUICPERF_NETWORKS="$networks" \
+QUICPERF_PATH_PROFILES="$path_profiles" \
 QUICPERF_REPEAT="$repeat" \
 QUICPERF_WARMUP="$warmup" \
 QUICPERF_TEST_BYTES="$test_bytes" \
@@ -57,7 +60,7 @@ QUICPERF_RANDOMIZE_ORDER="${QUICPERF_HIGH_VALUE_SMOKE_RANDOMIZE_ORDER:-1}" \
 capability_status=$?
 set -e
 
-python3 - "$capability_out/summary.tsv" "$capability_log" "$primary_binaries" "$capability_scenarios" "$networks" "$repeat" <<'PY'
+python3 - "$capability_out/summary.tsv" "$capability_log" "$primary_binaries" "$capability_scenarios" "$networks" "$path_profiles" "$repeat" <<'PY'
 import csv
 import re
 import sys
@@ -68,7 +71,8 @@ log_path = Path(sys.argv[2])
 binaries = sys.argv[3].split()
 scenarios = sys.argv[4].split()
 networks = sys.argv[5].split()
-repeat = int(sys.argv[6])
+path_profiles = sys.argv[6].split()
+repeat = int(sys.argv[7])
 
 rows = []
 if summary_path.exists():
@@ -76,15 +80,16 @@ if summary_path.exists():
         rows = list(csv.DictReader(handle, delimiter="\t"))
 
 summary = {
-    (row.get("binary"), row.get("scenario"), row.get("network")): row
+    (row.get("binary"), row.get("scenario"), row.get("network"), row.get("path_profile") or "loopback"): row
     for row in rows
 }
 log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
 
 unsupported = set()
-unsupported_re = re.compile(r"quicperf_run_result binary=(\S+) scenario=(\S+) network=(\S+) .*status=unsupported(?:\s|$)")
+unsupported_re = re.compile(r"quicperf_run_result binary=(\S+) scenario=(\S+) network=(\S+)(?: path_profile=(\S+))? .*status=unsupported(?:\s|$)")
 for match in unsupported_re.finditer(log_text):
-    unsupported.add(match.groups())
+    binary, scenario, network, path_profile = match.groups()
+    unsupported.add((binary, scenario, network, path_profile or "loopback"))
 
 bad_markers = []
 for marker in ("status=client_failed", "status=server_failed", "status=thread_check_failed"):
@@ -98,21 +103,22 @@ unexpected_unsupported = []
 for binary in binaries:
     for scenario in scenarios:
         for network in networks:
-            key = (binary, scenario, network)
-            row = summary.get(key)
-            if row is not None:
-                try:
-                    samples = int(row.get("samples", "0") or "0")
-                except ValueError:
-                    samples = 0
-                if samples < repeat:
-                    short.append(f"{binary}/{scenario}/{network}:{samples}_of_{repeat}")
-                continue
-            if key in unsupported:
-                if scenario == "datagram" and binary in datagram_must_pass:
-                    unexpected_unsupported.append(f"{binary}/{scenario}/{network}")
-                continue
-            missing.append(f"{binary}/{scenario}/{network}")
+            for path_profile in path_profiles:
+                key = (binary, scenario, network, path_profile)
+                row = summary.get(key)
+                if row is not None:
+                    try:
+                        samples = int(row.get("samples", "0") or "0")
+                    except ValueError:
+                        samples = 0
+                    if samples < repeat:
+                        short.append(f"{binary}/{scenario}/{network}/{path_profile}:{samples}_of_{repeat}")
+                    continue
+                if key in unsupported:
+                    if scenario == "datagram" and binary in datagram_must_pass:
+                        unexpected_unsupported.append(f"{binary}/{scenario}/{network}/{path_profile}")
+                    continue
+                missing.append(f"{binary}/{scenario}/{network}/{path_profile}")
 
 if missing or short or unexpected_unsupported or bad_markers:
     if missing:

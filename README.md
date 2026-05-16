@@ -100,7 +100,99 @@ General form:
 
 `tcpperf` is syscall-only.
 
+## Batch Runs
+
+```sh
+QUICPERF_TEST_BYTES=1073741824 \
+QUICPERF_REPEAT=5 \
+QUICPERF_SCENARIOS="download upload connect flow_control loss_recovery" \
+QUICPERF_NETWORKS="syscall iouring" \
+QUICPERF_PATH_PROFILES="loopback" \
+tools/run-benchmarks.sh
+```
+
+Batch output is written under `.run/quicperf-<timestamp>/`.
+
+The main summary file is:
+
+```text
+.run/quicperf-<timestamp>/summary.tsv
+```
+
+Each run also writes structured raw samples to:
+
+```text
+.run/quicperf-<timestamp>/raw-samples.tsv
+```
+
+Summary rows include `samples`, `min`, `p50`, `p90`, `p99`, and `max`.
+`p50` is the central publication statistic; tail values are retained for
+distribution visibility.
+
+`QUICPERF_NETWORKS` selects the socket backend (`syscall` or `iouring`).
+`QUICPERF_PATH_PROFILES` selects the delivery path and defaults to `loopback`.
+Namespace-backed WAN profiles run the client and server in separate network
+namespaces through a router namespace with `tc netem` delay, jitter, loss,
+queue, and rate shaping applied before the handshake:
+
+```sh
+tools/quicperf_network_path.py list
+tools/quicperf_network_path.py show lte-good
+
+QUICPERF_BINARIES=picoperf \
+QUICPERF_SCENARIOS="download connect" \
+QUICPERF_NETWORKS=syscall \
+QUICPERF_PATH_PROFILES="dc-fabric-1ms lte-good 5g-sub6-good" \
+tools/run-benchmarks.sh
+```
+
+Non-loopback path profiles require root or `CAP_NET_ADMIN`, `ip netns`, and
+`tc`. The path setup also installs static IPv6 neighbor entries before shaping is
+enabled, avoiding cold neighbor-discovery latency in per-sample namespaces. For
+WAN throughput scenarios, default flow-control windows are promoted to a bounded
+BDP-derived profile so congestion control sees the shaped bottleneck instead of
+an artificial receive-window cap. The `flow_control` scenario keeps its
+intentionally small windows unless explicitly overridden.
+
+Validate the shaped path profiles before using them for publication rows:
+
+```sh
+tools/quicperf_network_validate.py --samples 10 --ping-count 100 --require-idle-host
+```
+
+The validator writes qdisc snapshots, expected BDP/queue metadata, ping
+RTT/loss/jitter checks, and raw TCP/UDP baselines under
+`.run/network-profile-validation-<utc>/`. See
+`docs/network-profile-validation.md` for the profile audit, acceptance criteria,
+and source basis.
+
+Public cellular traces can be converted into selectable path profiles with
+`tools/quicperf_cellular_profiles.py`. It directly supports UCC 5G, UCC 4G LTE,
+and UMN 5Gophers walking-loop traces. Raw public archives stay in ignored
+`.data/`; compact generated profile packs are loaded from `profiles/network/*.json`.
+
+`picoperf` selects picoquic's current BBR implementation for the default
+`QUICPERF_CONGESTION_PROFILE=default-bbr`; set `bbr1`, `cubic`, `dcubic`,
+`newreno`, `fastcc`, `prague`, or `c4` to compare other picoquic controllers.
+For this short-transfer WAN matrix, `QUICPERF_CONGESTION_PROFILE=path-auto`
+selects `cubic` on the 10G/0.5ms datacenter profile, `fastcc` on the 1ms
+datacenter, LTE-good, and 5G profiles, `bbr1` on congested LTE, and current BBR
+elsewhere. `path-auto` also enables picoquic's BDP/cwnd seed on non-loopback
+path profiles when RTT and rate metadata are available, and applies that seed
+immediately to the sender so 1 MiB fresh downloads do not spend most of the row
+waiting for ACK-derived seed validation. `QUICPERF_PICOQUIC_PACKET_TRAIN=1`
+enables picoquic packet-train mode, `QUICPERF_PICOQUIC_BDP_FRAME=0` disables
+picoquic's BDP transport extension for A/B runs,
+`QUICPERF_PICOQUIC_BDP_SEED=0` disables the path-derived seed, and
+`QUICPERF_PICOQUIC_BDP_SEED_IMMEDIATE=0` disables immediate sender seeding. The
+shared picoquic transfer waits for an
+application-level completion exchange so lossy WAN rows cannot pass because the
+server exited after enqueueing data that the client never received.
+
 ## Smoke
+
+To smoke the ten all-primary production mechanism workloads across every
+primary QUIC binary and both network backends:
 
 ```sh
 tools/run-mechanism-workload-smoke.sh
@@ -139,6 +231,27 @@ Important artifacts:
 | `publication-curve.tsv` | Client-count curves |
 | `publication-row-audit.tsv` | Gate audit for publication rows |
 | `saturation-decisions.tsv` | Saturation decisions |
+
+## Scoring
+
+The primary ranking is normalized within each like-for-like scenario, network
+backend, path profile, and metric group.
+
+```text
+score = 100 * (0.60 * capacity_index
+             + 0.25 * curve_efficiency
+             + 0.15 * client_count_efficiency)
+```
+
+- `capacity_index`: selected row p50 versus the best comparable p50
+- `curve_efficiency`: normalized p50 across the client-count curve through saturation
+- `client_count_efficiency`: reward for saturating with fewer load-generator clients
+
+The composite score is a summary, not a replacement for raw `p50`, `p90`,
+`p99`, confidence interval, spread, and saturation data. Adaptive rankings also
+publish pairwise ties and rank bands; point ranks should not be read as
+decisive when the intervals overlap. `p99` is visibility-only unless the row has
+at least 300 measured samples.
 
 ## Controls
 
