@@ -227,20 +227,12 @@ def grouped_by_benchmark(rows: list[dict[str, str]]) -> list[tuple[str, list[dic
 def render_markdown(
     rows: list[dict[str, str]],
     artifact_dir: Path,
-    datagram_artifact_dir: Path | None = None,
 ) -> str:
     artifact_sentence = (
         "The TCP+TLS sidecar is excluded from these QUIC tables. Full raw data "
         "and gate details are committed under "
         f"[`{artifact_dir}`]({artifact_dir}/)."
     )
-    if datagram_artifact_dir is not None:
-        artifact_sentence = (
-            "The TCP+TLS sidecar is excluded from these QUIC tables. Full raw "
-            "data and gate details are committed under "
-            f"[`{artifact_dir}`]({artifact_dir}/), with DATAGRAM addendum data "
-            f"under [`{datagram_artifact_dir}`]({datagram_artifact_dir}/)."
-        )
 
     lines = [
         "# Latest Results",
@@ -291,7 +283,7 @@ def render_markdown(
             "## Caveats",
             "",
             "- `idle_footprint` is omitted from the current table because this run captured only the old completion marker, not resource footprint. Rerun with the RSS sampler before publishing idle-footprint claims.",
-            "- `datagram` rows come from the addendum run with a shared 1,024-message outstanding cap and 65,536 echo operations. They are measured distributions, not a clean DATAGRAM leaderboard, because strict publication gates still marked the rows noisy or nonstationary.",
+            "- `datagram` is retracted from the published table while DATAGRAM fairness is under audit. The latest addendum showed implausibly polarized rows, so it must not be treated as a fair cross-library result.",
             "- Unsupported capability rows are explicit unsupported markers, not crashes.",
             (
                 "- Row-level caveats and full gate reasons are in "
@@ -303,21 +295,6 @@ def render_markdown(
             f"- Raw samples are in [`adaptive-samples.tsv`]({artifact_dir}/adaptive-samples.tsv).",
         ]
     )
-    if datagram_artifact_dir is not None:
-        lines.extend(
-            [
-                (
-                    "- DATAGRAM addendum gate reasons are in "
-                    f"[`publication-results.tsv`]({datagram_artifact_dir}/publication-results.tsv), "
-                    f"[`row-stats.tsv`]({datagram_artifact_dir}/row-stats.tsv), "
-                    f"[`publication-row-audit.tsv`]({datagram_artifact_dir}/publication-row-audit.tsv), "
-                    f"and [`saturation-decisions.tsv`]({datagram_artifact_dir}/saturation-decisions.tsv); "
-                    f"raw samples are in [`adaptive-samples.tsv`]({datagram_artifact_dir}/adaptive-samples.tsv), "
-                    f"with notes in [`README.md`]({datagram_artifact_dir}/README.md)."
-                ),
-                "",
-            ]
-        )
     return "\n".join(lines)
 
 
@@ -330,17 +307,11 @@ def main() -> None:
     )
     parser.add_argument("--markdown", type=Path, default=Path("docs/latest-results.md"))
     parser.add_argument("--artifact-dir", type=Path, default=Path("results/full31"))
-    parser.add_argument("--datagram-run-dir", type=Path, default=Path("docs/results/datagram-fairness-20260516"))
-    parser.add_argument("--datagram-artifact-dir", type=Path, default=Path("results/datagram-fairness-20260516"))
     args = parser.parse_args()
 
     rows = load_rows(args.run_dir, skip_scenarios={"datagram"})
-    datagram_artifact_dir = None
-    if args.datagram_run_dir.exists():
-        rows.extend(load_rows(args.datagram_run_dir, include_scenarios={"datagram"}))
-        datagram_artifact_dir = args.datagram_artifact_dir
     args.markdown.write_text(
-        render_markdown(rows, args.artifact_dir, datagram_artifact_dir),
+        render_markdown(rows, args.artifact_dir) + "\n",
         encoding="utf-8",
     )
 

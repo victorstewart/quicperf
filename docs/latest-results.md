@@ -4,7 +4,7 @@ The adaptive publication runner samples each library/network/test row in randomi
 
 Client load is swept upward per row to find server saturation using as many client threads as needed within the configured limit. Tables are sorted by best p99 first; for the current rate and throughput metrics, higher is better.
 
-The TCP+TLS sidecar is excluded from these QUIC tables. Full raw data and gate details are committed under [`results/full31`](results/full31/), with DATAGRAM addendum data under [`results/datagram-fairness-20260516`](results/datagram-fairness-20260516/).
+The TCP+TLS sidecar is excluded from these QUIC tables. Full raw data and gate details are committed under [`results/full31`](results/full31/).
 
 ## Results
 
@@ -349,25 +349,6 @@ Full connection establishment plus stream creation.
 | mvfst | io_uring | 1 | 40 | connections/second | 343 | 389 | 402 |
 | mvfst | syscall | 1 | 40 | connections/second | 351 | 393 | 401 |
 
-### Datagram
-
-Unreliable application DATAGRAM echo capability.
-
-| Library | Network | Client threads | Samples | Unit | p50 | p90 | p99 |
-|---|---|---:|---:|---|---:|---:|---:|
-| quiche | syscall | 1 | 30 | messages/second | 3,452,015 | 3,872,983 | 3,940,269 |
-| quiche | io_uring | 1 | 30 | messages/second | 3,411,439 | 3,745,157 | 3,794,009 |
-| quic-zig | syscall | 1 | 40 | messages/second | 225,887 | 254,681 | 269,515 |
-| Quinn | syscall | 1 | 30 | messages/second | 196,594 | 225,396 | 254,477 |
-| quic-zig | io_uring | 1 | 20 | messages/second | 200,780 | 209,318 | 212,550 |
-| Quinn | io_uring | 1 | 25 | messages/second | 183,608 | 199,314 | 212,450 |
-| noq | syscall | 1 | 35 | messages/second | 166,055 | 177,262 | 192,475 |
-| noq | io_uring | 1 | 85 | messages/second | 156,943 | 175,685 | 188,647 |
-| Neqo | syscall | 1 | 30 | messages/second | 128,410 | 137,865 | 152,597 |
-| Neqo | io_uring | 1 | 30 | messages/second | 117,065 | 131,603 | 139,162 |
-| s2n-quic | syscall | 1 | 50 | messages/second | 115,057 | 124,049 | 130,457 |
-| s2n-quic | io_uring | 1 | 40 | messages/second | 104,491 | 115,432 | 122,533 |
-
 ### Close/Reset Cleanup
 
 Graceful fresh-stream close and cleanup throughput.
@@ -402,8 +383,7 @@ Graceful fresh-stream close and cleanup throughput.
 ## Caveats
 
 - `idle_footprint` is omitted from the current table because this run captured only the old completion marker, not resource footprint. Rerun with the RSS sampler before publishing idle-footprint claims.
-- `datagram` rows come from the addendum run with a shared 1,024-message outstanding cap and 65,536 echo operations. They are measured distributions, not a clean DATAGRAM leaderboard, because strict publication gates still marked the rows noisy or nonstationary.
+- `datagram` is retracted from the published table while DATAGRAM fairness is under audit. The latest addendum showed implausibly polarized rows, so it must not be treated as a fair cross-library result.
 - Unsupported capability rows are explicit unsupported markers, not crashes.
 - Row-level caveats and full gate reasons are in [`publication-results.tsv`](results/full31/publication-results.tsv), [`row-stats.tsv`](results/full31/row-stats.tsv), [`publication-row-audit.tsv`](results/full31/publication-row-audit.tsv), and [`saturation-decisions.tsv`](results/full31/saturation-decisions.tsv).
 - Raw samples are in [`adaptive-samples.tsv`](results/full31/adaptive-samples.tsv).
-- DATAGRAM addendum gate reasons are in [`publication-results.tsv`](results/datagram-fairness-20260516/publication-results.tsv), [`row-stats.tsv`](results/datagram-fairness-20260516/row-stats.tsv), [`publication-row-audit.tsv`](results/datagram-fairness-20260516/publication-row-audit.tsv), and [`saturation-decisions.tsv`](results/datagram-fairness-20260516/saturation-decisions.tsv); raw samples are in [`adaptive-samples.tsv`](results/datagram-fairness-20260516/adaptive-samples.tsv), with notes in [`README.md`](results/datagram-fairness-20260516/README.md).
