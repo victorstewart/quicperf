@@ -1,0 +1,17 @@
+NAME boringssl
+VERSION main
+SYSTEM_LIBS ALLOW
+SOURCE GIT https://github.com/google/boringssl.git 742a4d2db6321baf8af8e856b812630ef741fc24
+BUILD_SYSTEM CMAKE
+CMAKE_DEFINE BUILD_SHARED_LIBS=OFF
+CMAKE_BUILD cmake --build "${DEPO_BUILD_DIR}" --parallel --target ssl crypto
+CMAKE_INSTALL_SH <<'EOF'
+mkdir -p "${DEPO_PREFIX}/include" "${DEPO_PREFIX}/lib"
+cp -R "${DEPO_SOURCE_DIR}/include/." "${DEPO_PREFIX}/include/"
+cp "${DEPO_BUILD_DIR}/libssl.a" "${DEPO_PREFIX}/lib/libssl.a"
+cp "${DEPO_BUILD_DIR}/libcrypto.a" "${DEPO_PREFIX}/lib/libcrypto.a"
+EOF
+TARGET boringssl INTERFACE include
+TARGET boringssl::crypto STATIC lib/libcrypto.a
+TARGET boringssl::ssl STATIC lib/libssl.a
+LINK boringssl boringssl::ssl boringssl::crypto

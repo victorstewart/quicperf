@@ -1,0 +1,18 @@
+.{
+    .name = .quicperf_zig_packet_ffi,
+    .version = "0.1.0",
+    .dependencies = .{
+        .libxev = .{
+            .url = "https://github.com/mitchellh/libxev/archive/a82a04eabb46.tar.gz",
+            .hash = "libxev-0.0.0-86vtcwIRFACVrx54GaHsMFFlyC4dTi0tcVh10V7btRUc",
+        },
+    },
+    .fingerprint = 0x8d9b4476a8b51ada,
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "include",
+    },
+}

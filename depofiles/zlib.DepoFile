@@ -1,0 +1,8 @@
+NAME zlib
+VERSION 1.3.2
+SYSTEM_LIBS ALLOW
+SOURCE URL https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz
+BUILD_SYSTEM CMAKE
+CMAKE_DEFINE BUILD_SHARED_LIBS=OFF
+CMAKE_DEFINE ZLIB_BUILD_TESTING=OFF
+TARGET zlib::zlib STATIC lib/libz.a INTERFACE include

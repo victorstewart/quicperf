@@ -6,7 +6,8 @@
 #include <cstring>
 #include <string>
 #include <byteswap.h>
-#include <sched.h>
+
+#include "perf.benchmark.h"
 
 enum class Mode : uint16_t {
 
@@ -18,12 +19,12 @@ enum class Mode : uint16_t {
 
 constexpr bool operator &(Mode lhs, Mode rhs)
 {
-   return static_cast<bool>((static_cast<uint8_t>(lhs) & static_cast<uint8_t>(rhs)) == static_cast<uint8_t>(rhs));
+   return static_cast<bool>((static_cast<uint16_t>(lhs) & static_cast<uint16_t>(rhs)) == static_cast<uint16_t>(rhs));
 }
 
 constexpr Mode operator |(Mode lhs, Mode rhs)  
 {
-   return static_cast<Mode> (static_cast<uint8_t>(lhs) | static_cast<uint8_t>(rhs));
+   return static_cast<Mode> (static_cast<uint16_t>(lhs) | static_cast<uint16_t>(rhs));
 }
 
 // static const char * modeToString(Mode mode)
@@ -41,11 +42,15 @@ public:
 
 	NetworkHub<mode> *networkHub;
 
+	virtual ~QuicLibrary() = default;
+
 	virtual void instanceSetup(uint16_t localPort, int argc, char *argv[]) = 0;
 
 	virtual void connectToServer(struct sockaddr *address) = 0;
 	virtual void openStream(void) = 0;
 	virtual void startPerfTest(uint64_t nBytes = 0) = 0;
+	virtual void idleHold(uint64_t holdMs) { std::this_thread::sleep_for(std::chrono::milliseconds(holdMs)); }
+	virtual void postPerfTest() {}
 };
 
 #ifdef LSPERF
@@ -76,15 +81,29 @@ public:
 	#include "perf.tcp.h"
 #endif
 
+#ifdef TQUICPERF
+	#include "perf.networking.h"
+	#include "perf.tquic.h"
+#endif
+
+#ifdef XQUICPERF
+	#include "perf.networking.h"
+	#include "perf.xquic.h"
+#endif
+
+#if defined(QUINNPERF) || defined(NOQPERF) || defined(NEQOPERF) || defined(S2NPERF) || defined(QUICZIGPERF)
+	#include "perf.networking.h"
+	#include "perf.packet_engine.h"
+#endif
+
+#ifdef MVFSTPERF
+	#include "perf.networking.h"
+	#include "perf.mvfst.h"
+#endif
+
 template <Mode mode>
 static void globalSetup(void)
 {
-	int cpu_pin = sched_getcpu();
-
-   cpu_set_t affinity;
-   CPU_SET(cpu_pin, &affinity);
-   sched_setaffinity(0, sizeof(affinity), &affinity);
-
 #ifdef LSPERF
 	Lsquic<mode>::globalSetup();
 #endif
@@ -107,5 +126,29 @@ static QuicLibrary<mode>* libraryForChoice(void)
 #endif
 #ifdef TCPPERF
    return new TCPTLS<mode>();
+#endif
+#ifdef TQUICPERF
+   return new Tquic<mode>();
+#endif
+#ifdef XQUICPERF
+   return new Xquic<mode>();
+#endif
+#ifdef QUINNPERF
+   return new Quinn<mode>();
+#endif
+#ifdef NOQPERF
+   return new Noq<mode>();
+#endif
+#ifdef NEQOPERF
+   return new Neqo<mode>();
+#endif
+#ifdef S2NPERF
+   return new S2n<mode>();
+#endif
+#ifdef QUICZIGPERF
+   return new QuicZig<mode>();
+#endif
+#ifdef MVFSTPERF
+   return new Mvfst<mode>();
 #endif
 }

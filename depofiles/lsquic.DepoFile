@@ -1,0 +1,18 @@
+NAME lsquic
+VERSION 4.6.4
+SYSTEM_LIBS ALLOW
+DEPENDS boringssl VERSION main
+DEPENDS zlib VERSION 1.3.2
+SOURCE GIT https://github.com/litespeedtech/lsquic.git 8de775dd63713a02c070edfc4eab15b743d13456
+GIT_SUBMODULES RECURSIVE
+BUILD_SYSTEM CMAKE
+CMAKE_ARG "-DCMAKE_PREFIX_PATH=${dep:zlib}"
+CMAKE_ARG "-DCMAKE_INCLUDE_PATH=${dep:zlib}/include"
+CMAKE_ARG "-DCMAKE_LIBRARY_PATH=${dep:zlib}/lib"
+CMAKE_DEFINE LSQUIC_BIN=OFF
+CMAKE_DEFINE LSQUIC_TESTS=OFF
+CMAKE_DEFINE LSQUIC_SHARED_LIB=OFF
+CMAKE_DEFINE BORINGSSL_INCLUDE=${dep:boringssl}/include
+CMAKE_DEFINE BORINGSSL_DIR=${dep:boringssl}
+TARGET lsquic::lsquic STATIC lib/liblsquic.a INTERFACE include/lsquic
+LINK lsquic::lsquic boringssl::ssl boringssl::crypto zlib::zlib

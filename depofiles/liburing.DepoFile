@@ -1,0 +1,12 @@
+NAME liburing
+VERSION main-d6b7e99
+SYSTEM_LIBS ALLOW
+SOURCE GIT https://github.com/axboe/liburing.git d6b7e99b89e158c4f0f1ad54905398be669a1103
+BUILD_SYSTEM AUTOCONF
+AUTOCONF_BUILD make -C src -j$(nproc) liburing.a
+AUTOCONF_INSTALL_SH <<'EOF'
+mkdir -p "${DEPO_PREFIX}/include" "${DEPO_PREFIX}/lib"
+cp "${DEPO_SOURCE_DIR}/src/liburing.a" "${DEPO_PREFIX}/lib/liburing.a"
+cp -R "${DEPO_SOURCE_DIR}/src/include/." "${DEPO_PREFIX}/include/"
+EOF
+TARGET liburing::liburing STATIC lib/liburing.a INTERFACE include

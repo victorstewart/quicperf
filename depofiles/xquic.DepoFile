@@ -1,0 +1,16 @@
+NAME xquic
+VERSION 1.9.2
+SYSTEM_LIBS ALLOW
+DEPENDS boringssl VERSION main
+SOURCE GIT https://github.com/alibaba/xquic.git 64b8df3ac3f64111eb9e00be1a952ba5b07144bb
+BUILD_SYSTEM CMAKE
+CMAKE_DEFINE SSL_TYPE=boringssl
+CMAKE_DEFINE SSL_INC_PATH=${dep:boringssl}/include
+CMAKE_DEFINE "SSL_LIB_PATH=${dep:boringssl}/lib/libssl.a;${dep:boringssl}/lib/libcrypto.a"
+CMAKE_DEFINE XQC_ENABLE_TESTING=OFF
+CMAKE_DEFINE XQC_SUPPORT_SENDMMSG_BUILD=ON
+CMAKE_DEFINE XQC_ENABLE_BBR2=ON
+STAGE_FILE BUILD libxquic-static.a lib/libxquic.a
+STAGE_TREE SOURCE include include
+TARGET xquic::xquic STATIC lib/libxquic.a INTERFACE include
+LINK xquic::xquic boringssl dl pthread m

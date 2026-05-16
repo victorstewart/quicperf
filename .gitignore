@@ -1,0 +1,17 @@
+.depos/
+.run/
+.tasks/
+build*/
+rust-packet-ffi/target/
+zig-packet-ffi/.zig-cache/
+zig-packet-ffi/zig-cache/
+zig-packet-ffi/zig-global-cache/
+zig-packet-ffi/zig-out/
+zig-packet-ffi/zig-pkg/
+*.log
+__pycache__/
+picoperf
+lsperf
+quicheperf
+ngtcp2perf
+tcpperf

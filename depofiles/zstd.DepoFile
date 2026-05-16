@@ -1,0 +1,36 @@
+NAME zstd
+VERSION 1.5.7-quicperf2
+SYSTEM_LIBS ALLOW
+SOURCE URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+BUILD_SYSTEM AUTOCONF
+AUTOCONF_CONFIGURE_SH <<'EOF'
+true
+EOF
+AUTOCONF_BUILD make -C lib -j$(nproc) libzstd.a
+AUTOCONF_INSTALL_SH <<'EOF'
+mkdir -p "${DEPO_PREFIX}/include" "${DEPO_PREFIX}/lib"
+cp "${DEPO_SOURCE_DIR}/lib/libzstd.a" "${DEPO_PREFIX}/lib/libzstd.a"
+cp "${DEPO_SOURCE_DIR}/lib/zstd.h" "${DEPO_SOURCE_DIR}/lib/zdict.h" "${DEPO_SOURCE_DIR}/lib/zstd_errors.h" "${DEPO_PREFIX}/include/"
+cmake_dollar='$'
+cat > "${DEPO_BUILD_DIR}/ZstdConfig.cmake" <<ZSTDEOF
+get_filename_component(PACKAGE_PREFIX_DIR "$cmake_dollar{CMAKE_CURRENT_LIST_DIR}/../../../" ABSOLUTE)
+set(Zstd_FOUND TRUE)
+set(ZSTD_INCLUDE_DIR "$cmake_dollar{PACKAGE_PREFIX_DIR}/include")
+set(ZSTD_LIBRARY zstd::libzstd_static)
+if(NOT TARGET zstd::libzstd_static)
+  add_library(zstd::libzstd_static STATIC IMPORTED)
+  set_target_properties(zstd::libzstd_static PROPERTIES
+    IMPORTED_LOCATION "$cmake_dollar{PACKAGE_PREFIX_DIR}/lib/libzstd.a"
+    INTERFACE_INCLUDE_DIRECTORIES "$cmake_dollar{PACKAGE_PREFIX_DIR}/include")
+endif()
+ZSTDEOF
+cat > "${DEPO_BUILD_DIR}/ZstdConfigVersion.cmake" <<ZSTDEOF
+set(PACKAGE_VERSION "1.5.7")
+set(PACKAGE_VERSION_COMPATIBLE TRUE)
+set(PACKAGE_VERSION_EXACT TRUE)
+ZSTDEOF
+EOF
+STAGE_FILE BUILD ZstdConfig.cmake lib/cmake/Zstd/ZstdConfig.cmake
+STAGE_FILE BUILD ZstdConfigVersion.cmake lib/cmake/Zstd/ZstdConfigVersion.cmake
+TARGET zstd::cmake INTERFACE lib/cmake/Zstd
+TARGET zstd::zstd STATIC lib/libzstd.a INTERFACE include
