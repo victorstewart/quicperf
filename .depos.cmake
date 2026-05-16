@@ -147,7 +147,7 @@ endfunction()
 if (NOT DEFINED DEPOS_BOOTSTRAP_VERSION OR DEPOS_BOOTSTRAP_VERSION STREQUAL "")
   set(
     DEPOS_BOOTSTRAP_VERSION
-    "0.5.1"
+    "0.5.2"
     CACHE STRING
     "Pinned depos version used when bootstrapping locally with Cargo"
   )
