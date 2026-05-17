@@ -1,6 +1,7 @@
 #include "liburing.h"
 #include <openssl/rand.h>
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <ctime>
 #include <fcntl.h>
@@ -132,6 +133,7 @@ static constexpr size_t MAX_IPV6_UDP_PACKET_SIZE = benchmarkUdpPayloadSize;
 static constexpr uint16_t MAX_IPV6_UDP_GSO_SEGMENTS = 64;
 static constexpr size_t MAX_IPV6_UDP_GSO_PAYLOAD_SIZE = 65507;
 static constexpr size_t MAX_IPV6_UDP_GSO_BUFFER_SIZE = benchmarkUdpPayloadSize * MAX_IPV6_UDP_GSO_SEGMENTS;
+static constexpr size_t MAX_IPV6_UDP_GSO_SEND_BUFFER_SIZE = std::min(MAX_IPV6_UDP_GSO_BUFFER_SIZE, MAX_IPV6_UDP_GSO_PAYLOAD_SIZE);
 
 struct UDPContext {
 
@@ -1037,7 +1039,13 @@ public:
 				recvContext.msgs[i].enableRecvControl();
 			}
 
-			int result = recvmmsg(socket.fd, reinterpret_cast<struct mmsghdr *>(recvContext.msgs), MultiUDPContext::batchSize, flags, NULL);
+			std::array<struct mmsghdr, MultiUDPContext::batchSize> recvHeaders = {};
+			for (uint16_t i = 0; i < MultiUDPContext::batchSize; ++i)
+			{
+				recvHeaders[i].msg_hdr = recvContext.msgs[i].msg_hdr;
+			}
+
+			int result = recvmmsg(socket.fd, recvHeaders.data(), MultiUDPContext::batchSize, flags, NULL);
 
 			if (result < 0)
 			{
@@ -1051,6 +1059,10 @@ public:
 					for (auto i = 0; i < result; i++)
 					{
 						UDPContext *packet = &recvContext.msgs[i];
+						packet->msg_hdr.msg_namelen = recvHeaders[i].msg_hdr.msg_namelen;
+						packet->msg_hdr.msg_controllen = recvHeaders[i].msg_hdr.msg_controllen;
+						packet->msg_hdr.msg_flags = recvHeaders[i].msg_hdr.msg_flags;
+						packet->msg_len = recvHeaders[i].msg_len;
 						deliverReceivedPacket(splitRecvView,
 							packet->address(),
 							packet->msg_hdr.msg_namelen,

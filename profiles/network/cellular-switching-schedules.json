@@ -1,0 +1,73 @@
+{
+  "profiles": {
+    "cellular-public-5g-switching": {
+      "kind": "sequence",
+      "description": "One connection through the public 5G trace profiles, replayed segment by segment.",
+      "segments": [
+        {"profile": "5g-5gophers-walking-loop"},
+        {"profile": "5g-ucc-static-replay"},
+        {"profile": "5g-ucc-static-good"},
+        {"profile": "5g-ucc-driving-replay"},
+        {"profile": "5g-ucc-driving-good"},
+        {"profile": "5g-ucc-driving-congested"},
+        {"profile": "5g-ucc-driving-bursty-high"},
+        {"profile": "5g-ucc-driving-handover-heavy"},
+        {"profile": "5g-ucc-video-app-shaped"}
+      ]
+    },
+    "cellular-public-lte-switching": {
+      "kind": "sequence",
+      "description": "One connection through the public 4G/LTE trace profiles, replayed segment by segment.",
+      "segments": [
+        {"profile": "lte-ucc-static-good"},
+        {"profile": "lte-ucc-pedestrian-replay"},
+        {"profile": "lte-ucc-car-replay"},
+        {"profile": "lte-ucc-tram-handover"},
+        {"profile": "lte-ucc-train-adverse"},
+        {"profile": "lte-ucc-congested"}
+      ]
+    },
+    "cellular-public-5g-lte-switching": {
+      "kind": "sequence",
+      "description": "One connection through every public 5G and 4G/LTE cellular trace profile currently carried by quicperf.",
+      "segments": [
+        {"profile": "5g-5gophers-walking-loop"},
+        {"profile": "5g-ucc-static-replay"},
+        {"profile": "5g-ucc-static-good"},
+        {"profile": "5g-ucc-driving-replay"},
+        {"profile": "5g-ucc-driving-good"},
+        {"profile": "5g-ucc-driving-congested"},
+        {"profile": "5g-ucc-driving-bursty-high"},
+        {"profile": "5g-ucc-driving-handover-heavy"},
+        {"profile": "5g-ucc-video-app-shaped"},
+        {"profile": "lte-ucc-static-good"},
+        {"profile": "lte-ucc-pedestrian-replay"},
+        {"profile": "lte-ucc-car-replay"},
+        {"profile": "lte-ucc-tram-handover"},
+        {"profile": "lte-ucc-train-adverse"},
+        {"profile": "lte-ucc-congested"}
+      ]
+    },
+    "cellular-public-5g-lte-holdout-switching": {
+      "kind": "sequence",
+      "description": "Alternate-order public cellular sequence for holdout testing of any path classifier or meta-controller.",
+      "segments": [
+        {"profile": "lte-ucc-static-good"},
+        {"profile": "5g-ucc-driving-good"},
+        {"profile": "lte-ucc-car-replay"},
+        {"profile": "5g-ucc-driving-handover-heavy"},
+        {"profile": "lte-ucc-train-adverse"},
+        {"profile": "5g-5gophers-walking-loop"},
+        {"profile": "lte-ucc-congested"},
+        {"profile": "5g-ucc-driving-congested"},
+        {"profile": "5g-ucc-video-app-shaped"},
+        {"profile": "lte-ucc-pedestrian-replay"},
+        {"profile": "5g-ucc-static-good"},
+        {"profile": "lte-ucc-tram-handover"},
+        {"profile": "5g-ucc-driving-bursty-high"},
+        {"profile": "5g-ucc-static-replay"},
+        {"profile": "5g-ucc-driving-replay"}
+      ]
+    }
+  }
+}

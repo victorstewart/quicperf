@@ -96,7 +96,7 @@ static inline const char *benchmarkPicoquicAdapterFeatures(void)
 {
 	static thread_local char features[256];
 	const bool gsoRequested = benchmarkUdpGsoEnabled();
-	const bool nativeGso = gsoRequested && !benchmarkIsLossRecovery();
+	const bool nativeGso = benchmarkPicoquicPacketTrainMode && gsoRequested && !benchmarkIsLossRecovery();
 	const char *udpGso = "off";
 	if (nativeGso)
 	{
@@ -1148,16 +1148,16 @@ private:
 				do
 				{
 					packet = &packets->msgs[packets->count];
-					send_msg_size = 0;
-					if (useUdpGso)
-					{
-						packet->ensureCapacity(MAX_IPV6_UDP_GSO_BUFFER_SIZE);
-					}
+						send_msg_size = 0;
+						if (useUdpGso)
+						{
+							packet->ensureCapacity(MAX_IPV6_UDP_GSO_SEND_BUFFER_SIZE);
+						}
 
-					result = picoquic_prepare_next_packet_ex(engine, timeNowUs(), packet->buffer(),
-						useUdpGso ? MAX_IPV6_UDP_GSO_BUFFER_SIZE : MAX_IPV6_UDP_PACKET_SIZE,
-						&send_length, packet->address<sockaddr_storage>(), NULL, &interfaceIndex,
-						NULL, NULL, useUdpGso ? &send_msg_size : NULL);
+						result = picoquic_prepare_next_packet_ex(engine, timeNowUs(), packet->buffer(),
+							useUdpGso ? MAX_IPV6_UDP_GSO_SEND_BUFFER_SIZE : MAX_IPV6_UDP_PACKET_SIZE,
+							&send_length, packet->address<sockaddr_storage>(), NULL, &interfaceIndex,
+							NULL, NULL, useUdpGso ? &send_msg_size : NULL);
 
 						if (result == 0 && send_length > 0)
 						{
@@ -1210,7 +1210,7 @@ public:
 
 		// Loss rows keep picoquic packetized so the shared impairment layer can
 		// drop deterministic QUIC packets, then NetworkHub re-coalesces survivors.
-		useUdpGso = benchmarkUdpGsoEnabled() && !benchmarkIsLossRecovery();
+		useUdpGso = benchmarkPicoquicPacketTrainMode && benchmarkUdpGsoEnabled() && !benchmarkIsLossRecovery();
 
 		networkHub = new NetworkHub<mode>(localPort);
 

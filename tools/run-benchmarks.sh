@@ -33,6 +33,7 @@ append_samples_tsv="${QUICPERF_APPEND_SAMPLES_TSV:-}"
 run_label_prefix="${QUICPERF_RUN_LABEL_PREFIX:-}"
 network_path_helper="$root/tools/quicperf_network_path.py"
 path_variation="${QUICPERF_PATH_VARIATION:-1}"
+path_time_scale="${QUICPERF_PATH_TIME_SCALE:-1.0}"
 
 select_server_cpu() {
   python3 - <<'PY'
@@ -164,7 +165,7 @@ setup_path_profile() {
   local state="$3"
   local env_path="$4"
   local log_path="$5"
-  local -a args=(setup --profile "$profile" --run-id "$run_id" --state "$state")
+  local -a args=(setup --profile "$profile" --run-id "$run_id" --state "$state" --trace-time-scale "$path_time_scale")
   if [[ "$path_variation" != "1" ]]; then
     args+=(--no-variation)
   fi

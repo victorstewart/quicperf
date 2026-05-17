@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import ipaddress
 import json
@@ -74,10 +75,116 @@ def profile_by_name(name: str) -> dict[str, Any]:
     if name not in profiles:
         known = " ".join(sorted(profiles))
         raise NetworkPathError(f"unknown path profile {name!r}; known profiles: {known}")
-    profile = dict(profiles[name])
+    profile = resolve_profile(name, profiles, ())
     profile["name"] = name
     validate_profile(profile)
     return profile
+
+
+def resolve_profile(name: str, profiles: dict[str, dict[str, Any]], stack: tuple[str, ...]) -> dict[str, Any]:
+    if name in stack:
+        chain = " -> ".join((*stack, name))
+        raise NetworkPathError(f"profile sequence cycle: {chain}")
+    raw = copy.deepcopy(profiles[name])
+    raw["name"] = name
+    if raw.get("kind") == "sequence":
+        return expand_sequence_profile(name, raw, profiles, stack)
+    return raw
+
+
+def expanded_sequence_step(source_name: str, source: dict[str, Any], segment_index: int, step_index: int, step: dict[str, Any]) -> dict[str, Any]:
+    expanded = copy.deepcopy(step)
+    for key in (
+        "one_way_delay_us",
+        "one_way_jitter_us",
+        "jitter_correlation_percent",
+        "loss_percent",
+        "loss_correlation_percent",
+        "queue_bdp",
+        "mtu_bytes",
+    ):
+        if key not in expanded and key in source:
+            expanded[key] = source[key]
+    expanded["segment_profile"] = source_name
+    expanded["segment_index"] = segment_index
+    expanded["segment_step_index"] = step_index
+    return expanded
+
+
+def static_profile_step(source_name: str, source: dict[str, Any], segment_index: int, duration_ms: int) -> dict[str, Any]:
+    return expanded_sequence_step(
+        source_name,
+        source,
+        segment_index,
+        0,
+        {
+            "duration_ms": duration_ms,
+            "downlink_bps": int(source["downlink_bps"]),
+            "uplink_bps": int(source["uplink_bps"]),
+        },
+    )
+
+
+def expand_sequence_profile(name: str, sequence: dict[str, Any], profiles: dict[str, dict[str, Any]], stack: tuple[str, ...]) -> dict[str, Any]:
+    segments = sequence.get("segments")
+    if not isinstance(segments, list) or not segments:
+        raise NetworkPathError(f"profile sequence {name} must define non-empty segments")
+
+    base: dict[str, Any] | None = None
+    trace: list[dict[str, Any]] = []
+    expanded_segments: list[dict[str, Any]] = []
+    total_duration_ms = 0
+
+    for segment_index, segment in enumerate(segments):
+        if not isinstance(segment, dict) or not isinstance(segment.get("profile"), str):
+            raise NetworkPathError(f"profile sequence {name} has invalid segment {segment!r}")
+        source_name = segment["profile"]
+        if source_name not in profiles:
+            raise NetworkPathError(f"profile sequence {name} references unknown profile {source_name!r}")
+        source = resolve_profile(source_name, profiles, (*stack, name))
+        validate_profile(source)
+        if source.get("kind") != "namespace":
+            raise NetworkPathError(f"profile sequence {name} references non-namespace profile {source_name!r}")
+        if base is None:
+            base = copy.deepcopy(source)
+
+        source_trace = source.get("trace", [])
+        if source_trace:
+            steps = [
+                expanded_sequence_step(source_name, source, segment_index, step_index, step)
+                for step_index, step in enumerate(source_trace)
+            ]
+        else:
+            duration_ms = int(segment.get("duration_ms", sequence.get("default_static_duration_ms", 1000)))
+            steps = [static_profile_step(source_name, source, segment_index, duration_ms)]
+
+        segment_duration_ms = sum(int(step["duration_ms"]) for step in steps)
+        total_duration_ms += segment_duration_ms
+        trace.extend(steps)
+        expanded_segments.append(
+            {
+                "profile": source_name,
+                "steps": len(steps),
+                "duration_ms": segment_duration_ms,
+            }
+        )
+
+    if base is None:
+        raise NetworkPathError(f"profile sequence {name} did not expand to any namespace profile")
+    base["name"] = name
+    base["kind"] = "namespace"
+    base["description"] = sequence.get("description", f"Path sequence profile {name}")
+    base["trace"] = trace
+    base["schedule"] = {
+        "kind": "sequence",
+        "segments": expanded_segments,
+        "total_duration_ms": total_duration_ms,
+    }
+    base["source"] = {
+        "name": "quicperf path profile sequence",
+        "profiles": [segment["profile"] for segment in expanded_segments],
+    }
+    return base
 
 
 def validate_profile(profile: dict[str, Any]) -> None:
@@ -303,7 +410,11 @@ def loopback_state(profile: dict[str, Any], state_path: Path | None = None) -> d
     return state
 
 
-def setup_namespace(profile: dict[str, Any], run_id: str, state_path: Path, start_variation: bool) -> dict[str, Any]:
+def trace_sleep_seconds(step: dict[str, Any], trace_time_scale: float) -> float:
+    return max(0.01, int(step["duration_ms"]) * trace_time_scale / 1000.0)
+
+
+def setup_namespace(profile: dict[str, Any], run_id: str, state_path: Path, start_variation: bool, trace_time_scale: float) -> dict[str, Any]:
     if os.geteuid() != 0:
         raise NetworkPathError("namespace path profiles require root or CAP_NET_ADMIN")
     names = namespace_names(profile, run_id)
@@ -354,6 +465,7 @@ def setup_namespace(profile: dict[str, Any], run_id: str, state_path: Path, star
             "uplink_bps": int(profile["uplink_bps"]),
             "max_rate_bps": max_rate_bps(profile),
             "bdp_window_bytes": bdp_window_bytes(profile),
+            "trace_time_scale": trace_time_scale,
             "state_path": str(state_path),
         }
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -439,24 +551,49 @@ def vary(state_path: Path) -> int:
     signal.signal(signal.SIGTERM, handle_stop)
     signal.signal(signal.SIGINT, handle_stop)
     while not stop:
-        for step in trace:
+        for step_index, step in enumerate(trace):
             if stop:
                 break
             dynamic_profile = trace_step_profile(profile, step)
+            sleep_seconds = trace_sleep_seconds(step, float(state.get("trace_time_scale", 1.0)))
+            print(
+                json.dumps(
+                    {
+                        "event": "quicperf_path_variation_step",
+                        "profile": profile["name"],
+                        "step_index": step_index,
+                        "segment_profile": step.get("segment_profile", profile["name"]),
+                        "segment_index": step.get("segment_index", 0),
+                        "segment_step_index": step.get("segment_step_index", step_index),
+                        "duration_ms": int(step["duration_ms"]),
+                        "downlink_bps": int(step["downlink_bps"]),
+                        "uplink_bps": int(step["uplink_bps"]),
+                        "one_way_delay_us": int(dynamic_profile.get("one_way_delay_us", 0)),
+                        "one_way_jitter_us": int(dynamic_profile.get("one_way_jitter_us", 0)),
+                        "loss_percent": float(dynamic_profile.get("loss_percent", 0.0)),
+                        "sleep_seconds": sleep_seconds,
+                        "trace_time_scale": float(state.get("trace_time_scale", 1.0)),
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
             apply_tc(dynamic_profile, state, int(step["downlink_bps"]), int(step["uplink_bps"]))
-            time.sleep(max(0.01, int(step["duration_ms"]) / 1000.0))
+            time.sleep(sleep_seconds)
     return 0
 
 
 def command_setup(args: argparse.Namespace) -> int:
     profile = profile_by_name(args.profile)
+    if args.trace_time_scale < 0.0:
+        raise NetworkPathError("--trace-time-scale must be >= 0")
     if args.dry_run:
         print(json.dumps(plan_commands(profile, args.run_id), indent=2, sort_keys=True))
         return 0
     if profile["kind"] == "loopback":
         state = loopback_state(profile, args.state)
     else:
-        state = setup_namespace(profile, args.run_id, args.state, not args.no_variation)
+        state = setup_namespace(profile, args.run_id, args.state, not args.no_variation, args.trace_time_scale)
     write_env(state)
     return 0
 
@@ -505,6 +642,7 @@ def main() -> int:
     setup_parser.add_argument("--state", type=Path, required=True)
     setup_parser.add_argument("--dry-run", action="store_true")
     setup_parser.add_argument("--no-variation", action="store_true")
+    setup_parser.add_argument("--trace-time-scale", type=float, default=1.0)
     setup_parser.set_defaults(func=command_setup)
 
     cleanup_parser = sub.add_parser("cleanup")

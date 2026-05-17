@@ -87,6 +87,11 @@ class NetworkProfileTests(unittest.TestCase):
         self.assertIn("2.5000%", command)
         self.assertIn("2000000bit", command)
 
+    def test_trace_sleep_seconds_preserves_default_and_supports_compressed_smoke(self):
+        step = {"duration_ms": 2000}
+        self.assertEqual(self.mod.trace_sleep_seconds(step, 1.0), 2.0)
+        self.assertEqual(self.mod.trace_sleep_seconds(step, 0.001), 0.01)
+
     def test_public_cellular_profiles_are_loaded_from_secondary_profile_file(self):
         profile = self.mod.profile_by_name("5g-ucc-driving-replay")
         self.assertIn("source", profile)
@@ -107,6 +112,46 @@ class NetworkProfileTests(unittest.TestCase):
         self.assertEqual(walking["source"]["name"], "5Gophers v1.0 dataset")
         self.assertIn("walking-trace.csv", walking["source"]["input"])
         self.assertTrue(any(step.get("event") == "handover-outage" for step in walking["trace"]))
+
+    def test_public_cellular_switching_schedule_expands_every_requested_profile(self):
+        requested = {
+            "5g-5gophers-walking-loop",
+            "5g-ucc-static-replay",
+            "5g-ucc-static-good",
+            "5g-ucc-driving-replay",
+            "5g-ucc-driving-good",
+            "5g-ucc-driving-congested",
+            "5g-ucc-driving-bursty-high",
+            "5g-ucc-driving-handover-heavy",
+            "lte-ucc-static-good",
+            "lte-ucc-pedestrian-replay",
+            "lte-ucc-car-replay",
+            "lte-ucc-tram-handover",
+            "lte-ucc-train-adverse",
+            "lte-ucc-congested",
+        }
+        profile = self.mod.profile_by_name("cellular-public-5g-lte-switching")
+        self.assertEqual(profile["kind"], "namespace")
+        self.assertEqual(profile["schedule"]["kind"], "sequence")
+        segment_profiles = {segment["profile"] for segment in profile["schedule"]["segments"]}
+        self.assertTrue(requested.issubset(segment_profiles))
+        self.assertIn("5g-ucc-video-app-shaped", segment_profiles)
+
+        trace_profiles = {step["segment_profile"] for step in profile["trace"]}
+        self.assertTrue(requested.issubset(trace_profiles))
+        expected_steps = 0
+        for source_profile in segment_profiles:
+            expected_steps += len(self.mod.profile_by_name(source_profile)["trace"])
+        self.assertEqual(len(profile["trace"]), expected_steps)
+        self.assertGreater(profile["schedule"]["total_duration_ms"], 0)
+
+    def test_public_cellular_holdout_schedule_uses_same_profiles_in_different_order(self):
+        primary = self.mod.profile_by_name("cellular-public-5g-lte-switching")
+        holdout = self.mod.profile_by_name("cellular-public-5g-lte-holdout-switching")
+        primary_order = [segment["profile"] for segment in primary["schedule"]["segments"]]
+        holdout_order = [segment["profile"] for segment in holdout["schedule"]["segments"]]
+        self.assertEqual(set(primary_order), set(holdout_order))
+        self.assertNotEqual(primary_order, holdout_order)
 
 
 if __name__ == "__main__":
