@@ -19,7 +19,7 @@ DEFAULT_PROFILES = [
     "cellular-public-5g-lte-switching",
     "cellular-public-5g-lte-holdout-switching",
 ]
-DEFAULT_CONTROLLERS = ["bbr", "cubic", "bbr1", "newreno"]
+DEFAULT_CONTROLLERS = ["bbr", "cubic", "newreno"]
 DEFAULT_SCENARIOS = ["connect", "download"]
 DEFAULT_PACKET_TRAIN_MODES = ["off"]
 DEFAULT_NETWORK = "iouring"

@@ -171,13 +171,12 @@ Public cellular traces can be converted into selectable path profiles with
 and UMN 5Gophers walking-loop traces. Raw public archives stay in ignored
 `.data/`; compact generated profile packs are loaded from `profiles/network/*.json`.
 
-`picoperf` selects picoquic's current BBR implementation for the default
-`QUICPERF_CONGESTION_PROFILE=default-bbr`; set `bbr1`, `cubic`, `dcubic`,
-`newreno`, `fastcc`, `prague`, or `c4` to compare other picoquic controllers.
+`picoperf` selects picoquic's current BBR algorithm string, `bbr`, for the
+default `QUICPERF_CONGESTION_PROFILE=default-bbr`; set `cubic`, `dcubic`,
+`newreno`, `prague`, or `c4` to compare other picoquic controllers.
 For this short-transfer WAN matrix, `QUICPERF_CONGESTION_PROFILE=path-auto`
-selects `cubic` on the 10G/0.5ms datacenter profile, `fastcc` on the 1ms
-datacenter, LTE-good, and 5G profiles, `bbr1` on congested LTE, and current BBR
-elsewhere. `path-auto` also enables picoquic's BDP/cwnd seed on non-loopback
+selects `cubic` on the 10G/0.5ms datacenter profile and current BBR elsewhere.
+`path-auto` also enables picoquic's BDP/cwnd seed on non-loopback
 path profiles when RTT and rate metadata are available, and applies that seed
 immediately to the sender so 1 MiB fresh downloads do not spend most of the row
 waiting for ACK-derived seed validation. `QUICPERF_PICOQUIC_PACKET_TRAIN=1`
@@ -256,9 +255,9 @@ at least 300 measured samples.
 ## Controls
 
 Benchmark controls include one pinned userspace server thread, unpinned client
-load workers, shared TLS 1.3 Ed25519 material, BBR-family congestion control
-where exposed, common `syscall` and `iouring` UDP backends, default UDP GSO/GRO
-on the `iouring` path, and C++-owned UDP I/O for Rust, Zig, and mvfst adapters.
+load workers, shared TLS 1.3 Ed25519 material, current BBR where exposed,
+common `syscall` and `iouring` UDP backends, default UDP GSO/GRO on the
+`iouring` path, and C++-owned UDP I/O for Rust, Zig, and mvfst adapters.
 
 See [docs/methodology.md](docs/methodology.md) for gates, status meanings, and
 row selection details.

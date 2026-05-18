@@ -54,10 +54,9 @@ class PicoquicDynamicCcSuiteTests(unittest.TestCase):
         self.assertEqual(rows[-1].scenario, "download")
         self.assertEqual(rows[-1].packet_train, "on")
 
-    def test_default_controllers_keep_c4_out_of_default_decision(self):
-        self.assertIn("bbr", self.mod.DEFAULT_CONTROLLERS)
+    def test_default_controllers_are_current_baseline_set(self):
+        self.assertEqual(self.mod.DEFAULT_CONTROLLERS, ["bbr", "cubic", "newreno"])
         self.assertNotIn("c4", self.mod.DEFAULT_CONTROLLERS)
-        self.assertNotIn("fastcc", self.mod.DEFAULT_CONTROLLERS)
 
     def test_default_network_is_iouring_for_dynamic_cellular_suite(self):
         self.assertEqual(self.mod.DEFAULT_NETWORK, "iouring")

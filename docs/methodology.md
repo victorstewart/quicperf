@@ -103,13 +103,12 @@ window-limited unless the caller explicitly selects a different window profile.
 
 `picoperf` exposes picoquic congestion-control selection through
 `QUICPERF_CONGESTION_PROFILE`. The default profile maps to picoquic's current
-BBR implementation; explicit values such as `bbr1`, `cubic`, `dcubic`,
-`newreno`, `fastcc`, `prague`, and `c4` are available for controlled A/B runs.
+BBR algorithm string, `bbr`; explicit values `cubic`, `dcubic`, `newreno`,
+`prague`, and `c4` are available for controlled A/B runs.
 The `path-auto` profile is a benchmark policy for short-transfer WAN rows: it
-selects `cubic` on the 10G/0.5ms datacenter profile, `fastcc` on the 1ms
-datacenter, LTE-good, and 5G profiles, `bbr1` on congested LTE, and current BBR
-elsewhere. When RTT and configured rate metadata are available, `path-auto` also
-enables picoquic's BDP/cwnd seed on non-loopback profiles and applies it
+selects `cubic` on the 10G/0.5ms datacenter profile and current BBR elsewhere.
+When RTT and configured rate metadata are available, `path-auto` also enables
+picoquic's BDP/cwnd seed on non-loopback profiles and applies it
 immediately to the sender. This is a benchmark policy for known simulated paths,
 not an assertion that an unknown fresh Internet path can safely start at that
 window. Picoquic packet-train mode and the BDP transport extension are
@@ -206,7 +205,7 @@ The old fixed `3 x 10` runner is only a compatibility smoke path:
 - kernel io_uring workers reported separately
 - shared TLS 1.3 Ed25519 certificate/key/chain by default
 - verified TLS requires `tools/run-tls-verify-audit.sh`
-- BBR-family congestion control where the library exposes it
+- current BBR congestion control where the library exposes it
 - shared window, stream-limit, and workload profiles where APIs permit
 - server app-level completion before client/server exit
 - true per-connection/per-stream server state for multi-client rows

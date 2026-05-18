@@ -35,22 +35,7 @@ static inline const char *benchmarkPicoquicCongestionAlgorithmName(void)
 		{
 			return "cubic";
 		}
-		if (strcmp(benchmarkPathProfile, "dc-fabric-1ms") == 0 ||
-		    strcmp(benchmarkPathProfile, "lte-good") == 0 ||
-		    strcmp(benchmarkPathProfile, "5g-sub6-good") == 0 ||
-		    strcmp(benchmarkPathProfile, "5g-mmwave-bursty") == 0)
-		{
-			return "fastcc";
-		}
-		if (strcmp(benchmarkPathProfile, "lte-congested") == 0)
-		{
-			return "bbr1";
-		}
 		return "bbr";
-	}
-	if (strcmp(benchmarkCongestionProfile, "bbr1") == 0)
-	{
-		return "bbr1";
 	}
 	if (strcmp(benchmarkCongestionProfile, "cubic") == 0)
 	{
@@ -64,10 +49,6 @@ static inline const char *benchmarkPicoquicCongestionAlgorithmName(void)
 	    strcmp(benchmarkCongestionProfile, "reno") == 0)
 	{
 		return "newreno";
-	}
-	if (strcmp(benchmarkCongestionProfile, "fastcc") == 0)
-	{
-		return "fastcc";
 	}
 	if (strcmp(benchmarkCongestionProfile, "prague") == 0)
 	{
