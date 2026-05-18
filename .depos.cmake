@@ -408,6 +408,7 @@ function(_depos_bootstrap_with_cargo out_var)
       ${_depos_cargo_command}
       install
       --locked
+      --force
       --root
       "${DEPOS_BOOTSTRAP_DIR}/.tool"
       --version
@@ -508,16 +509,10 @@ function(_depos_resolve_runtime out_executable out_root out_local_mode out_names
 
   _depos_bootstrap_binary_path(_depos_bootstrap_binary)
   if (EXISTS "${_depos_bootstrap_binary}")
-    _depos_effective_root(_depos_root TRUE)
-    _depos_visible_namespace(_depos_namespace TRUE)
-    _depos_write_state("${_depos_bootstrap_binary}" "${_depos_root}" TRUE)
-    _depos_cache_runtime("${_depos_bootstrap_binary}" "${_depos_root}" TRUE "${_depos_namespace}")
-    _depos_status("using project-local depos at ${_depos_bootstrap_binary}")
-    set(${out_executable} "${_depos_bootstrap_binary}" PARENT_SCOPE)
-    set(${out_root} "${_depos_root}" PARENT_SCOPE)
-    set(${out_local_mode} TRUE PARENT_SCOPE)
-    set(${out_namespace} "${_depos_namespace}" PARENT_SCOPE)
-    return()
+    _depos_status(
+      "ignoring project-local depos at ${_depos_bootstrap_binary}; "
+      "state version '${_depos_state_version}' does not match ${DEPOS_BOOTSTRAP_VERSION}"
+    )
   endif()
 
   if (NOT DEPOS_ALLOW_CARGO_BOOTSTRAP)
