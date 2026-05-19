@@ -117,6 +117,18 @@ def fmt_value(metric: str, value: str | None) -> str:
     return f"{numeric:,.0f}"
 
 
+def adapter_feature_value(features: str, name: str) -> str:
+    prefix = f"{name}="
+    for item in features.split("|"):
+        if item.startswith(prefix):
+            return item[len(prefix):]
+    return ""
+
+
+def metric_better_than(metric: str, candidate: float, current: float) -> bool:
+    return candidate < current if METRIC_SORT_DIRECTION.get(metric) == "ascending" else candidate > current
+
+
 def load_rows(
     run_dir: Path,
     *,
@@ -126,8 +138,8 @@ def load_rows(
     publication_rows = read_tsv(run_dir / "publication-results.tsv")
     row_stats = read_tsv(run_dir / "row-stats.tsv")
 
-    stats_by_key: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
-    best_stats: dict[tuple[str, str, str, str], dict[str, str]] = {}
+    stats_by_key: dict[tuple[str, str, str, str, str, str], dict[str, str]] = {}
+    best_stats: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
     for row in row_stats:
         if row.get("phase") != "combined":
             continue
@@ -135,17 +147,18 @@ def load_rows(
             row["binary"],
             row["scenario"],
             row["network"],
+            row.get("path_profile", "loopback") or "loopback",
             row["metric"],
             row["client_threads"],
         )
         stats_by_key[key] = row
-        group = key[:4]
+        group = key[:5]
         try:
             median = float(row["median"])
         except ValueError:
             continue
         old = best_stats.get(group)
-        if old is None or median > float(old["median"]):
+        if old is None or metric_better_than(row["metric"], median, float(old["median"])):
             best_stats[group] = row
 
     rows: list[dict[str, str]] = []
@@ -153,7 +166,10 @@ def load_rows(
         binary = publication["binary"]
         scenario = publication["scenario"]
         network = publication["network"]
+        path_profile = publication.get("path_profile", "loopback") or "loopback"
         metric = publication["metric"]
+        if binary == "tcpperf":
+            continue
         if include_scenarios is not None and scenario not in include_scenarios:
             continue
         if skip_scenarios is not None and scenario in skip_scenarios:
@@ -164,9 +180,9 @@ def load_rows(
 
         stat = None
         if selected_threads:
-            stat = stats_by_key.get((binary, scenario, network, metric, selected_threads))
+            stat = stats_by_key.get((binary, scenario, network, path_profile, metric, selected_threads))
         else:
-            stat = best_stats.get((binary, scenario, network, metric))
+            stat = best_stats.get((binary, scenario, network, path_profile, metric))
 
         if stat is None:
             continue
@@ -179,6 +195,12 @@ def load_rows(
         sort_p50 = stat.get("median", "")
         sort_p90 = stat.get("p90", "")
         sort_p99 = stat.get("p99", "")
+        adapter_features = publication.get("adapter_features", "")
+        congestion_controller = (
+            publication.get("congestion_controller", "")
+            or adapter_feature_value(adapter_features, "cc")
+            or "-"
+        )
 
         rows.append(
             {
@@ -188,6 +210,7 @@ def load_rows(
                 "network": NETWORK_NAMES.get(network, network),
                 "sort_direction": METRIC_SORT_DIRECTION.get(metric, "ascending"),
                 "client_threads": client_threads,
+                "congestion_controller": congestion_controller,
                 "samples": samples,
                 "unit": METRIC_UNITS.get(metric, metric),
                 "p50": p50,
@@ -229,7 +252,12 @@ def grouped_by_benchmark(rows: list[dict[str, str]]) -> list[tuple[str, list[dic
 def render_markdown(
     rows: list[dict[str, str]],
     artifact_dir: Path,
+    run_dir: Path,
 ) -> str:
+    summary_rows = read_tsv(run_dir / "publication-results.tsv")
+    ready_rows = sum(1 for row in summary_rows if row.get("publication_status") == "ready")
+    not_ready_rows = sum(1 for row in summary_rows if row.get("publication_status") != "ready")
+    run_status = "ready" if summary_rows and not_ready_rows == 0 else "not_ready"
     artifact_sentence = (
         "The TCP+TLS sidecar is excluded from these QUIC tables. Full raw data "
         "and gate details are committed under "
@@ -249,8 +277,16 @@ def render_markdown(
         (
             "Client load is swept upward per row to find server saturation using "
             "as many client threads as needed within the configured limit. Tables "
-            "are sorted by best p99 first; for the current rate and throughput "
-            "metrics, higher is better."
+            "are sorted by best bad-tail p99 first; for rate and throughput "
+            "metrics that means the higher lower-tail value is better."
+        ),
+        "",
+        (
+            f"Current run status: `{run_status}`. The run produced {ready_rows} "
+            f"clean publication rows and {not_ready_rows} rows that remain noisy, "
+            "nonstationary, unsupported, or otherwise gated; the tables below use "
+            "the best available measured distributions and the gate details remain "
+            "the source of truth."
         ),
         "",
         artifact_sentence,
@@ -267,15 +303,15 @@ def render_markdown(
                 BENCHMARK_SUMMARIES.get(benchmark_rows[0]["scenario"], ""),
                 "",
                 (
-                    "| Library | Network | Client threads | Samples | "
+                    "| Library | Network | CC | Client threads | Samples | "
                     "Unit | p50 | p90 | p99 |"
                 ),
-                "|---|---|---:|---:|---|---:|---:|---:|",
+                "|---|---|---|---:|---:|---|---:|---:|---:|",
             ]
         )
         for row in benchmark_rows:
             lines.append(
-                "| {library} | {network} | {client_threads} | "
+                "| {library} | {network} | {congestion_controller} | {client_threads} | "
                 "{samples} | {unit} | {p50} | {p90} | {p99} |".format(**row)
             )
         lines.append("")
@@ -284,8 +320,8 @@ def render_markdown(
         [
             "## Caveats",
             "",
-            "- `idle_footprint` is omitted from the current table because this run captured only the old completion marker, not resource footprint. Rerun with the RSS sampler before publishing idle-footprint claims.",
-            "- `datagram` is retracted from the published table while DATAGRAM fairness is under audit. The latest addendum showed implausibly polarized rows, so it must not be treated as a fair cross-library result.",
+            "- `idle_footprint` is omitted from the current table because it was not part of this loopback refresh scenario set.",
+            "- `datagram` is omitted from the adaptive publication table; DATAGRAM support is covered by the high-value capability smoke and should remain separate until a fair adaptive DATAGRAM publication run is configured.",
             "- Unsupported capability rows are explicit unsupported markers, not crashes.",
             (
                 "- Row-level caveats and full gate reasons are in "
@@ -313,7 +349,7 @@ def main() -> None:
 
     rows = load_rows(args.run_dir, skip_scenarios={"datagram"})
     args.markdown.write_text(
-        render_markdown(rows, args.artifact_dir) + "\n",
+        render_markdown(rows, args.artifact_dir, args.run_dir) + "\n",
         encoding="utf-8",
     )
 

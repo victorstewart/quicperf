@@ -25,6 +25,7 @@ SAMPLE_FIELDS = [
     "path_profile",
     "client_threads",
     "server_connections",
+    "adapter_features",
     "metric",
     "value",
     "phase",
@@ -128,6 +129,7 @@ class Sample:
     udp_send_syscalls: int = 0
     udp_recv_polls: int = 0
     datagrams_per_udp_packet: float = 0.0
+    adapter_features: str = ""
 
     @property
     def row_key(self) -> RowKey:
@@ -169,7 +171,7 @@ class StatsConfig:
     saturation_tolerance: float = 0.01
     saturation_min_incremental_improvement: float = 0.01
     saturation_probability: float = 0.95
-    saturation_sentinels: int = 2
+    saturation_sentinels: int = 1
 
     def ci_width_limit(self, scenario: str) -> float:
         if scenario in {"download", "upload", "multistream_download", "multistream_upload", "bidi"}:
@@ -283,6 +285,15 @@ def quantile(values: Iterable[float], q: float) -> float:
     return items[low] + ((items[high] - items[low]) * fraction)
 
 
+def bad_tail_quantile(values: Iterable[float], q: float, metric: str) -> float:
+    if q > 1.0:
+        q /= 100.0
+    q = max(0.0, min(1.0, q))
+    if metric_higher_is_better(metric):
+        q = 1.0 - q
+    return quantile(values, q)
+
+
 def empirical_order_stat(values: Iterable[float], q: float) -> float:
     items = sorted(float(value) for value in values)
     if not items:
@@ -367,6 +378,7 @@ def load_samples(path: Path | str) -> list[Sample]:
                     path_profile=row.get("path_profile", "loopback") or "loopback",
                     client_threads=_safe_int(row.get("client_threads")),
                     server_connections=_safe_int(row.get("server_connections")),
+                    adapter_features=row.get("adapter_features", ""),
                     metric=row.get("metric", ""),
                     value=_safe_float(value_text) if value_text != "" else None,
                     phase=row.get("phase", ""),
@@ -422,6 +434,7 @@ def sample_to_row(sample: Sample) -> dict[str, str]:
         "path_profile": sample.path_profile,
         "client_threads": str(sample.client_threads),
         "server_connections": str(sample.server_connections),
+        "adapter_features": sample.adapter_features,
         "metric": sample.metric,
         "value": f"{sample.value:.9f}" if sample.value is not None else "",
         "phase": sample.phase,
@@ -531,6 +544,7 @@ def parse_client_log_samples(
                 path_profile=path_profile or "loopback",
                 client_threads=int(client_threads),
                 server_connections=int(server_connections),
+                adapter_features=_adapter_features,
                 metric=metric,
                 value=float(value),
                 phase=phase,
@@ -605,8 +619,9 @@ def row_stats(samples: list[Sample], config: StatsConfig | None = None) -> RowSt
     p20 = quantile(values, 0.20)
     p80 = quantile(values, 0.80)
     p20_p80_ratio = (p80 / p20) if p20 > 0.0 else 0.0
-    p90 = quantile(values, 0.90)
-    p99 = quantile(values, 0.99)
+    metric = samples[0].metric if samples else ""
+    p90 = bad_tail_quantile(values, 0.90, metric)
+    p99 = bad_tail_quantile(values, 0.99, metric)
     p99_status = "claimable" if n >= cfg.p99_min_samples else "insufficient_order_stat_support"
     mad = median(abs(value - med) for value in values)
     mad_rel = (mad / med) if med > 0.0 else 0.0
@@ -959,14 +974,31 @@ def saturation_decision(
     if not ready_threads:
         return SaturationDecision(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, "no_ready_rows", "not_ready", "no_ready_rows")
 
-    best_threads = max(ready_threads, key=lambda thread: group_stats[thread].median)
+    boundary_threads = 0
+    plateau_reason = ""
+    previous_thread = ready_threads[0]
+    for thread in ready_threads[1:]:
+        previous_p50 = group_stats[previous_thread].median
+        current_p50 = group_stats[thread].median
+        improvement = (current_p50 / previous_p50) - 1.0 if previous_p50 > 0.0 else 0.0
+        if improvement <= cfg.saturation_min_incremental_improvement:
+            boundary_threads = thread
+            plateau_reason = (
+                f"incremental_improvement_{improvement * 100.0:.2f}pct_le_"
+                f"{cfg.saturation_min_incremental_improvement * 100.0:.2f}pct"
+            )
+            break
+        previous_thread = thread
+
+    curve_threads = [thread for thread in ready_threads if boundary_threads == 0 or thread <= boundary_threads]
+    best_threads = max(curve_threads, key=lambda thread: group_stats[thread].median)
     best_p50 = group_stats[best_threads].median
     selected_threads = best_threads
-    selected_probability = 0.0
+    selected_probability = 1.0
     selected_ratio_low = 1.0
     selected_ratio_high = 1.0
 
-    for thread in ready_threads:
+    for thread in curve_threads:
         if thread == best_threads:
             probability, low, high = 1.0, 1.0, 1.0
         else:
@@ -978,39 +1010,23 @@ def saturation_decision(
             selected_ratio_high = high
             break
 
-    if selected_probability == 0.0:
-        selected_probability, selected_ratio_low, selected_ratio_high = _prob_within_tolerance(group_samples[selected_threads], group_samples[best_threads], cfg)
-
-    sentinel_count = 0
-    boundary_threads = 0
-    post_best = [thread for thread in sorted(group_stats) if thread > best_threads]
-    previous = best_threads
-    for thread in post_best:
-        if group_stats[thread].status != "ready":
-            boundary_threads = thread
-            break
-        _prob, low, high = _increment_ratio(group_samples[thread], group_samples[previous], cfg)
-        if high <= 1.0 + cfg.saturation_min_incremental_improvement:
-            sentinel_count += 1
-        else:
-            sentinel_count = 0
-        previous = thread
-        if sentinel_count >= cfg.saturation_sentinels:
-            boundary_threads = thread
-            break
-    if boundary_threads == 0 and post_best:
-        boundary_threads = post_best[-1]
+    sentinel_count = 1 if boundary_threads else 0
 
     edge = "ok"
     status = "ready"
     reasons = []
-    if sentinel_count < cfg.saturation_sentinels:
+    if boundary_threads == 0:
         edge = "edge"
         status = "not_ready"
-        reasons.append(f"sentinels_{sentinel_count}_lt_{cfg.saturation_sentinels}")
+        reasons.append("no_incremental_plateau")
+    elif plateau_reason:
+        reasons.append(plateau_reason)
     if selected_probability < cfg.saturation_probability:
-        status = "not_ready"
-        reasons.append(f"selection_probability_{selected_probability:.4f}_lt_{cfg.saturation_probability:.4f}")
+        selected_threads = best_threads
+        selected_probability = 1.0
+        selected_ratio_low = 1.0
+        selected_ratio_high = 1.0
+        reasons.append("selected_best_due_low_within_tolerance_confidence")
 
     selected_p50 = group_stats[selected_threads].median
     return SaturationDecision(
@@ -1039,17 +1055,6 @@ def _prob_within_tolerance(a_samples: list[Sample], best_samples: list[Sample], 
         return 0.0, 0.0, 0.0
     threshold = 1.0 - cfg.saturation_tolerance
     probability = sum(1 for ratio in ratios if ratio >= threshold) / len(ratios)
-    return probability, quantile(ratios, 0.025), quantile(ratios, 0.975)
-
-
-def _increment_ratio(a_samples: list[Sample], prev_samples: list[Sample], cfg: StatsConfig) -> tuple[float, float, float]:
-    seed = _stable_seed(["increment", a_samples[0].row_key if a_samples else "", prev_samples[0].row_key if prev_samples else "", cfg.bootstrap_seed])
-    a_dist = bootstrap_stat_distribution(a_samples, median, cfg.bootstrap_iters, seed)
-    b_dist = bootstrap_stat_distribution(prev_samples, median, cfg.bootstrap_iters, seed + 1)
-    ratios = [(a_dist[index] / b_dist[index]) - 1.0 for index in range(min(len(a_dist), len(b_dist))) if b_dist[index] > 0.0]
-    if not ratios:
-        return 0.0, 0.0, 0.0
-    probability = sum(1 for ratio in ratios if ratio > cfg.saturation_min_incremental_improvement) / len(ratios)
     return probability, quantile(ratios, 0.025), quantile(ratios, 0.975)
 
 

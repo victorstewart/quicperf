@@ -1,12 +1,25 @@
 NAME quiche
-VERSION 0.28.0
+VERSION 0.29.0
 SYSTEM_LIBS ALLOW
-SOURCE GIT https://github.com/cloudflare/quiche.git a9cb314563a5c13791bd7e5a1e32821e53114e75
+SOURCE GIT https://github.com/cloudflare/quiche.git e85fc8e8082e5ab57b8c0c4a5785f1b84b39901c
 GIT_SUBMODULES RECURSIVE
 BUILD_SYSTEM CARGO
-CARGO_BUILD env CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo build --release --features ffi --target-dir "${DEPO_BUILD_DIR}/cargo-target" -p quiche
+CARGO_BUILD_SH <<'EOF'
+env CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo build --release --features ffi --target-dir "${DEPO_BUILD_DIR}/cargo-target" -p quiche
+boringssl_include="$(find "${DEPO_BUILD_DIR}/cargo-target/release/build" -path '*/out/boringssl/src/include' -type d -print -quit)"
+if [[ -z "$boringssl_include" ]]; then
+  cargo_home="$CARGO_HOME"
+  if [[ -z "$cargo_home" ]]; then
+    cargo_home="$DEPO_BUILD_DIR/cargo-home"
+  fi
+  boringssl_include="$(find "$cargo_home/registry/src" -path '*/boring-sys-*/deps/boringssl/src/include' -type d -print -quit)"
+fi
+test -n "$boringssl_include"
+mkdir -p "${DEPO_BUILD_DIR}/boringssl-include"
+cp -R "$boringssl_include/." "${DEPO_BUILD_DIR}/boringssl-include/"
+EOF
 STAGE_FILE BUILD cargo-target/release/libquiche.a lib/libquiche.a
 STAGE_TREE SOURCE quiche/include include
-STAGE_TREE SOURCE quiche/deps/boringssl/src/include boringssl/include
+STAGE_TREE BUILD boringssl-include boringssl/include
 TARGET quiche::quiche STATIC lib/libquiche.a INTERFACE include boringssl/include
 LINK quiche::quiche dl pthread m

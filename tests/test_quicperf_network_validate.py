@@ -94,9 +94,20 @@ rtt min/avg/max/mdev = 30.100/45.250/80.500/9.125 ms
         ]
         summary = self.mod.summarize_probe_results(results, "throughput_bps")
         self.assertEqual(summary["p50"], 25.0)
-        self.assertEqual(summary["p90"], 40.0)
-        self.assertEqual(summary["p99"], 40.0)
+        self.assertEqual(summary["p90"], 10.0)
+        self.assertEqual(summary["p99"], 10.0)
         self.assertGreater(summary["cv"], 0.0)
+
+    def test_loss_summary_bad_tail_stays_high_tail(self):
+        results = [
+            self.mod.ProbeResult("ok", {"loss_percent": 1.0}, "", ""),
+            self.mod.ProbeResult("ok", {"loss_percent": 2.0}, "", ""),
+            self.mod.ProbeResult("ok", {"loss_percent": 3.0}, "", ""),
+            self.mod.ProbeResult("ok", {"loss_percent": 4.0}, "", ""),
+        ]
+        summary = self.mod.summarize_probe_results(results, "loss_percent")
+        self.assertEqual(summary["p90"], 4.0)
+        self.assertEqual(summary["p99"], 4.0)
 
     def test_classify_fails_when_tcp_exceeds_shaped_rate(self):
         profile = {

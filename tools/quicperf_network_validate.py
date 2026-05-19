@@ -514,19 +514,28 @@ def percentile(values: list[float], pct: float) -> float:
     return float(ordered[index])
 
 
+def bad_tail_percentile(values: list[float], pct: float, *, higher_is_better: bool) -> float:
+    return percentile(values, 100.0 - pct if higher_is_better else pct)
+
+
+def probe_metric_higher_is_better(key: str) -> bool:
+    return key in {"throughput_bps", "target_bps", "sent"}
+
+
 def summarize_probe_results(results: list[ProbeResult], key: str) -> dict[str, Any]:
     values = [float(result.data[key]) for result in results if result.status == "ok" and key in result.data]
     if not values:
         return {"samples": len(results), "ok_samples": 0}
     mean = float(statistics.fmean(values))
     stdev = float(statistics.stdev(values)) if len(values) > 1 else 0.0
+    higher_is_better = probe_metric_higher_is_better(key)
     return {
         "samples": len(results),
         "ok_samples": len(values),
         "min": min(values),
         "p50": median(values),
-        "p90": percentile(values, 90.0),
-        "p99": percentile(values, 99.0),
+        "p90": bad_tail_percentile(values, 90.0, higher_is_better=higher_is_better),
+        "p99": bad_tail_percentile(values, 99.0, higher_is_better=higher_is_better),
         "max": max(values),
         "mean": mean,
         "stdev": stdev,
@@ -673,15 +682,15 @@ def validate_qdisc_snapshot(profile: dict[str, Any], qdiscs: dict[str, Any]) -> 
     return {"status": "fail" if reasons else "ok", "directions": directions, "reasons": reasons}
 
 
-def summarize_numbers(values: list[float]) -> dict[str, Any]:
+def summarize_numbers(values: list[float], *, higher_is_better: bool = False) -> dict[str, Any]:
     if not values:
         return {"samples": 0}
     return {
         "samples": len(values),
         "min": min(values),
         "p50": median(values),
-        "p90": percentile(values, 90.0),
-        "p99": percentile(values, 99.0),
+        "p90": bad_tail_percentile(values, 90.0, higher_is_better=higher_is_better),
+        "p99": bad_tail_percentile(values, 99.0, higher_is_better=higher_is_better),
         "max": max(values),
         "mean": float(statistics.fmean(values)),
     }
@@ -710,8 +719,8 @@ def profile_trace_audit(profile: dict[str, Any]) -> dict[str, Any]:
         "trace_duration_ms": sum(int(step["duration_ms"]) for step in steps),
         "handover_outage_steps": sum(1 for step in steps if step.get("event") == "handover-outage"),
         "loss_100_percent_steps": sum(1 for loss in losses if loss >= 100.0),
-        "downlink_rate_bps": summarize_numbers([float(value) for value in downlink_rates]),
-        "uplink_rate_bps": summarize_numbers([float(value) for value in uplink_rates]),
+        "downlink_rate_bps": summarize_numbers([float(value) for value in downlink_rates], higher_is_better=True),
+        "uplink_rate_bps": summarize_numbers([float(value) for value in uplink_rates], higher_is_better=True),
         "rtt_ms": summarize_numbers([float(value) for value in rtts]),
         "loss_percent": summarize_numbers(losses),
         "downlink_queue_packets": summarize_numbers([float(value) for value in downlink_queues]),

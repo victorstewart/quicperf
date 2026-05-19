@@ -1,5 +1,5 @@
 NAME folly
-VERSION main-acd1060-quicperf7
+VERSION main-5e1874-quicperf8
 SYSTEM_LIBS ALLOW
 DEPENDS boost VERSION 1.91.0-quicperf3
 DEPENDS doubleconversion VERSION 3.4.0
@@ -8,11 +8,11 @@ DEPENDS fmt VERSION 12.1.0-quicperf2
 DEPENDS gflags VERSION 2.3.0-quicperf2
 DEPENDS glog VERSION 0.7.1-quicperf2
 DEPENDS libsodium VERSION 1.0.22-quicperf2
-DEPENDS liburing VERSION main-d6b7e99
+DEPENDS liburing VERSION main-40999f5
 DEPENDS openssl VERSION 4.0.0
 DEPENDS zlib VERSION 1.3.2
 DEPENDS zstd VERSION 1.5.7-quicperf2
-SOURCE GIT https://github.com/facebook/folly.git acd106068d55c910ba2969d284c8eb3701526a65
+SOURCE GIT https://github.com/facebook/folly.git 5e1874e7bbaf5b883d65fa2a8632b86e2f29ce16
 BUILD_SYSTEM CMAKE
 CMAKE_ARG "-DCMAKE_PREFIX_PATH=${dep:boost};${dep:doubleconversion};${dep:fmt};${dep:gflags};${dep:glog};${dep:libsodium};${dep:openssl};${dep:zlib};${dep:zstd}"
 CMAKE_ARG "-DCMAKE_INCLUDE_PATH=${dep:boost}/include;${dep:fastfloat}/include;${dep:libsodium}/include;${dep:liburing}/include;${dep:openssl}/include;${dep:zlib}/include;${dep:zstd}/include"

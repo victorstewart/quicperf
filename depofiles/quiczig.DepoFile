@@ -1,7 +1,7 @@
 NAME quiczig
-VERSION quicperf-ed25519-tls-367495a
+VERSION quicperf-tls-wall-clock-97a7bec
 SYSTEM_LIBS ALLOW
-SOURCE GIT https://github.com/victorstewart/quic-zig.git quicperf-ed25519-tls
+SOURCE GIT https://github.com/victorstewart/quic-zig.git 97a7becfcc09e6401c45e620c27eb09fb8a9b739
 BUILD_SYSTEM MANUAL
 STAGE_FILE SOURCE build.zig share/quic-zig/build.zig
 STAGE_FILE SOURCE build.zig.zon share/quic-zig/build.zig.zon

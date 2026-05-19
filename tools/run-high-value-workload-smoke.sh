@@ -16,6 +16,7 @@ operations="${QUICPERF_HIGH_VALUE_SMOKE_OPERATIONS:-4}"
 streams_in_flight="${QUICPERF_HIGH_VALUE_SMOKE_STREAMS_IN_FLIGHT:-4}"
 idle_hold_ms="${QUICPERF_HIGH_VALUE_SMOKE_IDLE_HOLD_MS:-50}"
 timeout_s="${QUICPERF_HIGH_VALUE_SMOKE_TIMEOUT:-45s}"
+server_stop_timeout="${QUICPERF_HIGH_VALUE_SMOKE_SERVER_STOP_TIMEOUT:-60s}"
 
 mkdir -p "$out_dir"
 
@@ -38,6 +39,7 @@ QUICPERF_MECHANISM_SMOKE_OPERATIONS="$operations" \
 QUICPERF_MECHANISM_SMOKE_STREAMS_IN_FLIGHT="$streams_in_flight" \
 QUICPERF_MECHANISM_SMOKE_IDLE_HOLD_MS="$idle_hold_ms" \
 QUICPERF_MECHANISM_SMOKE_TIMEOUT="$timeout_s" \
+QUICPERF_MECHANISM_SMOKE_SERVER_STOP_TIMEOUT="$server_stop_timeout" \
 "$root/tools/run-mechanism-workload-smoke.sh"
 
 capability_out="$out_dir/capability"
@@ -55,6 +57,7 @@ QUICPERF_SCENARIO_OPERATIONS="$operations" \
 QUICPERF_STREAMS_IN_FLIGHT="$streams_in_flight" \
 QUICPERF_IDLE_HOLD_MS="$idle_hold_ms" \
 QUICPERF_TIMEOUT="$timeout_s" \
+QUICPERF_SERVER_STOP_TIMEOUT="$server_stop_timeout" \
 QUICPERF_RANDOMIZE_ORDER="${QUICPERF_HIGH_VALUE_SMOKE_RANDOMIZE_ORDER:-1}" \
 "$root/tools/run-benchmarks.sh" >"$capability_log" 2>&1
 capability_status=$?
@@ -96,7 +99,19 @@ for marker in ("status=client_failed", "status=server_failed", "status=thread_ch
     if marker in log_text:
         bad_markers.append(marker)
 
-datagram_must_pass = {"neqoperf", "noqperf", "quicheperf", "quiczigperf", "quinnperf", "s2nperf"}
+datagram_must_pass = {
+    "lsperf",
+    "mvfstperf",
+    "neqoperf",
+    "ngtcp2perf",
+    "noqperf",
+    "picoperf",
+    "quicheperf",
+    "quiczigperf",
+    "quinnperf",
+    "s2nperf",
+    "xquicperf",
+}
 missing = []
 short = []
 unexpected_unsupported = []

@@ -1,14 +1,14 @@
 NAME mvfst
-VERSION main-8d294bb-quicperf3
+VERSION main-155afab-quicperf4
 SYSTEM_LIBS ALLOW
 DEPENDS boost VERSION 1.91.0-quicperf3
-DEPENDS fizz VERSION main-02fb0b5-quicperf7
-DEPENDS folly VERSION main-acd1060-quicperf7
+DEPENDS fizz VERSION main-44ca082-quicperf8
+DEPENDS folly VERSION main-5e1874-quicperf8
 DEPENDS fmt VERSION 12.1.0-quicperf2
 DEPENDS gflags VERSION 2.3.0-quicperf2
 DEPENDS glog VERSION 0.7.1-quicperf2
 DEPENDS openssl VERSION 4.0.0
-SOURCE GIT https://github.com/facebook/mvfst.git 8d294bb4107d6eb0769ec44ef7d8e43494415562
+SOURCE GIT https://github.com/facebook/mvfst.git 155afab7b4f0d0bd4cc8adf45ac24ed55569ad78
 BUILD_SYSTEM CMAKE
 CMAKE_ARG "-DCMAKE_PREFIX_PATH=${dep:boost};${dep:fizz};${dep:folly};${dep:fmt};${dep:gflags};${dep:glog};${dep:openssl}"
 CMAKE_ARG "-DCMAKE_INCLUDE_PATH=${dep:boost}/include;${dep:openssl}/include"

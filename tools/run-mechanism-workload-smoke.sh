@@ -17,6 +17,7 @@ operations="${QUICPERF_MECHANISM_SMOKE_OPERATIONS:-4}"
 streams_in_flight="${QUICPERF_MECHANISM_SMOKE_STREAMS_IN_FLIGHT:-4}"
 idle_hold_ms="${QUICPERF_MECHANISM_SMOKE_IDLE_HOLD_MS:-50}"
 timeout_s="${QUICPERF_MECHANISM_SMOKE_TIMEOUT:-45s}"
+server_stop_timeout="${QUICPERF_MECHANISM_SMOKE_SERVER_STOP_TIMEOUT:-60s}"
 
 mkdir -p "$out_dir"
 
@@ -45,6 +46,7 @@ QUICPERF_SCENARIO_OPERATIONS="$operations" \
 QUICPERF_STREAMS_IN_FLIGHT="$streams_in_flight" \
 QUICPERF_IDLE_HOLD_MS="$idle_hold_ms" \
 QUICPERF_TIMEOUT="$timeout_s" \
+QUICPERF_SERVER_STOP_TIMEOUT="$server_stop_timeout" \
 QUICPERF_RANDOMIZE_ORDER="${QUICPERF_MECHANISM_SMOKE_RANDOMIZE_ORDER:-1}" \
 "$root/tools/run-benchmarks.sh" >"$log" 2>&1
 run_status=$?

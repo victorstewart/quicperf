@@ -1,0 +1,14 @@
+quicperf_adaptive_environment date_utc=2026-05-19T02:40:14Z
+quicperf_adaptive_environment publication_id=adaptive-loopback-cubic-refresh-20260519T024014Z-2661494
+quicperf_adaptive_environment git_commit=da8b7f10b7d3a0b1b60f8b322fe950fa1dda192b
+quicperf_adaptive_environment env_hash=cf8032a13da22626 machine_hash=98665a21a4dd682e
+quicperf_adaptive_environment variables
+QUICPERF_ADAPTIVE_OUT_DIR=.run/adaptive-loopback-cubic-refresh-20260519T024014Z-2661494
+QUICPERF_ADAPTIVE_RANDOM_SEED=20260518
+QUICPERF_ADAPTIVE_SCENARIOS=download upload connect
+QUICPERF_BIN_DIR=/root/quicperf/.run/build-refresh-upstream/bin
+QUICPERF_CONGESTION_PROFILE=cubic
+QUICPERF_NETWORKS=syscall iouring
+QUICPERF_PATH_PROFILES=loopback
+QUICPERF_PUBLICATION_ID=adaptive-loopback-cubic-refresh-20260519T024014Z-2661494
+QUICPERF_TEST_BYTES=1073741824

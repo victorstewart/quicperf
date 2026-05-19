@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from quicperf_stats import parse_client_log_samples, quantile
+from quicperf_stats import bad_tail_quantile, parse_client_log_samples, quantile
 
 
 @dataclass
@@ -220,8 +220,8 @@ def combine_rows(repo_root: Path, combined_root: Path, sweep_dirs: list[Path]) -
                 samples=len(values),
                 min_value=min_value,
                 p50=quantile(values, 0.50),
-                p90=quantile(values, 0.90),
-                p99=quantile(values, 0.99),
+                p90=bad_tail_quantile(values, 0.90, metric),
+                p99=bad_tail_quantile(values, 0.99, metric),
                 max_value=max_value,
                 spread_ratio=(max_value / min_value) if min_value > 0.0 else 0.0,
                 out_dir=relative_to_root(repo_root, target_dir),

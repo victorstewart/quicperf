@@ -1,9 +1,9 @@
 NAME picoquic
-VERSION master
+VERSION master-2b1e14d
 SYSTEM_LIBS ALLOW
 DEPENDS openssl VERSION 4.0.0
-DEPENDS picotls VERSION master
-SOURCE GIT https://github.com/private-octopus/picoquic.git f54239a39145aa3042903c7c61609b0609e804c9
+DEPENDS picotls VERSION master-7c32032
+SOURCE GIT https://github.com/private-octopus/picoquic.git 2b1e14d5a46532eadf691edef5bd747da6de6557
 BUILD_SYSTEM CMAKE
 CMAKE_ARG "-DCMAKE_PREFIX_PATH=${dep:openssl};${dep:picotls}"
 CMAKE_DEFINE PTLS_INCLUDE_DIR=${dep:picotls}/include

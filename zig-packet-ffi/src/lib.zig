@@ -148,6 +148,9 @@ pub const qzf_engine_t = struct {
     local_addr: posix.sockaddr.storage,
     remote_addr: ?posix.sockaddr.storage = null,
     tls_config: tls13.TlsConfig,
+    imported_session_ticket: tls13.SessionTicket = .{ .psk = .{0} ** 32 },
+    has_imported_session_ticket: bool = false,
+    imported_zero_rtt: bool = false,
     conn_config: connection.ConnectionConfig,
     private_key: []u8,
     cert_chain: [][]const u8,
@@ -688,6 +691,137 @@ fn envFlag(name: [*:0]const u8) bool {
     return value.len > 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
 }
 
+const RESUMPTION_MAGIC = "QZFRTT01";
+
+const ResumptionStateError = error{
+    BufferTooSmall,
+    InvalidResumptionState,
+};
+
+fn writeBytes(out: []u8, pos: *usize, bytes: []const u8) ResumptionStateError!void {
+    if (pos.* + bytes.len > out.len) return error.BufferTooSmall;
+    @memcpy(out[pos.*..][0..bytes.len], bytes);
+    pos.* += bytes.len;
+}
+
+fn writeU8(out: []u8, pos: *usize, value: u8) ResumptionStateError!void {
+    if (pos.* + 1 > out.len) return error.BufferTooSmall;
+    out[pos.*] = value;
+    pos.* += 1;
+}
+
+fn writeU16(out: []u8, pos: *usize, value: u16) ResumptionStateError!void {
+    if (pos.* + 2 > out.len) return error.BufferTooSmall;
+    std.mem.writeInt(u16, out[pos.*..][0..2], value, .big);
+    pos.* += 2;
+}
+
+fn writeU32(out: []u8, pos: *usize, value: u32) ResumptionStateError!void {
+    if (pos.* + 4 > out.len) return error.BufferTooSmall;
+    std.mem.writeInt(u32, out[pos.*..][0..4], value, .big);
+    pos.* += 4;
+}
+
+fn writeI64(out: []u8, pos: *usize, value: i64) ResumptionStateError!void {
+    if (pos.* + 8 > out.len) return error.BufferTooSmall;
+    std.mem.writeInt(i64, out[pos.*..][0..8], value, .big);
+    pos.* += 8;
+}
+
+fn writeU64(out: []u8, pos: *usize, value: u64) ResumptionStateError!void {
+    if (pos.* + 8 > out.len) return error.BufferTooSmall;
+    std.mem.writeInt(u64, out[pos.*..][0..8], value, .big);
+    pos.* += 8;
+}
+
+fn readBytes(data: []const u8, pos: *usize, len: usize) ResumptionStateError![]const u8 {
+    if (pos.* + len > data.len) return error.InvalidResumptionState;
+    const out = data[pos.*..][0..len];
+    pos.* += len;
+    return out;
+}
+
+fn readU8(data: []const u8, pos: *usize) ResumptionStateError!u8 {
+    return (try readBytes(data, pos, 1))[0];
+}
+
+fn readU16(data: []const u8, pos: *usize) ResumptionStateError!u16 {
+    return std.mem.readInt(u16, (try readBytes(data, pos, 2))[0..2], .big);
+}
+
+fn readU32(data: []const u8, pos: *usize) ResumptionStateError!u32 {
+    return std.mem.readInt(u32, (try readBytes(data, pos, 4))[0..4], .big);
+}
+
+fn readI64(data: []const u8, pos: *usize) ResumptionStateError!i64 {
+    return std.mem.readInt(i64, (try readBytes(data, pos, 8))[0..8], .big);
+}
+
+fn readU64(data: []const u8, pos: *usize) ResumptionStateError!u64 {
+    return std.mem.readInt(u64, (try readBytes(data, pos, 8))[0..8], .big);
+}
+
+fn serializeResumptionTicket(ticket: *const tls13.SessionTicket, out: []u8) ResumptionStateError!usize {
+    const ticket_len: usize = ticket.ticket_len;
+    const alpn_len: usize = ticket.alpn_len;
+    if (ticket_len > ticket.ticket.len or alpn_len > ticket.alpn.len) return error.InvalidResumptionState;
+
+    var pos: usize = 0;
+    try writeBytes(out, &pos, RESUMPTION_MAGIC);
+    try writeBytes(out, &pos, &ticket.psk);
+    try writeU16(out, &pos, ticket.ticket_len);
+    try writeBytes(out, &pos, ticket.ticket[0..ticket_len]);
+    try writeU32(out, &pos, ticket.ticket_age_add);
+    try writeI64(out, &pos, ticket.creation_time);
+    try writeU32(out, &pos, ticket.lifetime);
+    try writeU32(out, &pos, ticket.max_early_data_size);
+    try writeU8(out, &pos, ticket.alpn_len);
+    try writeBytes(out, &pos, ticket.alpn[0..alpn_len]);
+    try writeU64(out, &pos, ticket.initial_max_data);
+    try writeU64(out, &pos, ticket.initial_max_stream_data_bidi_local);
+    try writeU64(out, &pos, ticket.initial_max_stream_data_bidi_remote);
+    try writeU64(out, &pos, ticket.initial_max_stream_data_uni);
+    try writeU64(out, &pos, ticket.initial_max_streams_bidi);
+    try writeU64(out, &pos, ticket.initial_max_streams_uni);
+    try writeU64(out, &pos, ticket.active_connection_id_limit);
+    return pos;
+}
+
+fn parseResumptionTicket(data: []const u8) ResumptionStateError!tls13.SessionTicket {
+    var pos: usize = 0;
+    const magic = try readBytes(data, &pos, RESUMPTION_MAGIC.len);
+    if (!std.mem.eql(u8, magic, RESUMPTION_MAGIC)) return error.InvalidResumptionState;
+
+    var ticket: tls13.SessionTicket = .{ .psk = .{0} ** 32 };
+    @memcpy(&ticket.psk, try readBytes(data, &pos, ticket.psk.len));
+
+    const ticket_len = try readU16(data, &pos);
+    if (ticket_len > ticket.ticket.len) return error.InvalidResumptionState;
+    @memcpy(ticket.ticket[0..ticket_len], try readBytes(data, &pos, ticket_len));
+    ticket.ticket_len = ticket_len;
+
+    ticket.ticket_age_add = try readU32(data, &pos);
+    ticket.creation_time = try readI64(data, &pos);
+    ticket.lifetime = try readU32(data, &pos);
+    ticket.max_early_data_size = try readU32(data, &pos);
+
+    const alpn_len = try readU8(data, &pos);
+    if (alpn_len > ticket.alpn.len) return error.InvalidResumptionState;
+    @memcpy(ticket.alpn[0..alpn_len], try readBytes(data, &pos, alpn_len));
+    ticket.alpn_len = alpn_len;
+
+    ticket.initial_max_data = try readU64(data, &pos);
+    ticket.initial_max_stream_data_bidi_local = try readU64(data, &pos);
+    ticket.initial_max_stream_data_bidi_remote = try readU64(data, &pos);
+    ticket.initial_max_stream_data_uni = try readU64(data, &pos);
+    ticket.initial_max_streams_bidi = try readU64(data, &pos);
+    ticket.initial_max_streams_uni = try readU64(data, &pos);
+    ticket.active_connection_id_limit = try readU64(data, &pos);
+
+    if (pos != data.len) return error.InvalidResumptionState;
+    return ticket;
+}
+
 fn qzfToSockaddr(addr: *const QzfAddr) posix.sockaddr.storage {
     var parsed = net.Address.parseIp6("::", addr.port) catch unreachable;
     @memcpy(parsed.in6.sa.addr[0..], addr.ip[0..]);
@@ -867,7 +1001,11 @@ export fn qzf_engine_connect(engine: *qzf_engine_t, remote: *const QzfAddr, now_
     if (engine.is_server) return storeError("connect called on server", .{});
     const remote_addr = qzfToSockaddr(remote);
     engine.remote_addr = remote_addr;
-    var conn = connection.connect(engine.allocator, "localhost", engine.conn_config, engine.tls_config, null) catch |err| {
+    var tls_config = engine.tls_config;
+    if (engine.has_imported_session_ticket) {
+        tls_config.session_ticket = &engine.imported_session_ticket;
+    }
+    var conn = connection.connect(engine.allocator, "localhost", engine.conn_config, tls_config, null) catch |err| {
         return storeError("connect: {s}", .{@errorName(err)});
     };
     engine.tuneConn(&conn);
@@ -936,16 +1074,87 @@ export fn qzf_engine_on_timeout(engine: *qzf_engine_t, now_us: u64) c_int {
 
 export fn qzf_engine_has_pending_app_data(engine: *qzf_engine_t) c_int {
     clearError();
-	if (engine.server) |*server| {
-		for (server.entries.items) |entry| {
-			const snapshot = qzf_engine_t.inspectSendState(entry.conn);
-			if (snapshot.app_pending > 0 or snapshot.app_unsent > 0) return 1;
-		}
-	}
-	if (engine.client_conn) |*conn| {
-		const snapshot = qzf_engine_t.inspectSendState(conn);
-		if (snapshot.app_pending > 0 or snapshot.app_unsent > 0) return 1;
-	}
+    if (engine.server) |*server| {
+        for (server.entries.items) |entry| {
+            const snapshot = qzf_engine_t.inspectSendState(entry.conn);
+            if (snapshot.app_pending > 0 or snapshot.app_unsent > 0) return 1;
+        }
+    }
+    if (engine.client_conn) |*conn| {
+        const snapshot = qzf_engine_t.inspectSendState(conn);
+        if (snapshot.app_pending > 0 or snapshot.app_unsent > 0) return 1;
+    }
+    return 0;
+}
+
+export fn qzf_engine_export_resumption_state(engine: *qzf_engine_t, conn_id: u64, data: [*]u8, capacity: usize, len: *usize, now_us: u64) c_int {
+    _ = now_us;
+    clearError();
+    len.* = 0;
+    if (engine.is_server) return storeError("export resumption called on server", .{});
+    const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
+    const ticket = conn.session_ticket orelse return 0;
+    if (ticket.isExpired()) return 0;
+    const serialized_len = serializeResumptionTicket(&ticket, data[0..capacity]) catch |err| {
+        return storeError("export resumption: {s}", .{@errorName(err)});
+    };
+    len.* = serialized_len;
+    return 1;
+}
+
+export fn qzf_engine_import_resumption_state(engine: *qzf_engine_t, data: [*]const u8, len: usize, use_zero_rtt: bool, now_us: u64) c_int {
+    _ = now_us;
+    clearError();
+    if (engine.is_server) return storeError("import resumption called on server", .{});
+    const ticket = parseResumptionTicket(data[0..len]) catch |err| {
+        return storeError("import resumption: {s}", .{@errorName(err)});
+    };
+    if (ticket.isExpired()) return 0;
+    engine.imported_session_ticket = ticket;
+    engine.has_imported_session_ticket = true;
+    engine.imported_zero_rtt = use_zero_rtt;
+    engine.tls_config.session_ticket = &engine.imported_session_ticket;
+    return 1;
+}
+
+export fn qzf_connection_resumed(engine: *qzf_engine_t, conn_id: u64, now_us: u64) c_int {
+    _ = now_us;
+    clearError();
+    const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
+    if (!conn.isEstablished()) return 0;
+    if (conn.tls13_hs) |*hs| {
+        return if (hs.using_psk) 1 else 0;
+    }
+    return 0;
+}
+
+export fn qzf_connection_zero_rtt_attempted(engine: *qzf_engine_t, conn_id: u64, now_us: u64) c_int {
+    _ = now_us;
+    clearError();
+    _ = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
+    if (!engine.imported_zero_rtt or !engine.has_imported_session_ticket) return 0;
+    return if (!engine.imported_session_ticket.isExpired()) 1 else 0;
+}
+
+export fn qzf_connection_zero_rtt_accepted(engine: *qzf_engine_t, conn_id: u64, now_us: u64) c_int {
+    _ = now_us;
+    clearError();
+    const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
+    if (conn.tls13_hs) |*hs| {
+        return if (hs.zero_rtt_accepted) 1 else 0;
+    }
+    return 0;
+}
+
+export fn qzf_connection_zero_rtt_rejected(engine: *qzf_engine_t, conn_id: u64, now_us: u64) c_int {
+    _ = now_us;
+    clearError();
+    const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
+    if (!engine.imported_zero_rtt or !engine.has_imported_session_ticket) return 0;
+    if (!conn.isEstablished()) return 0;
+    if (conn.tls13_hs) |*hs| {
+        return if (!hs.zero_rtt_accepted) 1 else 0;
+    }
     return 0;
 }
 

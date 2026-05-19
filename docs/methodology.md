@@ -36,12 +36,13 @@ Capability rows:
 
 | Scenario | Metric | Status |
 |---|---|---|
-| `datagram` | `datagrams_per_second` | Delivered app DATAGRAM echo rate for `neqoperf`, `noqperf`, `quicheperf`, `quiczigperf`, `quinnperf`, and `s2nperf`; other adapters return `unsupported`. |
+| `datagram` | `datagrams_per_second` | Delivered app DATAGRAM echo rate for `lsperf`, `mvfstperf`, `neqoperf`, `ngtcp2perf`, `noqperf`, `picoperf`, `quicheperf`, `quiczigperf`, `quinnperf`, `s2nperf`, and `xquicperf`; other adapters return `unsupported` until the quicperf adapter exposes the same contract. |
 | `resumed_connect` | `connections_per_second` | Accepted CLI row; unsupported until session-ticket capture/replay is exposed uniformly. |
 | `zero_rtt_reqresp` | `requests_per_second` | Accepted CLI row; unsupported until 0-RTT accepted/rejected controls are exposed uniformly. |
 
 Unsupported rows exit with code `77` and write an explicit reason. They are not
-silently remapped to another workload.
+silently remapped to another workload, and they are quicperf adapter-contract
+markers rather than upstream library feature claims.
 
 Current non-graceful close/reset subprofiles are not primary rows. They require
 uniform RESET_STREAM, STOP_SENDING, CONNECTION_CLOSE, and abrupt-peer controls
@@ -61,6 +62,10 @@ must pass the delivery-ratio gate before publication.
 Packet-engine adapters must not flush or poll once per app DATAGRAM. C++ owns
 the UDP socket, backend, batching, and timeout loop for DATAGRAM rows just like
 the stream workloads.
+
+`tquicperf` remains unsupported for this row because the current local TQUIC C
+header exposes UDP datagram and PMTU controls, but no application QUIC DATAGRAM
+send/read API that matches this contract.
 
 ## Output Schema
 
@@ -101,12 +106,14 @@ maximum configured rate. This prevents connection or stream windows from hiding
 the actual bottleneck. The `flow_control` scenario remains intentionally
 window-limited unless the caller explicitly selects a different window profile.
 
-`picoperf` exposes picoquic congestion-control selection through
-`QUICPERF_CONGESTION_PROFILE`. The default profile maps to picoquic's current
-BBR algorithm string, `bbr`; explicit values `cubic`, `dcubic`, `newreno`,
-`prague`, and `c4` are available for controlled A/B runs.
+Loopback rows use CUBIC for every adapter and publish the effective controller
+in `adapter_features` and `congestion_controller` columns. `picoperf` exposes
+picoquic congestion-control selection through `QUICPERF_CONGESTION_PROFILE`;
+for non-loopback targeted A/B runs, explicit values `cubic`, `dcubic`,
+`newreno`, `prague`, and `c4` are available.
 The `path-auto` profile is a benchmark policy for short-transfer WAN rows: it
-selects `cubic` on the 10G/0.5ms datacenter profile and current BBR elsewhere.
+selects `cubic` on the 10G/0.5ms datacenter profile and current BBR elsewhere
+where the library exposes BBR.
 When RTT and configured rate metadata are available, `path-auto` also enables
 picoquic's BDP/cwnd seed on non-loopback profiles and applies it
 immediately to the sender. This is a benchmark policy for known simulated paths,
@@ -127,7 +134,9 @@ reason, and log metadata.
 
 Summary columns include `samples`, `min`, `p50`, `p90`, `p99`, and `max`.
 `p50` uses a true median and is the publication statistic. `p90` and `p99` are
-visibility columns. `p99` is not claimable unless a row has at least 300 samples.
+bad-tail visibility columns: for higher-is-better throughput and rate metrics,
+`p90`/`p99` report the lower tail; for lower-is-better metrics, they report the
+upper tail. `p99` is not claimable unless a row has at least 300 samples.
 
 ## Saturation
 
@@ -140,12 +149,14 @@ Selection rules:
 - pick the lowest client count statistically within tolerance of the best p50
 - default tolerance: `1%`
 - default confidence: `95%`
-- plateau requires two higher statistically non-improving client counts
+- stop at the first ready adjacent client-count step that does not improve p50
+  by more than the configured minimum incremental improvement
 - the selected row means fewest clients needed to saturate one server thread
 
 Saturation status:
 
-- `ready`: convergence, saturation probability, and plateau sentinels passed
+- `ready`: convergence, saturation probability, and adjacent-increment plateau
+  boundary passed
 - `edge`: highest tested client count might still be materially better
 - `not_ready`: convergence or saturation gates failed
 - `bounded`: a higher configured row failed or became unsupported
@@ -178,7 +189,7 @@ Default gates:
 | Block-median ratio | <= 1.10 |
 | Absolute drift | <= 3% |
 | Saturation confidence | >= 95% |
-| Plateau sentinels | 2 |
+| Minimum incremental client-count improvement | > 1% |
 
 Severe high-variance classification can stop rows after at least 6 discovery
 blocks and 30 samples when they are far outside stability gates. Persistent
@@ -205,7 +216,7 @@ The old fixed `3 x 10` runner is only a compatibility smoke path:
 - kernel io_uring workers reported separately
 - shared TLS 1.3 Ed25519 certificate/key/chain by default
 - verified TLS requires `tools/run-tls-verify-audit.sh`
-- current BBR congestion control where the library exposes it
+- loopback CUBIC congestion control for every adapter
 - shared window, stream-limit, and workload profiles where APIs permit
 - server app-level completion before client/server exit
 - true per-connection/per-stream server state for multi-client rows

@@ -1,0 +1,104 @@
+AlignConsecutiveAssignments: None
+AlignConsecutiveDeclarations: None
+AlignConsecutiveBitFields: None
+
+AlignTrailingComments: Never
+AlignEscapedNewlines: Right
+AlignArrayOfStructures: Left
+AlignAfterOpenBracket: Align
+
+AlignConsecutiveMacros: None
+
+SpaceBeforeParens: Custom
+SpaceBeforeParensOptions:
+  AfterFunctionDeclarationName: false
+  AfterFunctionDefinitionName: false
+  AfterControlStatements: true
+  AfterRequiresInClause: true
+  AfterRequiresInExpression: true
+  BeforeNonEmptyParentheses: false
+
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+RequiresClausePosition: SingleLine
+
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterControlStatement: Always
+  AfterFunction: true
+  BeforeElse: true
+  IndentBraces: false
+  SplitEmptyFunction: false
+
+InsertBraces: true
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortBlocksOnASingleLine: Never
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLambdasOnASingleLine: None
+AllowShortLoopsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+
+EmptyLineAfterAccessModifier: Always
+EmptyLineBeforeAccessModifier: Always
+
+IntegerLiteralSeparator:
+  Decimal: 3
+  DecimalMinDigits: 5
+  Binary: 4
+  BinaryMinDigits: 8
+  Hex: -1
+
+SpaceAroundPointerQualifiers: After
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCpp11BracedList: true
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceBeforeSquareBrackets: false
+
+SpacesInParens: Custom
+SpacesInParensOptions:
+  InCStyleCasts: false
+  InConditionalStatements: false
+  InEmptyParentheses: false
+  ExceptDoubleParentheses: false
+  Other: false
+
+SpacesInAngles: Never
+SpacesInContainerLiterals: false
+SpacesInSquareBrackets: false
+# SpaceInEmptyBraces: Never  # valid as of clang-format-22
+SpacesBeforeTrailingComments: 1
+
+PackConstructorInitializers: Never
+
+ColumnLimit: 0
+BreakBeforeConceptDeclarations: Never
+BreakTemplateDeclarations: No
+ShortNamespaceLines: 0
+CompactNamespaces: false
+NamespaceIndentation: None
+
+BreakAfterReturnType: None
+
+IndentCaseLabels: true
+IndentCaseBlocks: true
+AlignConsecutiveShortCaseStatements:
+  Enabled: true
+  AcrossEmptyLines: true
+  AcrossComments: true
+  AlignCaseColons: true
+
+SortIncludes: false
+
+ReflowComments: true
+SpacesInLineCommentPrefix:
+  Minimum: 1
+  Maximum: 1
+FixNamespaceComments: true
+
+PointerAlignment: Right
+ReferenceAlignment: Left
+QualifierAlignment: Custom
+QualifierOrder: [friend, constexpr, static, inline, const, type, volatile]

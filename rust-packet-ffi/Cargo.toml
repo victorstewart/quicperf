@@ -15,8 +15,8 @@ quinn-proto = { git = "https://github.com/victorstewart/quinn.git", branch = "qu
 noq-proto = { git = "https://github.com/victorstewart/noq.git", branch = "quicperf-c-abi", package = "noq-proto", default-features = false, features = ["rustls-ring", "bloom"] }
 neqo-common = { git = "https://github.com/victorstewart/neqo.git", branch = "quicperf-c-abi", package = "neqo-common" }
 neqo-transport = { git = "https://github.com/victorstewart/neqo.git", branch = "quicperf-c-abi", package = "neqo-transport", features = ["draft-29"] }
-nss = { rev = "0.8.0", package = "nss-rs", git = "https://github.com/mozilla/nss-rs" }
-s2n-quic = { git = "https://github.com/victorstewart/s2n-quic.git", branch = "quicperf-c-abi", package = "s2n-quic", default-features = false, features = ["provider-address-token-default", "provider-tls-rustls", "unstable-provider-datagram"] }
+nss = { rev = "0.11.0", package = "nss-rs", git = "https://github.com/mozilla/nss-rs" }
+s2n-quic = { git = "https://github.com/victorstewart/s2n-quic.git", branch = "quicperf-c-abi", package = "s2n-quic", default-features = false, features = ["provider-address-token-default", "provider-tls-rustls", "unstable-provider-datagram", "unstable_resumption"] }
 s2n-quic-core = { git = "https://github.com/victorstewart/s2n-quic.git", branch = "quicperf-c-abi", package = "s2n-quic-core" }
 test-fixture = { git = "https://github.com/victorstewart/neqo.git", branch = "quicperf-c-abi", package = "test-fixture" }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }

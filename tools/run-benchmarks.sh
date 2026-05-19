@@ -23,7 +23,7 @@ randomize_order="${QUICPERF_RANDOMIZE_ORDER:-1}"
 random_seed="${QUICPERF_RANDOM_SEED:-$(date -u +%s)}"
 build_profile="${QUICPERF_BUILD_PROFILE:-native-lto}"
 window_profile="${QUICPERF_WINDOW_PROFILE:-default}"
-congestion_profile="${QUICPERF_CONGESTION_PROFILE:-default-bbr}"
+congestion_profile="${QUICPERF_CONGESTION_PROFILE:-path-auto}"
 tls_verify_mode="${QUICPERF_TLS_VERIFY_MODE:-${QUICPERF_TLS_VERIFY:-disabled}}"
 tls_cert_profile="${QUICPERF_TLS_CERT_PROFILE:-ed25519}"
 outlier_spread_ratio="${QUICPERF_OUTLIER_SPREAD_RATIO:-10}"
@@ -454,6 +454,13 @@ for bin in "${binaries[@]}"; do
     bytes="$(test_bytes_for_scenario "$scenario")"
     server_connections="${QUICPERF_SERVER_CONNECTIONS:-$client_threads}"
     case "$scenario" in
+      resumed_connect|zero_rtt_reqresp)
+        if [[ -z "${QUICPERF_SERVER_CONNECTIONS:-}" ]]; then
+          server_connections=$((client_threads * 2))
+        fi
+        ;;
+    esac
+    case "$scenario" in
       download|upload|connect|reqresp|stream_churn|multistream_download|multistream_upload|bidi|small_payload_pps|loss_recovery|flow_control|resumed_connect|zero_rtt_reqresp|datagram|idle_footprint|close_reset_cleanup) ;;
       *)
         echo "quicperf_run_result binary=$name scenario=$scenario status=invalid_scenario"
@@ -463,9 +470,13 @@ for bin in "${binaries[@]}"; do
     esac
 
     if (( client_threads != server_connections )); then
+      if [[ "$scenario" == "resumed_connect" || "$scenario" == "zero_rtt_reqresp" ]] && (( server_connections == client_threads * 2 )); then
+        :
+      else
       echo "quicperf_run_result binary=$name scenario=$scenario client_threads=$client_threads server_connections=$server_connections status=invalid reason=server_connections_must_match_client_threads"
       run_failed=1
       continue
+      fi
     fi
 
     for network in $networks; do
@@ -500,13 +511,17 @@ for bin in "${binaries[@]}"; do
         else
           choose_auto_port_block server_port 10000 39999 1
         fi
+        client_port_count="$client_threads"
+        if [[ "$scenario" == "resumed_connect" || "$scenario" == "zero_rtt_reqresp" ]]; then
+          client_port_count=$((client_threads * 2))
+        fi
         if [[ -n "${QUICPERF_CLIENT_BASE_PORT:-}" ]]; then
           client_base_port="$QUICPERF_CLIENT_BASE_PORT"
         elif [[ -n "$port_slot_offset" ]]; then
           port_slot=$(((port_slot_offset + run_ordinal - 1) % 512))
           client_base_port=$((45000 + port_slot * 32))
         else
-          choose_auto_port_block client_base_port 45000 65535 "$client_threads"
+          choose_auto_port_block client_base_port 45000 65535 "$client_port_count"
         fi
         if (( attempt <= warmup )); then
           run_label="${run_label_prefix}warmup-${attempt}"
@@ -727,7 +742,7 @@ import csv
 import os
 import re
 import sys
-from quicperf_stats import RESULT_RE, Sample, parse_client_log_samples, quantile, scenario_metric_name, write_samples
+from quicperf_stats import RESULT_RE, Sample, bad_tail_quantile, parse_client_log_samples, quantile, scenario_metric_name, write_samples
 
 out_dir = Path(sys.argv[1])
 outlier_spread_ratio = float(sys.argv[2])
@@ -871,8 +886,8 @@ with summary_path.open("w", encoding="utf-8") as summary:
             "samples": len(values),
             "min": values[0],
             "p50": quantile(values, 0.50),
-            "p90": quantile(values, 0.90),
-            "p99": quantile(values, 0.99),
+            "p90": bad_tail_quantile(values, 0.90, metric),
+            "p99": bad_tail_quantile(values, 0.99, metric),
             "max": values[-1],
         }
         summary.write(

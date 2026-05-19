@@ -1,9 +1,10 @@
 NAME boringssl
-VERSION main
+VERSION main-beddb58-pic
 SYSTEM_LIBS ALLOW
-SOURCE GIT https://github.com/google/boringssl.git 742a4d2db6321baf8af8e856b812630ef741fc24
+SOURCE GIT https://github.com/google/boringssl.git beddb582d9e8786a07d79f1cf054d4792b3dd81f
 BUILD_SYSTEM CMAKE
 CMAKE_DEFINE BUILD_SHARED_LIBS=OFF
+CMAKE_DEFINE CMAKE_POSITION_INDEPENDENT_CODE=ON
 CMAKE_BUILD cmake --build "${DEPO_BUILD_DIR}" --parallel --target ssl crypto
 CMAKE_INSTALL_SH <<'EOF'
 mkdir -p "${DEPO_PREFIX}/include" "${DEPO_PREFIX}/lib"

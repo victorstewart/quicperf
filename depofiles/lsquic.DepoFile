@@ -1,9 +1,9 @@
 NAME lsquic
-VERSION 4.6.4
+VERSION 4.7.0
 SYSTEM_LIBS ALLOW
-DEPENDS boringssl VERSION main
+DEPENDS boringssl VERSION main-beddb58-pic
 DEPENDS zlib VERSION 1.3.2
-SOURCE GIT https://github.com/litespeedtech/lsquic.git 8de775dd63713a02c070edfc4eab15b743d13456
+SOURCE GIT https://github.com/litespeedtech/lsquic.git 39718e50d60405efcb4e3bb6a8b7d9e28aee96eb
 GIT_SUBMODULES RECURSIVE
 BUILD_SYSTEM CMAKE
 CMAKE_ARG "-DCMAKE_PREFIX_PATH=${dep:zlib}"

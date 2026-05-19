@@ -1,7 +1,7 @@
 NAME liburing
-VERSION main-d6b7e99
+VERSION main-40999f5
 SYSTEM_LIBS ALLOW
-SOURCE GIT https://github.com/axboe/liburing.git d6b7e99b89e158c4f0f1ad54905398be669a1103
+SOURCE GIT https://github.com/axboe/liburing.git 40999f52c668b0c32dff712e3dfa1ace6c9e37c4
 BUILD_SYSTEM AUTOCONF
 AUTOCONF_BUILD make -C src -j$(nproc) liburing.a
 AUTOCONF_INSTALL_SH <<'EOF'

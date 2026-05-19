@@ -168,6 +168,13 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_int_any(names: tuple[str, ...], default: int) -> int:
+    for name in names:
+        if name in os.environ:
+            return env_int(name, default)
+    return default
+
+
 def env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, str(default)))
@@ -228,11 +235,11 @@ def load_config() -> RunnerConfig:
         warmup=env_int("QUICPERF_ADAPTIVE_WARMUP", 1),
         max_threads=env_int("QUICPERF_SATURATION_MAX_THREADS", 32),
         max_rounds=env_int("QUICPERF_ADAPTIVE_MAX_ROUNDS", 10000),
-        random_seed=env_int("QUICPERF_RANDOM_SEED", os.getpid()),
+        random_seed=env_int_any(("QUICPERF_ADAPTIVE_RANDOM_SEED", "QUICPERF_RANDOM_SEED"), os.getpid()),
         saturation_tolerance=env_float("QUICPERF_SATURATION_TOLERANCE", 0.01),
         saturation_min_incremental_improvement=env_float("QUICPERF_SATURATION_MIN_INCREMENTAL_IMPROVEMENT", 0.01),
         saturation_probability=env_float("QUICPERF_SATURATION_CONFIDENCE", 0.95),
-        saturation_sentinels=env_int("QUICPERF_SATURATION_SENTINELS", 2),
+        saturation_sentinels=env_int("QUICPERF_SATURATION_SENTINELS", 1),
         high_variance_min_blocks=env_int("QUICPERF_ADAPTIVE_HIGH_VARIANCE_MIN_BLOCKS", 8),
         high_variance_min_samples=env_int("QUICPERF_ADAPTIVE_HIGH_VARIANCE_MIN_SAMPLES", 40),
         high_variance_improvement_min=env_float("QUICPERF_ADAPTIVE_HIGH_VARIANCE_IMPROVEMENT_MIN", 0.10),
@@ -353,6 +360,24 @@ def group_metric(samples: list[Sample], group: tuple[str, str, str, str]) -> str
         if (sample.binary, sample.scenario, sample.network, sample.path_profile) == group and sample.metric:
             return sample.metric
     return scenario_metric_name(group[1])
+
+
+def group_adapter_features(samples: list[Sample], group: tuple[str, str, str, str]) -> str:
+    for sample in samples:
+        if (
+            (sample.binary, sample.scenario, sample.network, sample.path_profile) == group
+            and sample.adapter_features
+        ):
+            return sample.adapter_features
+    return ""
+
+
+def adapter_feature_value(features: str, name: str) -> str:
+    prefix = f"{name}="
+    for item in features.split("|"):
+        if item.startswith(prefix):
+            return item[len(prefix):]
+    return ""
 
 
 def parse_block_target(block_dir: Path, networks: list[str], path_profiles: list[str]) -> tuple[str, Target] | None:
@@ -742,6 +767,8 @@ def write_publication_tables(
         "scenario",
         "network",
         "path_profile",
+        "adapter_features",
+        "congestion_controller",
         "metric",
         "client_threads",
         "curve_role",
@@ -769,6 +796,8 @@ def write_publication_tables(
         writer.writeheader()
         for key in sorted(grouped, key=lambda item: (item.binary, item.scenario, item.network, item.path_profile, item.client_threads, item.metric)):
             decision = decisions.get((key.binary, key.scenario, key.network, key.path_profile), SaturationDecision(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, "", "not_ready", "missing_decision"))
+            adapter_features = group_adapter_features(samples, (key.binary, key.scenario, key.network, key.path_profile))
+            congestion_controller = adapter_feature_value(adapter_features, "cc")
             for phase in ("discovery", "confirm", "combined"):
                 stats = row_stats_map.get((key, phase))
                 if not stats:
@@ -778,6 +807,8 @@ def write_publication_tables(
                     "scenario": key.scenario,
                     "network": key.network,
                     "path_profile": key.path_profile,
+                    "adapter_features": adapter_features,
+                    "congestion_controller": congestion_controller,
                     "metric": key.metric,
                     "client_threads": key.client_threads,
                     "curve_role": curve_role(key.client_threads, decision),
@@ -803,6 +834,8 @@ def write_publication_tables(
         "scenario",
         "network",
         "path_profile",
+        "adapter_features",
+        "congestion_controller",
         "metric",
         "client_threads",
         "publication_role",
@@ -823,6 +856,8 @@ def write_publication_tables(
         "scenario",
         "network",
         "path_profile",
+        "adapter_features",
+        "congestion_controller",
         "publication_status",
         "metric",
         "selected_threads",
@@ -845,6 +880,8 @@ def write_publication_tables(
     for group, decision in sorted(decisions.items()):
         binary, scenario, network, path_profile = group
         metric = group_metric(samples, group)
+        adapter_features = group_adapter_features(samples, group)
+        congestion_controller = adapter_feature_value(adapter_features, "cc")
         publication_threads = set()
         if decision.selected_threads:
             publication_threads.update(range(1, decision.selected_threads + 1))
@@ -872,6 +909,8 @@ def write_publication_tables(
                 "scenario": scenario,
                 "network": network,
                 "path_profile": path_profile,
+                "adapter_features": adapter_features,
+                "congestion_controller": congestion_controller,
                 "metric": metric,
                 "client_threads": str(threads),
                 "publication_role": curve_role(threads, decision),
@@ -894,6 +933,8 @@ def write_publication_tables(
             "scenario": scenario,
             "network": network,
             "path_profile": path_profile,
+            "adapter_features": adapter_features,
+            "congestion_controller": congestion_controller,
             "publication_status": publication_status,
             "metric": metric,
             "selected_threads": str(decision.selected_threads or ""),
@@ -1207,6 +1248,7 @@ def main() -> int:
         f"out_dir={out_root} binaries=\"{' '.join(binaries)}\" scenarios=\"{' '.join(scenarios)}\" "
         f"networks=\"{' '.join(networks)}\" path_profiles=\"{' '.join(path_profiles)}\" block_size={cfg.block_size} min_samples={cfg.min_samples} "
         f"max_samples={cfg.max_samples} confirm_blocks={cfg.confirm_blocks} random_seed={cfg.random_seed} "
+        f"saturation_min_incremental_improvement={cfg.saturation_min_incremental_improvement:.3f} "
         f"high_variance_min_blocks={cfg.high_variance_min_blocks} "
         f"high_variance_min_samples={cfg.high_variance_min_samples} "
         f"high_variance_improvement_min={cfg.high_variance_improvement_min:.3f} "

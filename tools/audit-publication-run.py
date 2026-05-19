@@ -4,7 +4,7 @@ import csv
 import sys
 from pathlib import Path
 
-from quicperf_stats import flat_bootstrap_ci, median, parse_client_log_samples, quantile, stable_seed
+from quicperf_stats import bad_tail_quantile, flat_bootstrap_ci, median, parse_client_log_samples, quantile, stable_seed
 
 def read_rows(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8") as handle:
@@ -178,8 +178,8 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
             values.sort()
 
             p50 = quantile(values, 0.50) if values else fnum(sample, "p50")
-            p90 = quantile(values, 0.90) if values else fnum(sample, "p90")
-            p99 = quantile(values, 0.99) if values else fnum(sample, "p99")
+            p90 = bad_tail_quantile(values, 0.90, row_metric) if values else fnum(sample, "p90")
+            p99 = bad_tail_quantile(values, 0.99, row_metric) if values else fnum(sample, "p99")
             spread_low = quantile(values, args.spread_low_pct / 100.0) if values else 0.0
             spread_high = quantile(values, args.spread_high_pct / 100.0) if values else 0.0
             ci_low, ci_high = flat_bootstrap_ci(values, median, args.bootstrap_iterations, stable_seed([binary, scenario, network, profile, row_threads, "curve"])) if values else (0.0, 0.0)

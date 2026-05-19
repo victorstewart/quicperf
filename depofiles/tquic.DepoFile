@@ -1,7 +1,7 @@
 NAME tquic
 VERSION 1.6.0
 SYSTEM_LIBS ALLOW
-DEPENDS boringssl VERSION main
+DEPENDS boringssl VERSION main-beddb58-pic
 SOURCE GIT https://github.com/Tencent/tquic.git d87a9a072475e381e64bfeb5732f2f505c2c28b7
 GIT_SUBMODULES RECURSIVE
 BUILD_SYSTEM CARGO

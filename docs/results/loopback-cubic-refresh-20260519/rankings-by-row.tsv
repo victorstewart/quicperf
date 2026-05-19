@@ -1,0 +1,5 @@
+binary	scenario	network	path_profile	metric	capacity_index	curve_efficiency	client_count_efficiency	score	selected_threads	combined_p50
+noqperf	download	iouring	loopback	throughput_gbps	1.000000	0.785898	1.000000	94.647445	2	5.582740
+noqperf	download	syscall	loopback	throughput_gbps	1.000000	0.758881	1.000000	93.972029	2	5.760486
+quiczigperf	upload	iouring	loopback	throughput_gbps	1.000000	1.000000	1.000000	100.000000	1	8.248596
+quinnperf	upload	syscall	loopback	throughput_gbps	1.000000	1.000000	1.000000	100.000000	1	3.717975

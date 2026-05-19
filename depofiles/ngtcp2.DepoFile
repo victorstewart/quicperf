@@ -1,7 +1,7 @@
 NAME ngtcp2
 VERSION 1.22.1
 SYSTEM_LIBS ALLOW
-DEPENDS boringssl VERSION main
+DEPENDS boringssl VERSION main-beddb58-pic
 SOURCE URL https://github.com/ngtcp2/ngtcp2/releases/download/v1.22.1/ngtcp2-1.22.1.tar.gz
 BUILD_SYSTEM CMAKE
 CMAKE_DEFINE ENABLE_STATIC_LIB=ON

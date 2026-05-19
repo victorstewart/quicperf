@@ -52,7 +52,8 @@ different workload under the requested label.
 | `mvfstperf` | mvfst | Folly/mvfst transport; C++ owns UDP I/O |
 | `tcpperf` | TCP+TLS | Sidecar baseline only; excluded from QUIC result tables |
 
-Packet-engine adapters use quicperf-maintained fork branches:
+Packet-engine adapters use quicperf-maintained fork branches where upstream has
+not yet absorbed the quicperf C ABI surface:
 
 | Dependency | Branch |
 |---|---|
@@ -60,7 +61,7 @@ Packet-engine adapters use quicperf-maintained fork branches:
 | `victorstewart/s2n-quic` | `quicperf-c-abi` |
 | `victorstewart/neqo` | `quicperf-c-abi` |
 | `victorstewart/noq` | `quicperf-c-abi` |
-| `victorstewart/quic-zig` | `quicperf-ed25519-tls` |
+| `endel/quic-zig` | `main` |
 
 `mvfstperf` uses upstream mvfst/Fizz/Folly Depofiles.
 
@@ -126,8 +127,9 @@ Each run also writes structured raw samples to:
 ```
 
 Summary rows include `samples`, `min`, `p50`, `p90`, `p99`, and `max`.
-`p50` is the central publication statistic; tail values are retained for
-distribution visibility.
+`p50` is the central publication statistic. `p90` and `p99` are bad-tail
+statistics: for throughput/rate metrics they use the low tail, and for
+lower-is-better metrics they use the high tail.
 
 `QUICPERF_NETWORKS` selects the socket backend (`syscall` or `iouring`).
 `QUICPERF_PATH_PROFILES` selects the delivery path and defaults to `loopback`.
@@ -171,11 +173,12 @@ Public cellular traces can be converted into selectable path profiles with
 and UMN 5Gophers walking-loop traces. Raw public archives stay in ignored
 `.data/`; compact generated profile packs are loaded from `profiles/network/*.json`.
 
-`picoperf` selects picoquic's current BBR algorithm string, `bbr`, for the
-default `QUICPERF_CONGESTION_PROFILE=default-bbr`; set `cubic`, `dcubic`,
-`newreno`, `prague`, or `c4` to compare other picoquic controllers.
-For this short-transfer WAN matrix, `QUICPERF_CONGESTION_PROFILE=path-auto`
-selects `cubic` on the 10G/0.5ms datacenter profile and current BBR elsewhere.
+Loopback publication rows use CUBIC for every adapter and record the effective
+controller in `adapter_features`/`congestion_controller` result columns. For
+non-loopback WAN runs, `QUICPERF_CONGESTION_PROFILE=path-auto` selects `cubic`
+on the 10G/0.5ms datacenter profile and current BBR elsewhere where the library
+exposes BBR. `picoperf` also accepts picoquic-specific `dcubic`, `newreno`,
+`prague`, or `c4` values for targeted controller A/B runs.
 `path-auto` also enables picoquic's BDP/cwnd seed on non-loopback
 path profiles when RTT and rate metadata are available, and applies that seed
 immediately to the sender so 1 MiB fresh downloads do not spend most of the row
@@ -217,8 +220,11 @@ tools/run-adaptive-publication-suite.py
 ```
 
 The adaptive runner uses randomized discovery blocks, bounded convergence,
-statistical saturation selection, and confirmatory holdout blocks. `not_ready`
-rows are inspectable but not publishable clean result rows.
+statistical saturation selection, and confirmatory holdout blocks. It stops a
+client-count curve at the first ready adjacent step that does not materially
+improve p50, so a row that peaks at 1 client will stop after checking 2 clients
+instead of continuing up the curve. `not_ready` rows are inspectable but not
+publishable clean result rows.
 
 Important artifacts:
 
@@ -246,16 +252,16 @@ score = 100 * (0.60 * capacity_index
 - `curve_efficiency`: normalized p50 across the client-count curve through saturation
 - `client_count_efficiency`: reward for saturating with fewer load-generator clients
 
-The composite score is a summary, not a replacement for raw `p50`, `p90`,
-`p99`, confidence interval, spread, and saturation data. Adaptive rankings also
-publish pairwise ties and rank bands; point ranks should not be read as
-decisive when the intervals overlap. `p99` is visibility-only unless the row has
-at least 300 measured samples.
+The composite score is a summary, not a replacement for raw `p50`, bad-tail
+`p90`/`p99`, confidence interval, spread, and saturation data. Adaptive
+rankings also publish pairwise ties and rank bands; point ranks should not be
+read as decisive when the intervals overlap. `p99` is visibility-only unless the
+row has at least 300 measured samples.
 
 ## Controls
 
 Benchmark controls include one pinned userspace server thread, unpinned client
-load workers, shared TLS 1.3 Ed25519 material, current BBR where exposed,
+load workers, shared TLS 1.3 Ed25519 material, loopback CUBIC for every adapter,
 common `syscall` and `iouring` UDP backends, default UDP GSO/GRO on the
 `iouring` path, and C++-owned UDP I/O for Rust, Zig, and mvfst adapters.
 

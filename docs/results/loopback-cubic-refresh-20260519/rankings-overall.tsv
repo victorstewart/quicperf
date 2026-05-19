@@ -1,0 +1,4 @@
+rank	binary	score_median	score_ci95_low	score_ci95_high	rank_low	rank_high	rank_status
+1	quiczigperf	100.000000	100.000000	100.000000	1	1	stable
+2	quinnperf	100.000000	100.000000	100.000000	2	2	stable
+3	noqperf	94.304850	94.232478	94.366890	3	3	stable

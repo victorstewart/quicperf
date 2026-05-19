@@ -1,8 +1,8 @@
 NAME picotls
-VERSION master
+VERSION master-7c32032
 SYSTEM_LIBS ALLOW
 DEPENDS openssl VERSION 4.0.0
-SOURCE GIT https://github.com/h2o/picotls.git cfe2ea97ac8fa0b2852cbb8dbdde1ecc83b4ca33
+SOURCE GIT https://github.com/h2o/picotls.git 7c32032f91449d695b24b82955f20d04d47e6cff
 GIT_SUBMODULES RECURSIVE
 BUILD_SYSTEM CMAKE
 CMAKE_ARG "-DCMAKE_PREFIX_PATH=${dep:openssl}"

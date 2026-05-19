@@ -5,17 +5,18 @@ use std::{
     net::{IpAddr, Ipv6Addr, SocketAddr},
     panic::{catch_unwind, AssertUnwindSafe},
     ptr,
-    sync::{Arc, Mutex, Once},
+    sync::atomic::{AtomicU64, Ordering},
+    sync::{Arc, Mutex, Once, OnceLock},
     time::{Duration, Instant},
 };
 
 use rustls::{
     client::{
         danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
-        WebPkiServerVerifier,
+        ClientSessionStore, Tls12ClientSessionValue, Tls13ClientSessionValue, WebPkiServerVerifier,
     },
     pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
-    DigitallySignedStruct, SignatureScheme,
+    DigitallySignedStruct, NamedGroup, SignatureScheme,
 };
 
 const QPF_LIBRARY_QUINN: u32 = 1;
@@ -75,6 +76,34 @@ trait PacketEngine {
     ) -> Result<Option<(SocketAddr, usize)>, String>;
     fn next_timeout_us(&mut self, now_us: u64) -> Result<Option<u64>, String>;
     fn on_timeout(&mut self, now_us: u64) -> Result<(), String>;
+    fn export_resumption_state(
+        &mut self,
+        _conn_id: u64,
+        _now_us: u64,
+        _out: &mut Vec<u8>,
+    ) -> Result<bool, String> {
+        Ok(true)
+    }
+    fn import_resumption_state(
+        &mut self,
+        _data: &[u8],
+        _use_zero_rtt: bool,
+        _now_us: u64,
+    ) -> Result<bool, String> {
+        Ok(true)
+    }
+    fn connection_resumed(&mut self, _conn_id: u64, _now_us: u64) -> Result<bool, String> {
+        Ok(false)
+    }
+    fn zero_rtt_attempted(&mut self, _conn_id: u64, _now_us: u64) -> Result<bool, String> {
+        Ok(false)
+    }
+    fn zero_rtt_accepted(&mut self, _conn_id: u64, _now_us: u64) -> Result<bool, String> {
+        Ok(false)
+    }
+    fn zero_rtt_rejected(&mut self, _conn_id: u64, _now_us: u64) -> Result<bool, String> {
+        Ok(false)
+    }
     fn open_bidi(&mut self, conn_id: u64, now_us: u64) -> Result<Option<u64>, String>;
     fn accept_bidi(&mut self, conn_id: u64, now_us: u64) -> Result<Option<u64>, String>;
     fn stream_send(
@@ -170,6 +199,70 @@ impl PacketEngine for Engine {
             Self::Noq(engine) => engine.on_timeout(now_us),
             Self::Neqo(engine) => engine.on_timeout(now_us),
             Self::S2n(engine) => engine.on_timeout(now_us),
+        }
+    }
+
+    fn export_resumption_state(
+        &mut self,
+        conn_id: u64,
+        now_us: u64,
+        out: &mut Vec<u8>,
+    ) -> Result<bool, String> {
+        match self {
+            Self::Quinn(engine) => engine.export_resumption_state(conn_id, now_us, out),
+            Self::Noq(engine) => engine.export_resumption_state(conn_id, now_us, out),
+            Self::Neqo(engine) => engine.export_resumption_state(conn_id, now_us, out),
+            Self::S2n(engine) => engine.export_resumption_state(conn_id, now_us, out),
+        }
+    }
+
+    fn import_resumption_state(
+        &mut self,
+        data: &[u8],
+        use_zero_rtt: bool,
+        now_us: u64,
+    ) -> Result<bool, String> {
+        match self {
+            Self::Quinn(engine) => engine.import_resumption_state(data, use_zero_rtt, now_us),
+            Self::Noq(engine) => engine.import_resumption_state(data, use_zero_rtt, now_us),
+            Self::Neqo(engine) => engine.import_resumption_state(data, use_zero_rtt, now_us),
+            Self::S2n(engine) => engine.import_resumption_state(data, use_zero_rtt, now_us),
+        }
+    }
+
+    fn connection_resumed(&mut self, conn_id: u64, now_us: u64) -> Result<bool, String> {
+        match self {
+            Self::Quinn(engine) => engine.connection_resumed(conn_id, now_us),
+            Self::Noq(engine) => engine.connection_resumed(conn_id, now_us),
+            Self::Neqo(engine) => engine.connection_resumed(conn_id, now_us),
+            Self::S2n(engine) => engine.connection_resumed(conn_id, now_us),
+        }
+    }
+
+    fn zero_rtt_attempted(&mut self, conn_id: u64, now_us: u64) -> Result<bool, String> {
+        match self {
+            Self::Quinn(engine) => engine.zero_rtt_attempted(conn_id, now_us),
+            Self::Noq(engine) => engine.zero_rtt_attempted(conn_id, now_us),
+            Self::Neqo(engine) => engine.zero_rtt_attempted(conn_id, now_us),
+            Self::S2n(engine) => engine.zero_rtt_attempted(conn_id, now_us),
+        }
+    }
+
+    fn zero_rtt_accepted(&mut self, conn_id: u64, now_us: u64) -> Result<bool, String> {
+        match self {
+            Self::Quinn(engine) => engine.zero_rtt_accepted(conn_id, now_us),
+            Self::Noq(engine) => engine.zero_rtt_accepted(conn_id, now_us),
+            Self::Neqo(engine) => engine.zero_rtt_accepted(conn_id, now_us),
+            Self::S2n(engine) => engine.zero_rtt_accepted(conn_id, now_us),
+        }
+    }
+
+    fn zero_rtt_rejected(&mut self, conn_id: u64, now_us: u64) -> Result<bool, String> {
+        match self {
+            Self::Quinn(engine) => engine.zero_rtt_rejected(conn_id, now_us),
+            Self::Noq(engine) => engine.zero_rtt_rejected(conn_id, now_us),
+            Self::Neqo(engine) => engine.zero_rtt_rejected(conn_id, now_us),
+            Self::S2n(engine) => engine.zero_rtt_rejected(conn_id, now_us),
         }
     }
 
@@ -304,11 +397,142 @@ thread_local! {
 }
 
 static RUSTLS_PROVIDER: Once = Once::new();
+static NO_VERIFIER: OnceLock<Arc<NoVerifier>> = OnceLock::new();
+static RUSTLS_NO_VERIFY_RESUMPTION: OnceLock<Arc<ObservedClientSessionStore>> = OnceLock::new();
+static RUSTLS_VERIFY_RESUMPTION: OnceLock<Arc<ObservedClientSessionStore>> = OnceLock::new();
+static RUSTLS_CLIENT_CONFIGS: OnceLock<
+    Mutex<HashMap<ClientTlsConfigKey, Arc<rustls::ClientConfig>>>,
+> = OnceLock::new();
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ClientTlsConfigKey {
+    verify: bool,
+    certs: Vec<Vec<u8>>,
+}
+
+#[derive(Debug)]
+struct ObservedClientSessionStore {
+    inner: Arc<dyn ClientSessionStore>,
+    tls13_inserted: AtomicU64,
+    tls13_early_inserted: AtomicU64,
+    tls13_taken: AtomicU64,
+    tls13_early_taken: AtomicU64,
+}
+
+impl ObservedClientSessionStore {
+    fn new(capacity: usize) -> Self {
+        Self {
+            inner: Arc::new(rustls::client::ClientSessionMemoryCache::new(capacity)),
+            tls13_inserted: AtomicU64::new(0),
+            tls13_early_inserted: AtomicU64::new(0),
+            tls13_taken: AtomicU64::new(0),
+            tls13_early_taken: AtomicU64::new(0),
+        }
+    }
+
+    fn inserted(&self) -> u64 {
+        self.tls13_inserted.load(Ordering::Relaxed)
+    }
+
+    fn early_inserted(&self) -> u64 {
+        self.tls13_early_inserted.load(Ordering::Relaxed)
+    }
+
+    fn taken(&self) -> u64 {
+        self.tls13_taken.load(Ordering::Relaxed)
+    }
+
+    fn early_taken(&self) -> u64 {
+        self.tls13_early_taken.load(Ordering::Relaxed)
+    }
+}
+
+impl ClientSessionStore for ObservedClientSessionStore {
+    fn set_kx_hint(&self, server_name: ServerName<'static>, group: NamedGroup) {
+        self.inner.set_kx_hint(server_name, group);
+    }
+
+    fn kx_hint(&self, server_name: &ServerName<'_>) -> Option<NamedGroup> {
+        self.inner.kx_hint(server_name)
+    }
+
+    fn set_tls12_session(&self, server_name: ServerName<'static>, value: Tls12ClientSessionValue) {
+        self.inner.set_tls12_session(server_name, value);
+    }
+
+    fn tls12_session(&self, server_name: &ServerName<'_>) -> Option<Tls12ClientSessionValue> {
+        self.inner.tls12_session(server_name)
+    }
+
+    fn remove_tls12_session(&self, server_name: &ServerName<'static>) {
+        self.inner.remove_tls12_session(server_name);
+    }
+
+    fn insert_tls13_ticket(
+        &self,
+        server_name: ServerName<'static>,
+        value: Tls13ClientSessionValue,
+    ) {
+        self.tls13_inserted.fetch_add(1, Ordering::Relaxed);
+        if value.max_early_data_size() > 0 {
+            self.tls13_early_inserted.fetch_add(1, Ordering::Relaxed);
+        }
+        self.inner.insert_tls13_ticket(server_name, value);
+    }
+
+    fn take_tls13_ticket(
+        &self,
+        server_name: &ServerName<'static>,
+    ) -> Option<Tls13ClientSessionValue> {
+        let ticket = self.inner.take_tls13_ticket(server_name);
+        if let Some(value) = ticket.as_ref() {
+            self.tls13_taken.fetch_add(1, Ordering::Relaxed);
+            if value.max_early_data_size() > 0 {
+                self.tls13_early_taken.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        ticket
+    }
+}
 
 fn init_crypto_provider() {
     RUSTLS_PROVIDER.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
+}
+
+fn no_verifier() -> Arc<NoVerifier> {
+    NO_VERIFIER.get_or_init(|| Arc::new(NoVerifier)).clone()
+}
+
+fn shared_client_resumption(verify: bool) -> rustls::client::Resumption {
+    rustls::client::Resumption::store(shared_session_store(verify))
+}
+
+fn shared_session_store(verify: bool) -> Arc<ObservedClientSessionStore> {
+    let slot = if verify {
+        &RUSTLS_VERIFY_RESUMPTION
+    } else {
+        &RUSTLS_NO_VERIFY_RESUMPTION
+    };
+    slot.get_or_init(|| Arc::new(ObservedClientSessionStore::new(4096)))
+        .clone()
+}
+
+fn shared_session_store_inserted(verify: bool) -> u64 {
+    shared_session_store(verify).inserted()
+}
+
+fn shared_session_store_early_inserted(verify: bool) -> u64 {
+    shared_session_store(verify).early_inserted()
+}
+
+fn shared_session_store_taken(verify: bool) -> u64 {
+    shared_session_store(verify).taken()
+}
+
+fn shared_session_store_early_taken(verify: bool) -> u64 {
+    shared_session_store(verify).early_taken()
 }
 
 fn store_error(message: impl Into<String>) -> i32 {
@@ -380,7 +604,27 @@ fn load_key(path: &str) -> Result<PrivateKeyDer<'static>, String> {
         .ok_or_else(|| format!("no private key in {path}"))
 }
 
-fn client_tls_config(_certs: Vec<CertificateDer<'static>>, verify: bool) -> rustls::ClientConfig {
+fn client_tls_config(
+    certs: Vec<CertificateDer<'static>>,
+    verify: bool,
+) -> Arc<rustls::ClientConfig> {
+    let key = ClientTlsConfigKey {
+        verify,
+        certs: certs
+            .iter()
+            .map(|cert| cert.as_ref().to_vec())
+            .collect::<Vec<_>>(),
+    };
+    let cache = RUSTLS_CLIENT_CONFIGS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(config) = cache
+        .lock()
+        .expect("rustls client config cache poisoned")
+        .get(&key)
+        .cloned()
+    {
+        return config;
+    }
+
     let builder = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -389,7 +633,7 @@ fn client_tls_config(_certs: Vec<CertificateDer<'static>>, verify: bool) -> rust
 
     let mut config = if verify {
         let mut roots = rustls::RootCertStore::empty();
-        for cert in _certs {
+        for cert in certs {
             roots
                 .add(cert)
                 .expect("benchmark root certificate is valid");
@@ -398,10 +642,17 @@ fn client_tls_config(_certs: Vec<CertificateDer<'static>>, verify: bool) -> rust
     } else {
         builder
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(NoVerifier))
+            .with_custom_certificate_verifier(no_verifier())
             .with_no_client_auth()
     };
+    config.enable_early_data = true;
+    config.resumption = shared_client_resumption(verify);
     config.alpn_protocols = vec![ALPN.to_vec()];
+    let config = Arc::new(config);
+    cache
+        .lock()
+        .expect("rustls client config cache poisoned")
+        .insert(key, config.clone());
     config
 }
 
@@ -417,6 +668,7 @@ fn server_tls_config(
     .with_no_client_auth()
     .with_single_cert(certs, key)
     .expect("benchmark certificate/key pair is valid");
+    config.max_early_data_size = u32::MAX;
     config.alpn_protocols = vec![ALPN.to_vec()];
     config
 }
@@ -446,6 +698,9 @@ fn configured_cert_chain_valid(cert_path: &str, chain_path: &str) -> Result<bool
 }
 
 fn checked_slice<'a>(ptr: *const u8, len: usize) -> Result<&'a [u8], String> {
+    if len == 0 {
+        return Ok(&[]);
+    }
     if ptr.is_null() && len != 0 {
         return Err("null data pointer".into());
     }
@@ -453,6 +708,9 @@ fn checked_slice<'a>(ptr: *const u8, len: usize) -> Result<&'a [u8], String> {
 }
 
 fn checked_mut_slice<'a>(ptr: *mut u8, len: usize) -> Result<&'a mut [u8], String> {
+    if len == 0 {
+        return Ok(&mut []);
+    }
     if ptr.is_null() && len != 0 {
         return Err("null mutable data pointer".into());
     }
@@ -494,6 +752,9 @@ macro_rules! proto_engine {
                 outbound: VecDeque<Outbound>,
                 base_us: u64,
                 base_instant: Instant,
+                tls_verify_peer: bool,
+                resumption_take_baseline: u64,
+                resumption_early_take_baseline: u64,
             }
 
             impl $engine_name {
@@ -588,6 +849,9 @@ macro_rules! proto_engine {
                         outbound: VecDeque::new(),
                         base_us: config.now_us,
                         base_instant: Instant::now(),
+                        tls_verify_peer: config.tls_verify_peer,
+                        resumption_take_baseline: 0,
+                        resumption_early_take_baseline: 0,
                     })
                 }
 
@@ -785,6 +1049,20 @@ macro_rules! proto_engine {
                         .endpoint
                         .connect(now, config, remote, "localhost")
                         .map_err(|e| format!("connect: {e:?}"))?;
+                    if std::env::var_os("QUICPERF_PACKET_RESUMPTION_DEBUG").is_some() {
+                        let early_crypto = conn.crypto_session().early_crypto().is_some();
+                        let transport_parameters = conn.crypto_session().transport_parameters();
+                        eprintln!(
+                            "{} connect conn={} has_0rtt={} early_crypto={} transport_parameters={:?} taken={} early_taken={}",
+                            stringify!($engine_name),
+                            ch.0,
+                            conn.has_0rtt(),
+                            early_crypto,
+                            transport_parameters,
+                            shared_session_store_taken(self.tls_verify_peer),
+                            shared_session_store_early_taken(self.tls_verify_peer)
+                        );
+                    }
                     self.connections.insert(
                         ch,
                         ConnState {
@@ -794,7 +1072,6 @@ macro_rules! proto_engine {
                             closed: false,
                         },
                     );
-                    self.drive(now_us)?;
                     Ok(ch.0 as u64)
                 }
 
@@ -871,6 +1148,129 @@ macro_rules! proto_engine {
 
                 fn on_timeout(&mut self, now_us: u64) -> Result<(), String> {
                     self.drive(now_us)
+                }
+
+                fn export_resumption_state(
+                    &mut self,
+                    _conn_id: u64,
+                    now_us: u64,
+                    _out: &mut Vec<u8>,
+                ) -> Result<bool, String> {
+                    self.drive(now_us)?;
+                    if std::env::var_os("QUICPERF_PACKET_RESUMPTION_DEBUG").is_some() {
+                        eprintln!(
+                            "{} resumption export inserted={} early_inserted={} taken={} early_taken={}",
+                            stringify!($engine_name),
+                            shared_session_store_inserted(self.tls_verify_peer),
+                            shared_session_store_early_inserted(self.tls_verify_peer),
+                            shared_session_store_taken(self.tls_verify_peer),
+                            shared_session_store_early_taken(self.tls_verify_peer)
+                        );
+                    }
+                    Ok(shared_session_store_inserted(self.tls_verify_peer) > 0)
+                }
+
+                fn import_resumption_state(
+                    &mut self,
+                    _data: &[u8],
+                    _use_zero_rtt: bool,
+                    _now_us: u64,
+                ) -> Result<bool, String> {
+                    self.resumption_take_baseline =
+                        shared_session_store_taken(self.tls_verify_peer);
+                    self.resumption_early_take_baseline =
+                        shared_session_store_early_taken(self.tls_verify_peer);
+                    if std::env::var_os("QUICPERF_PACKET_RESUMPTION_DEBUG").is_some() {
+                        eprintln!(
+                            "{} resumption import inserted={} early_inserted={} taken={} early_taken={}",
+                            stringify!($engine_name),
+                            shared_session_store_inserted(self.tls_verify_peer),
+                            shared_session_store_early_inserted(self.tls_verify_peer),
+                            self.resumption_take_baseline,
+                            self.resumption_early_take_baseline
+                        );
+                    }
+                    Ok(shared_session_store_inserted(self.tls_verify_peer) > 0)
+                }
+
+                fn connection_resumed(
+                    &mut self,
+                    conn_id: u64,
+                    now_us: u64,
+                ) -> Result<bool, String> {
+                    self.drive(now_us)?;
+                    let ch = proto::ConnectionHandle(conn_id as usize);
+                    let state = self
+                        .connections
+                        .get(&ch)
+                        .ok_or_else(|| format!("unknown connection {conn_id}"))?;
+                    if std::env::var_os("QUICPERF_PACKET_RESUMPTION_DEBUG").is_some() {
+                        eprintln!(
+                            "{} connection_resumed conn={} connected={} has_0rtt={} accepted_0rtt={} taken={} early_taken={} baseline={} early_baseline={}",
+                            stringify!($engine_name),
+                            conn_id,
+                            state.connected,
+                            state.conn.has_0rtt(),
+                            state.conn.accepted_0rtt(),
+                            shared_session_store_taken(self.tls_verify_peer),
+                            shared_session_store_early_taken(self.tls_verify_peer),
+                            self.resumption_take_baseline,
+                            self.resumption_early_take_baseline
+                        );
+                    }
+                    Ok(state.connected
+                        && (state.conn.accepted_0rtt()
+                            || (state.conn.has_0rtt()
+                                && shared_session_store_early_taken(self.tls_verify_peer)
+                                    > self.resumption_early_take_baseline)))
+                }
+
+                fn zero_rtt_attempted(
+                    &mut self,
+                    conn_id: u64,
+                    now_us: u64,
+                ) -> Result<bool, String> {
+                    self.drive(now_us)?;
+                    let ch = proto::ConnectionHandle(conn_id as usize);
+                    let state = self
+                        .connections
+                        .get(&ch)
+                        .ok_or_else(|| format!("unknown connection {conn_id}"))?;
+                    if std::env::var_os("QUICPERF_PACKET_RESUMPTION_DEBUG").is_some() {
+                        eprintln!(
+                            "{} zero_rtt_attempted conn={} connected={} has_0rtt={} accepted_0rtt={} taken={} early_taken={} baseline={} early_baseline={}",
+                            stringify!($engine_name),
+                            conn_id,
+                            state.connected,
+                            state.conn.has_0rtt(),
+                            state.conn.accepted_0rtt(),
+                            shared_session_store_taken(self.tls_verify_peer),
+                            shared_session_store_early_taken(self.tls_verify_peer),
+                            self.resumption_take_baseline,
+                            self.resumption_early_take_baseline
+                        );
+                    }
+                    Ok(state.conn.has_0rtt())
+                }
+
+                fn zero_rtt_accepted(&mut self, conn_id: u64, now_us: u64) -> Result<bool, String> {
+                    self.drive(now_us)?;
+                    let ch = proto::ConnectionHandle(conn_id as usize);
+                    let state = self
+                        .connections
+                        .get(&ch)
+                        .ok_or_else(|| format!("unknown connection {conn_id}"))?;
+                    Ok(state.conn.accepted_0rtt())
+                }
+
+                fn zero_rtt_rejected(&mut self, conn_id: u64, now_us: u64) -> Result<bool, String> {
+                    self.drive(now_us)?;
+                    let ch = proto::ConnectionHandle(conn_id as usize);
+                    let state = self
+                        .connections
+                        .get(&ch)
+                        .ok_or_else(|| format!("unknown connection {conn_id}"))?;
+                    Ok(state.connected && state.conn.has_0rtt() && !state.conn.accepted_0rtt())
                 }
 
                 fn open_bidi(&mut self, conn_id: u64, now_us: u64) -> Result<Option<u64>, String> {
@@ -982,12 +1382,12 @@ macro_rules! proto_engine {
                     self.drive(now_us)
                 }
 
-	                fn datagram_send(
-	                    &mut self,
-	                    conn_id: u64,
-	                    data: &[u8],
-	                    _now_us: u64,
-	                ) -> Result<bool, String> {
+                fn datagram_send(
+                    &mut self,
+                    conn_id: u64,
+                    data: &[u8],
+                    _now_us: u64,
+                ) -> Result<bool, String> {
                     let ch = proto::ConnectionHandle(conn_id as usize);
                     let state = self
                         .connections
@@ -999,19 +1399,19 @@ macro_rules! proto_engine {
                         .send(Bytes::copy_from_slice(data), false)
                     {
                         Ok(()) => true,
-	                        Err(proto::SendDatagramError::Blocked(_)) => false,
-	                        Err(error) => return Err(format!("datagram_send: {error:?}")),
-	                    };
-	                    Ok(sent)
-	                }
+                        Err(proto::SendDatagramError::Blocked(_)) => false,
+                        Err(error) => return Err(format!("datagram_send: {error:?}")),
+                    };
+                    Ok(sent)
+                }
 
                 fn datagram_recv(
-	                    &mut self,
-	                    conn_id: u64,
-	                    out: &mut [u8],
-	                    _now_us: u64,
-	                ) -> Result<Option<usize>, String> {
-	                    let ch = proto::ConnectionHandle(conn_id as usize);
+                    &mut self,
+                    conn_id: u64,
+                    out: &mut [u8],
+                    _now_us: u64,
+                ) -> Result<Option<usize>, String> {
+                    let ch = proto::ConnectionHandle(conn_id as usize);
                     let state = self
                         .connections
                         .get_mut(&ch)
@@ -1065,7 +1465,7 @@ mod neqo_engine {
     use neqo_common::{event::Provider as _, Datagram, Tos};
     use neqo_transport::{
         server::Server, Connection, ConnectionEvent, ConnectionParameters, Error, Output, State,
-        StreamId, StreamType,
+        StreamId, StreamType, ZeroRttState,
     };
     use nss::{AllowZeroRtt, AuthenticationStatus};
     use std::{cell::RefCell, rc::Rc};
@@ -1073,6 +1473,7 @@ mod neqo_engine {
     struct ServerConn {
         conn: Rc<RefCell<Connection>>,
         connected: bool,
+        ticket_sent: bool,
         accepted_streams: VecDeque<u64>,
         datagrams: VecDeque<Vec<u8>>,
     }
@@ -1095,6 +1496,8 @@ mod neqo_engine {
         server_ptr_to_id: HashMap<usize, u64>,
         accepted_connections: VecDeque<u64>,
         outbound: VecDeque<Outbound>,
+        resumption_token: Option<Vec<u8>>,
+        imported_resumption_token: Option<Vec<u8>>,
         next_conn_id: u64,
         callback: Option<Duration>,
         tls_verify_peer: bool,
@@ -1152,6 +1555,8 @@ mod neqo_engine {
                 server_ptr_to_id: HashMap::new(),
                 accepted_connections: VecDeque::new(),
                 outbound: VecDeque::new(),
+                resumption_token: None,
+                imported_resumption_token: None,
                 next_conn_id: 1,
                 callback: None,
                 tls_verify_peer: config.tls_verify_peer,
@@ -1222,7 +1627,21 @@ mod neqo_engine {
                     ConnectionEvent::Datagram(data) => {
                         self.client_datagrams.push_back(data);
                     }
+                    ConnectionEvent::ResumptionToken(token) => {
+                        self.resumption_token = Some(token.as_ref().to_vec());
+                    }
                     _ => {}
+                }
+            }
+        }
+
+        fn refresh_resumption_token(&mut self, now: Instant) {
+            if self.resumption_token.is_some() {
+                return;
+            }
+            if let Some(conn) = self.client.as_mut() {
+                if let Some(token) = conn.take_resumption_token(now) {
+                    self.resumption_token = Some(token.as_ref().to_vec());
                 }
             }
         }
@@ -1243,6 +1662,7 @@ mod neqo_engine {
                         ServerConn {
                             conn: Rc::clone(&rc),
                             connected: false,
+                            ticket_sent: false,
                             accepted_streams: VecDeque::new(),
                             datagrams: VecDeque::new(),
                         },
@@ -1250,26 +1670,41 @@ mod neqo_engine {
                     self.accepted_connections.push_back(id);
                     id
                 };
-                let state = self.server_conns.get_mut(&id).unwrap();
-                let mut conn = rc.borrow_mut();
-                let events: Vec<_> = conn.events().collect();
-                for event in events {
-                    match event {
-                        ConnectionEvent::AuthenticationNeeded
-                        | ConnectionEvent::EchFallbackAuthenticationNeeded { .. } => {
-                            conn.authenticated(AuthenticationStatus::Ok, now);
+                let ticket_output = {
+                    let state = self.server_conns.get_mut(&id).unwrap();
+                    let mut conn = rc.borrow_mut();
+                    let events: Vec<_> = conn.events().collect();
+                    for event in events {
+                        match event {
+                            ConnectionEvent::AuthenticationNeeded
+                            | ConnectionEvent::EchFallbackAuthenticationNeeded { .. } => {
+                                conn.authenticated(AuthenticationStatus::Ok, now);
+                            }
+                            ConnectionEvent::StateChange(next) if next.connected() => {
+                                state.connected = true;
+                                if !state.ticket_sent {
+                                    if conn.send_ticket(now, &[]).is_ok() {
+                                        state.ticket_sent = true;
+                                    }
+                                }
+                            }
+                            ConnectionEvent::NewStream { stream_id } if stream_id.is_bidi() => {
+                                state.accepted_streams.push_back(stream_id.as_u64());
+                            }
+                            ConnectionEvent::Datagram(data) => {
+                                state.datagrams.push_back(data);
+                            }
+                            _ => {}
                         }
-                        ConnectionEvent::StateChange(next) if next.connected() => {
-                            state.connected = true;
-                        }
-                        ConnectionEvent::NewStream { stream_id } if stream_id.is_bidi() => {
-                            state.accepted_streams.push_back(stream_id.as_u64());
-                        }
-                        ConnectionEvent::Datagram(data) => {
-                            state.datagrams.push_back(data);
-                        }
-                        _ => {}
                     }
+                    if state.ticket_sent {
+                        Some(conn.process_output(now))
+                    } else {
+                        None
+                    }
+                };
+                if let Some(output) = ticket_output {
+                    self.queue_output(output);
                 }
             }
         }
@@ -1306,6 +1741,11 @@ mod neqo_engine {
                 now,
             )
             .map_err(|e| format!("neqo client: {e:?}"))?;
+            let mut conn = conn;
+            if let Some(token) = self.imported_resumption_token.as_deref() {
+                conn.enable_resumption(now, token)
+                    .map_err(|e| format!("neqo enable resumption: {e:?}"))?;
+            }
             self.client = Some(conn);
             self.drive_output(now);
             Ok(0)
@@ -1371,6 +1811,73 @@ mod neqo_engine {
         fn on_timeout(&mut self, _now_us: u64) -> Result<(), String> {
             self.drive_output(Instant::now());
             Ok(())
+        }
+
+        fn export_resumption_state(
+            &mut self,
+            _conn_id: u64,
+            _now_us: u64,
+            out: &mut Vec<u8>,
+        ) -> Result<bool, String> {
+            let now = Instant::now();
+            self.drive_output(now);
+            self.refresh_resumption_token(now);
+            let Some(token) = self.resumption_token.as_ref() else {
+                return Ok(false);
+            };
+            out.extend_from_slice(token);
+            Ok(true)
+        }
+
+        fn import_resumption_state(
+            &mut self,
+            data: &[u8],
+            _use_zero_rtt: bool,
+            _now_us: u64,
+        ) -> Result<bool, String> {
+            if data.is_empty() {
+                return Ok(false);
+            }
+            self.imported_resumption_token = Some(data.to_vec());
+            Ok(true)
+        }
+
+        fn connection_resumed(&mut self, _conn_id: u64, _now_us: u64) -> Result<bool, String> {
+            self.drive_output(Instant::now());
+            Ok(self
+                .client
+                .as_ref()
+                .and_then(|conn| conn.tls_info())
+                .is_some_and(|info| info.resumed()))
+        }
+
+        fn zero_rtt_attempted(&mut self, _conn_id: u64, _now_us: u64) -> Result<bool, String> {
+            self.drive_output(Instant::now());
+            Ok(self.client.as_ref().is_some_and(|conn| {
+                matches!(
+                    conn.zero_rtt_state(),
+                    ZeroRttState::Sending
+                        | ZeroRttState::AcceptedClient
+                        | ZeroRttState::AcceptedServer
+                        | ZeroRttState::Rejected
+                )
+            }))
+        }
+
+        fn zero_rtt_accepted(&mut self, _conn_id: u64, _now_us: u64) -> Result<bool, String> {
+            self.drive_output(Instant::now());
+            Ok(self
+                .client
+                .as_ref()
+                .is_some_and(|conn| conn.zero_rtt_state() == ZeroRttState::AcceptedClient))
+        }
+
+        fn zero_rtt_rejected(&mut self, _conn_id: u64, _now_us: u64) -> Result<bool, String> {
+            self.drive_output(Instant::now());
+            Ok(self
+                .client
+                .as_ref()
+                .is_some_and(|conn| conn.zero_rtt_state() == ZeroRttState::Rejected))
         }
 
         fn open_bidi(&mut self, _conn_id: u64, _now_us: u64) -> Result<Option<u64>, String> {
@@ -1479,21 +1986,19 @@ mod neqo_engine {
                 self.client_mut()?.send_datagram(data.to_vec(), None)
             };
             match result {
-	                Ok(()) => {
-	                    Ok(true)
-	                }
+                Ok(()) => Ok(true),
                 Err(Error::TooMuchData) | Err(Error::NotAvailable) => Ok(false),
                 Err(error) => Err(format!("neqo datagram_send: {error:?}")),
             }
         }
 
-	        fn datagram_recv(
-	            &mut self,
-	            conn_id: u64,
-	            out: &mut [u8],
-	            _now_us: u64,
-	        ) -> Result<Option<usize>, String> {
-	            let datagram = if self.is_server {
+        fn datagram_recv(
+            &mut self,
+            conn_id: u64,
+            out: &mut [u8],
+            _now_us: u64,
+        ) -> Result<Option<usize>, String> {
+            let datagram = if self.is_server {
                 self.server_conns
                     .get_mut(&conn_id)
                     .ok_or_else(|| format!("unknown neqo server connection {conn_id}"))?
@@ -1538,6 +2043,7 @@ mod s2n_engine {
     };
     use s2n_quic_core::{
         endpoint::Endpoint,
+        event::{api as s2n_event, Subscriber as S2nEventSubscriber},
         inet::{datagram, ExplicitCongestionNotification, SocketAddress as S2nSocketAddress},
         io::{rx, tx},
         path::{Handle as _, Tuple},
@@ -1546,6 +2052,77 @@ mod s2n_engine {
     use std::fmt;
 
     type SharedDriver = Arc<Mutex<Option<Box<dyn EndpointDriver>>>>;
+    static S2N_SERVER_ZERO_RTT_PACKETS: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Default)]
+    struct S2nResumptionEventState {
+        client_zero_rtt_keys: AtomicU64,
+        client_zero_rtt_packets_sent: AtomicU64,
+    }
+
+    #[derive(Clone)]
+    struct S2nResumptionEvents {
+        state: Arc<S2nResumptionEventState>,
+    }
+
+    struct S2nConnectionEventContext {
+        is_server: bool,
+    }
+
+    impl S2nEventSubscriber for S2nResumptionEvents {
+        type ConnectionContext = S2nConnectionEventContext;
+
+        fn create_connection_context(
+            &mut self,
+            meta: &s2n_event::ConnectionMeta,
+            _info: &s2n_event::ConnectionInfo,
+        ) -> Self::ConnectionContext {
+            S2nConnectionEventContext {
+                is_server: matches!(meta.endpoint_type, s2n_event::EndpointType::Server { .. }),
+            }
+        }
+
+        fn on_key_update(
+            &mut self,
+            context: &mut Self::ConnectionContext,
+            _meta: &s2n_event::ConnectionMeta,
+            event: &s2n_event::KeyUpdate,
+        ) {
+            if !context.is_server && matches!(event.key_type, s2n_event::KeyType::ZeroRtt { .. }) {
+                self.state
+                    .client_zero_rtt_keys
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        fn on_packet_received(
+            &mut self,
+            context: &mut Self::ConnectionContext,
+            _meta: &s2n_event::ConnectionMeta,
+            event: &s2n_event::PacketReceived,
+        ) {
+            if context.is_server
+                && matches!(event.packet_header, s2n_event::PacketHeader::ZeroRtt { .. })
+            {
+                S2N_SERVER_ZERO_RTT_PACKETS.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        fn on_packet_sent(
+            &mut self,
+            context: &mut Self::ConnectionContext,
+            _meta: &s2n_event::ConnectionMeta,
+            event: &s2n_event::PacketSent,
+        ) {
+            if !context.is_server
+                && matches!(event.packet_header, s2n_event::PacketHeader::ZeroRtt { .. })
+            {
+                self.state
+                    .client_zero_rtt_packets_sent
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
 
     struct Inbound {
         remote: S2nSocketAddress,
@@ -1781,6 +2358,14 @@ mod s2n_engine {
         accepted_connections: VecDeque<u64>,
         streams: HashMap<(u64, u64), StreamState>,
         next_conn_id: u64,
+        tls_verify_peer: bool,
+        imported_zero_rtt: bool,
+        resumption_take_baseline: u64,
+        resumption_early_take_baseline: u64,
+        zero_rtt_key_baseline: u64,
+        zero_rtt_packet_sent_baseline: u64,
+        server_zero_rtt_packet_baseline: u64,
+        event_state: Arc<S2nResumptionEventState>,
     }
 
     impl S2nEngine {
@@ -1793,6 +2378,10 @@ mod s2n_engine {
             let io = ManualIo {
                 driver: Arc::clone(&driver),
                 local_addr,
+            };
+            let event_state = Arc::new(S2nResumptionEventState::default());
+            let events = S2nResumptionEvents {
+                state: Arc::clone(&event_state),
             };
 
             let limits = limits::Limits::new()
@@ -1827,19 +2416,30 @@ mod s2n_engine {
                     load_certs(&cert_path)?,
                     load_key(&key_path)?,
                 ));
-                let server = Server::builder()
+                let server_builder = Server::builder()
                     .with_io(io)
                     .map_err(|e| format!("s2n server io: {e}"))?
                     .with_tls(tls)
                     .map_err(|e| format!("s2n server tls: {e}"))?
+                    .with_event(events)
+                    .map_err(|e| format!("s2n server event: {e}"))?
                     .with_limits(limits)
                     .map_err(|e| format!("s2n server limits: {e}"))?
                     .with_datagram(datagram)
-                    .map_err(|e| format!("s2n server datagram: {e}"))?
-                    .with_congestion_controller(congestion_controller::Bbr::default())
-                    .map_err(|e| format!("s2n server congestion: {e}"))?
-                    .start()
-                    .map_err(|e| format!("s2n server start: {e}"))?;
+                    .map_err(|e| format!("s2n server datagram: {e}"))?;
+                let server = if config.use_bbr {
+                    server_builder
+                        .with_congestion_controller(congestion_controller::Bbr::default())
+                        .map_err(|e| format!("s2n server congestion: {e}"))?
+                        .start()
+                        .map_err(|e| format!("s2n server start: {e}"))?
+                } else {
+                    server_builder
+                        .with_congestion_controller(congestion_controller::Cubic::default())
+                        .map_err(|e| format!("s2n server congestion: {e}"))?
+                        .start()
+                        .map_err(|e| format!("s2n server start: {e}"))?
+                };
                 (None, Some(server))
             } else {
                 let datagram = s2n_datagram::default::Endpoint::builder()
@@ -1857,19 +2457,30 @@ mod s2n_engine {
                     })?,
                     config.tls_verify_peer,
                 ));
-                let client = Client::builder()
+                let client_builder = Client::builder()
                     .with_io(io)
                     .map_err(|e| format!("s2n client io: {e}"))?
                     .with_tls(tls)
                     .map_err(|e| format!("s2n client tls: {e}"))?
+                    .with_event(events)
+                    .map_err(|e| format!("s2n client event: {e}"))?
                     .with_limits(limits)
                     .map_err(|e| format!("s2n client limits: {e}"))?
                     .with_datagram(datagram)
-                    .map_err(|e| format!("s2n client datagram: {e}"))?
-                    .with_congestion_controller(congestion_controller::Bbr::default())
-                    .map_err(|e| format!("s2n client congestion: {e}"))?
-                    .start()
-                    .map_err(|e| format!("s2n client start: {e}"))?;
+                    .map_err(|e| format!("s2n client datagram: {e}"))?;
+                let client = if config.use_bbr {
+                    client_builder
+                        .with_congestion_controller(congestion_controller::Bbr::default())
+                        .map_err(|e| format!("s2n client congestion: {e}"))?
+                        .start()
+                        .map_err(|e| format!("s2n client start: {e}"))?
+                } else {
+                    client_builder
+                        .with_congestion_controller(congestion_controller::Cubic::default())
+                        .map_err(|e| format!("s2n client congestion: {e}"))?
+                        .start()
+                        .map_err(|e| format!("s2n client start: {e}"))?
+                };
                 (Some(client), None)
             };
 
@@ -1883,6 +2494,14 @@ mod s2n_engine {
                 accepted_connections: VecDeque::new(),
                 streams: HashMap::new(),
                 next_conn_id: if config.is_server { 1 } else { 0 },
+                tls_verify_peer: config.tls_verify_peer,
+                imported_zero_rtt: false,
+                resumption_take_baseline: 0,
+                resumption_early_take_baseline: 0,
+                zero_rtt_key_baseline: 0,
+                zero_rtt_packet_sent_baseline: 0,
+                server_zero_rtt_packet_baseline: 0,
+                event_state,
             })
         }
 
@@ -1912,13 +2531,15 @@ mod s2n_engine {
             );
         }
 
-        fn poll_application(&mut self) -> Result<(), String> {
+        fn poll_application(&mut self) -> Result<bool, String> {
+            let mut progressed = false;
             if let Some(attempt) = self.pending_connect.as_mut() {
                 let result = with_context(|cx| attempt.as_mut().poll(cx));
                 match result {
                     Poll::Ready(Ok(connection)) => {
                         self.insert_connection(0, connection);
                         self.pending_connect = None;
+                        progressed = true;
                     }
                     Poll::Ready(Err(error)) => return Err(format!("s2n connect: {error:?}")),
                     Poll::Pending => {}
@@ -1941,16 +2562,20 @@ mod s2n_engine {
                 self.next_conn_id += 1;
                 self.insert_connection(conn_id, connection);
                 self.accepted_connections.push_back(conn_id);
+                progressed = true;
             }
-            Ok(())
+            Ok(progressed)
         }
 
         fn drive_all(&mut self, now_us: u64) -> Result<(), String> {
             for _ in 0..8 {
-                self.poll_application()?;
+                let progressed = self.poll_application()?;
+                if self.imported_zero_rtt && progressed && self.connections.contains_key(&0) {
+                    return Ok(());
+                }
                 self.with_driver(|driver| driver.drive(now_us))?;
             }
-            self.poll_application()
+            self.poll_application().map(|_| ())
         }
 
         fn stream_mut(&mut self, conn_id: u64, stream_id: u64) -> Result<&mut StreamState, String> {
@@ -2017,9 +2642,100 @@ mod s2n_engine {
             self.drive_all(now_us)
         }
 
+        fn export_resumption_state(
+            &mut self,
+            _conn_id: u64,
+            now_us: u64,
+            out: &mut Vec<u8>,
+        ) -> Result<bool, String> {
+            self.drive_all(now_us)?;
+            if shared_session_store_inserted(self.tls_verify_peer) == 0 {
+                return Ok(false);
+            }
+            out.extend_from_slice(b"S2NRTT01");
+            Ok(true)
+        }
+
+        fn import_resumption_state(
+            &mut self,
+            data: &[u8],
+            use_zero_rtt: bool,
+            _now_us: u64,
+        ) -> Result<bool, String> {
+            if data != b"S2NRTT01" || shared_session_store_inserted(self.tls_verify_peer) == 0 {
+                return Ok(false);
+            }
+            self.imported_zero_rtt = use_zero_rtt;
+            self.resumption_take_baseline = shared_session_store_taken(self.tls_verify_peer);
+            self.resumption_early_take_baseline =
+                shared_session_store_early_taken(self.tls_verify_peer);
+            self.zero_rtt_key_baseline = self
+                .event_state
+                .client_zero_rtt_keys
+                .load(Ordering::Relaxed);
+            self.zero_rtt_packet_sent_baseline = self
+                .event_state
+                .client_zero_rtt_packets_sent
+                .load(Ordering::Relaxed);
+            self.server_zero_rtt_packet_baseline =
+                S2N_SERVER_ZERO_RTT_PACKETS.load(Ordering::Relaxed);
+            Ok(true)
+        }
+
+        fn connection_resumed(&mut self, conn_id: u64, now_us: u64) -> Result<bool, String> {
+            self.drive_all(now_us)?;
+            let connected = self
+                .connections
+                .get(&conn_id)
+                .is_some_and(|state| state.connected);
+            Ok(connected
+                && (shared_session_store_taken(self.tls_verify_peer)
+                    > self.resumption_take_baseline
+                    || shared_session_store_early_taken(self.tls_verify_peer)
+                        > self.resumption_early_take_baseline))
+        }
+
+        fn zero_rtt_attempted(&mut self, _conn_id: u64, now_us: u64) -> Result<bool, String> {
+            self.drive_all(now_us)?;
+            Ok(self.imported_zero_rtt
+                && (shared_session_store_early_taken(self.tls_verify_peer)
+                    > self.resumption_early_take_baseline
+                    || self
+                        .event_state
+                        .client_zero_rtt_keys
+                        .load(Ordering::Relaxed)
+                        > self.zero_rtt_key_baseline
+                    || self
+                        .event_state
+                        .client_zero_rtt_packets_sent
+                        .load(Ordering::Relaxed)
+                        > self.zero_rtt_packet_sent_baseline))
+        }
+
+        fn zero_rtt_accepted(&mut self, conn_id: u64, now_us: u64) -> Result<bool, String> {
+            self.drive_all(now_us)?;
+            Ok(self.zero_rtt_attempted(conn_id, now_us)?
+                && self.connection_resumed(conn_id, now_us)?
+                && self
+                    .event_state
+                    .client_zero_rtt_keys
+                    .load(Ordering::Relaxed)
+                    > self.zero_rtt_key_baseline)
+        }
+
+        fn zero_rtt_rejected(&mut self, conn_id: u64, now_us: u64) -> Result<bool, String> {
+            let attempted = self.zero_rtt_attempted(conn_id, now_us)?;
+            Ok(attempted
+                && S2N_SERVER_ZERO_RTT_PACKETS.load(Ordering::Relaxed)
+                    > self.server_zero_rtt_packet_baseline)
+        }
+
         fn open_bidi(&mut self, conn_id: u64, now_us: u64) -> Result<Option<u64>, String> {
             self.drive_all(now_us)?;
             let Some(conn) = self.connections.get_mut(&conn_id) else {
+                if self.pending_connect.is_some() {
+                    return Ok(None);
+                }
                 return Err(format!("unknown s2n connection {conn_id}"));
             };
             match with_context(|cx| conn.handle.poll_open_bidirectional_stream(cx)) {
@@ -2141,13 +2857,13 @@ mod s2n_engine {
             self.drive_all(now_us)
         }
 
-	        fn datagram_send(
-	            &mut self,
-	            conn_id: u64,
-	            data: &[u8],
-	            _now_us: u64,
-	        ) -> Result<bool, String> {
-	            let conn = self
+        fn datagram_send(
+            &mut self,
+            conn_id: u64,
+            data: &[u8],
+            _now_us: u64,
+        ) -> Result<bool, String> {
+            let conn = self
                 .connections
                 .get_mut(&conn_id)
                 .ok_or_else(|| format!("unknown s2n connection {conn_id}"))?;
@@ -2158,20 +2874,20 @@ mod s2n_engine {
                     with_context(|cx| sender.poll_send_datagram(&mut payload, cx))
                 })
                 .map_err(|e| format!("s2n datagram send query: {e:?}"))?;
-	            match send {
-	                Poll::Ready(Ok(())) => Ok(true),
-	                Poll::Pending => Ok(false),
+            match send {
+                Poll::Ready(Ok(())) => Ok(true),
+                Poll::Pending => Ok(false),
                 Poll::Ready(Err(error)) => Err(format!("s2n datagram send: {error:?}")),
             }
         }
 
-	        fn datagram_recv(
-	            &mut self,
-	            conn_id: u64,
-	            out: &mut [u8],
-	            _now_us: u64,
-	        ) -> Result<Option<usize>, String> {
-	            let conn = self
+        fn datagram_recv(
+            &mut self,
+            conn_id: u64,
+            out: &mut [u8],
+            _now_us: u64,
+        ) -> Result<Option<usize>, String> {
+            let conn = self
                 .connections
                 .get_mut(&conn_id)
                 .ok_or_else(|| format!("unknown s2n connection {conn_id}"))?;
@@ -2371,6 +3087,138 @@ pub extern "C" fn qpf_engine_on_timeout(engine: *mut qpf_engine_t, now_us: u64) 
     })
     .map(|_| 0)
     .unwrap_or_else(|status| status)
+}
+
+#[no_mangle]
+pub extern "C" fn qpf_engine_export_resumption_state(
+    engine: *mut qpf_engine_t,
+    conn_id: u64,
+    data: *mut u8,
+    capacity: usize,
+    len: *mut usize,
+    now_us: u64,
+) -> i32 {
+    match ffi_result(|| {
+        let engine = engine_mut(engine)?;
+        if len.is_null() {
+            return Err("null resumption length pointer".to_string());
+        }
+        let mut state = Vec::new();
+        let exported = engine
+            .engine
+            .export_resumption_state(conn_id, now_us, &mut state)?;
+        if !exported {
+            unsafe { *len = 0 };
+            return Ok(0);
+        }
+        if state.len() > capacity {
+            return Err(format!(
+                "resumption state buffer too small: {} > {}",
+                state.len(),
+                capacity
+            ));
+        }
+        let out = checked_mut_slice(data, capacity)?;
+        out[..state.len()].copy_from_slice(&state);
+        unsafe { *len = state.len() };
+        Ok(1)
+    }) {
+        Ok(value) => value,
+        Err(status) => status,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn qpf_engine_import_resumption_state(
+    engine: *mut qpf_engine_t,
+    data: *const u8,
+    len: usize,
+    use_zero_rtt: bool,
+    now_us: u64,
+) -> i32 {
+    match ffi_result(|| {
+        let engine = engine_mut(engine)?;
+        let data = checked_slice(data, len)?;
+        engine
+            .engine
+            .import_resumption_state(data, use_zero_rtt, now_us)
+            .map(|imported| if imported { 1 } else { 0 })
+    }) {
+        Ok(value) => value,
+        Err(status) => status,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn qpf_connection_resumed(
+    engine: *mut qpf_engine_t,
+    conn_id: u64,
+    now_us: u64,
+) -> i32 {
+    match ffi_result(|| {
+        let engine = engine_mut(engine)?;
+        engine
+            .engine
+            .connection_resumed(conn_id, now_us)
+            .map(|value| if value { 1 } else { 0 })
+    }) {
+        Ok(value) => value,
+        Err(status) => status,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn qpf_connection_zero_rtt_attempted(
+    engine: *mut qpf_engine_t,
+    conn_id: u64,
+    now_us: u64,
+) -> i32 {
+    match ffi_result(|| {
+        let engine = engine_mut(engine)?;
+        engine
+            .engine
+            .zero_rtt_attempted(conn_id, now_us)
+            .map(|value| if value { 1 } else { 0 })
+    }) {
+        Ok(value) => value,
+        Err(status) => status,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn qpf_connection_zero_rtt_accepted(
+    engine: *mut qpf_engine_t,
+    conn_id: u64,
+    now_us: u64,
+) -> i32 {
+    match ffi_result(|| {
+        let engine = engine_mut(engine)?;
+        engine
+            .engine
+            .zero_rtt_accepted(conn_id, now_us)
+            .map(|value| if value { 1 } else { 0 })
+    }) {
+        Ok(value) => value,
+        Err(status) => status,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn qpf_connection_zero_rtt_rejected(
+    engine: *mut qpf_engine_t,
+    conn_id: u64,
+    now_us: u64,
+) -> i32 {
+    match ffi_result(|| {
+        let engine = engine_mut(engine)?;
+        engine
+            .engine
+            .zero_rtt_rejected(conn_id, now_us)
+            .map(|value| if value { 1 } else { 0 })
+    }) {
+        Ok(value) => value,
+        Err(status) => status,
+    }
 }
 
 #[no_mangle]

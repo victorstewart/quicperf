@@ -1,7 +1,7 @@
 NAME xquic
 VERSION 1.9.2
 SYSTEM_LIBS ALLOW
-DEPENDS boringssl VERSION main
+DEPENDS boringssl VERSION main-beddb58-pic
 SOURCE GIT https://github.com/alibaba/xquic.git 64b8df3ac3f64111eb9e00be1a952ba5b07144bb
 BUILD_SYSTEM CMAKE
 CMAKE_DEFINE SSL_TYPE=boringssl

@@ -1,8 +1,8 @@
 NAME fizz
-VERSION main-02fb0b5-quicperf7
+VERSION main-44ca082-quicperf8
 SYSTEM_LIBS ALLOW
 DEPENDS boost VERSION 1.91.0-quicperf3
-DEPENDS folly VERSION main-acd1060-quicperf7
+DEPENDS folly VERSION main-5e1874-quicperf8
 DEPENDS fmt VERSION 12.1.0-quicperf2
 DEPENDS gflags VERSION 2.3.0-quicperf2
 DEPENDS glog VERSION 0.7.1-quicperf2
@@ -10,7 +10,7 @@ DEPENDS libsodium VERSION 1.0.22-quicperf2
 DEPENDS openssl VERSION 4.0.0
 DEPENDS zlib VERSION 1.3.2
 DEPENDS zstd VERSION 1.5.7-quicperf2
-SOURCE GIT https://github.com/facebookincubator/fizz.git 02fb0b5751c63ac74539ac14a6778f49ae27ead3
+SOURCE GIT https://github.com/facebookincubator/fizz.git 44ca082dc1ab56378470802d292a1d369d86ab3f
 BUILD_SYSTEM CMAKE
 CMAKE_CONFIGURE_SH <<'EOF'
 cmake -S "${DEPO_SOURCE_DIR}/fizz" -B "${DEPO_BUILD_DIR}" -G Ninja \
