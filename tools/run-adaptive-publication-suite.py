@@ -35,6 +35,7 @@ from quicperf_stats import (
 
 
 SIDECAR_EXCLUDED_BINARIES = {"tcpperf"}
+DOUBLE_CONNECTION_SCENARIOS = {"resumed_connect", "zero_rtt_reqresp"}
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,12 @@ class Target:
     @property
     def group(self) -> tuple[str, str, str, str]:
         return (self.binary, self.scenario, self.network, self.path_profile)
+
+
+def server_connections_for_target(target: Target) -> int:
+    if target.scenario in DOUBLE_CONNECTION_SCENARIOS:
+        return target.threads * 2
+    return target.threads
 
 
 @dataclass
@@ -294,7 +301,7 @@ def run_block(
             "QUICPERF_NETWORKS": target.network,
             "QUICPERF_PATH_PROFILES": target.path_profile,
             "QUICPERF_CLIENT_THREADS": str(target.threads),
-            "QUICPERF_SERVER_CONNECTIONS": str(target.threads),
+            "QUICPERF_SERVER_CONNECTIONS": str(server_connections_for_target(target)),
             "QUICPERF_REPEAT": str(cfg.block_size),
             "QUICPERF_WARMUP": str(warmup),
             "QUICPERF_RANDOMIZE_ORDER": "0",
