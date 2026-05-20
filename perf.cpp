@@ -156,7 +156,7 @@ static const char *benchmarkAdapterFeatures(void)
 #endif
 #ifdef QUICZIGPERF
   snprintf(features, sizeof(features),
-           "cc=cubic|bbr=unsupported|packet_api=quic-zig-connection|cpp_networkhub=on|udp_gso=%s|udp_gro=%s|runtime=none|pmtud=off|pacing=disabled|send_backpressure=stream_window|flow_window_clamp=64m|server_send_rr=on",
+           "cc=cubic|bbr=unsupported|packet_api=quic-zig-connection|cpp_networkhub=on|udp_gso=%s|udp_gro=%s|runtime=none|pmtud=off|pacing=library_default|send_backpressure=stream_window|flow_window=profile_request|server_send_rr=on",
            benchmarkCommonUdpGsoFeature(), benchmarkCommonUdpGroFeature());
   return features;
 #endif

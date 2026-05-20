@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <unordered_map>
@@ -46,6 +47,11 @@ private:
   bool requestParsed = false;
   bool uploadFinSent = false;
   uint32_t serverCompletedConnections = 0;
+  uint64_t datagramClientSent = 0;
+  uint64_t datagramClientReceived = 0;
+  uint64_t datagramClientDrainDeadlineUs = 0;
+  std::vector<uint8_t> datagramClientSeen;
+  std::array<uint8_t, benchmarkAppChunkSize> datagramScratch = {};
 
   enum class GenericPhase : uint8_t {
     sendRequest,
@@ -88,6 +94,11 @@ private:
     bool uploadFinSent = false;
     bool closed = false;
     bool complete = false;
+    uint64_t datagramReceived = 0;
+    uint64_t datagramEchoed = 0;
+    std::deque<uint64_t> datagramPendingEchoes;
+    std::vector<uint8_t> datagramSeen;
+    uint64_t datagramDrainDeadlineUs = 0;
     std::unordered_map<uint64_t, GenericStreamState> genericStreams;
     uint64_t genericCompletedStreams = 0;
   };
@@ -217,6 +228,13 @@ private:
       {
         return clientDone || closed;
       }
+      if (benchmarkScenario == BenchmarkScenario::datagram)
+      {
+        return (datagramClientReceived >= benchmarkScenarioOperations &&
+                datagramClientDrainDeadlineUs != 0 &&
+                timeNowUs() >= datagramClientDrainDeadlineUs) ||
+               closed;
+      }
       return bytesInFlight == 0 || closed;
     }
   }
@@ -259,6 +277,26 @@ private:
     {
       return;
     }
+    if (benchmarkScenario == BenchmarkScenario::datagram)
+    {
+      if (state->datagramEchoed < benchmarkScenarioOperations ||
+          !state->datagramPendingEchoes.empty())
+      {
+        return;
+      }
+      if (state->datagramDrainDeadlineUs == 0)
+      {
+        state->datagramDrainDeadlineUs = timeNowUs() + 100'000;
+        return;
+      }
+      if (timeNowUs() < state->datagramDrainDeadlineUs)
+      {
+        return;
+      }
+      state->complete = true;
+      ++serverCompletedConnections;
+      return;
+    }
     if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
     {
       if (state->genericCompletedStreams < benchmarkGenericStreamsPerConnection())
@@ -284,6 +322,208 @@ private:
     }
     state->complete = true;
     ++serverCompletedConnections;
+  }
+
+  size_t datagramPayloadSize(void) const
+  {
+    constexpr size_t sequenceBytes = sizeof(uint64_t);
+    const size_t maxPayload = benchmarkUdpPayloadSize > 16
+                                  ? benchmarkUdpPayloadSize - 16
+                                  : benchmarkUdpPayloadSize;
+    return std::min<size_t>(
+        std::max<size_t>(sequenceBytes, benchmarkScenarioMessageBytes),
+        std::min<size_t>(benchmarkAppChunkSize, maxPayload));
+  }
+
+  static void encodeDatagramSequence(uint64_t sequence, uint8_t *out)
+  {
+    uint64_t swapped = bswap_64(sequence);
+    memcpy(out, &swapped, sizeof(swapped));
+  }
+
+  static uint64_t decodeDatagramSequence(const uint8_t *data, size_t length)
+  {
+    if (length < sizeof(uint64_t))
+    {
+      return std::numeric_limits<uint64_t>::max();
+    }
+    uint64_t swapped = 0;
+    memcpy(&swapped, data, sizeof(swapped));
+    return bswap_64(swapped);
+  }
+
+  void fillDatagramPayload(uint64_t sequence)
+  {
+    const size_t payloadSize = datagramPayloadSize();
+    memcpy(datagramScratch.data(), networkHub->junk, payloadSize);
+    encodeDatagramSequence(sequence, datagramScratch.data());
+  }
+
+  static bool markDatagramSeen(std::vector<uint8_t>& seen, uint64_t sequence)
+  {
+    if (sequence >= benchmarkScenarioOperations)
+    {
+      return false;
+    }
+    const size_t index = static_cast<size_t>(sequence >> 3);
+    const uint8_t mask = static_cast<uint8_t>(1U << (sequence & 7U));
+    if (seen.size() < ((benchmarkScenarioOperations + 7U) >> 3))
+    {
+      seen.assign(static_cast<size_t>((benchmarkScenarioOperations + 7U) >> 3), 0);
+    }
+    if ((seen[index] & mask) != 0)
+    {
+      return false;
+    }
+    seen[index] |= mask;
+    return true;
+  }
+
+  bool sendClientDatagrams(void)
+  {
+    if constexpr (mode & Mode::client)
+    {
+      if (benchmarkScenario != BenchmarkScenario::datagram ||
+          conn == nullptr ||
+          !connected ||
+          closed ||
+          datagramClientReceived >= benchmarkScenarioOperations)
+      {
+        return false;
+      }
+
+      const uint64_t maxInFlight = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
+      const size_t payloadSize = datagramPayloadSize();
+      bool progressed = false;
+      while (datagramClientReceived < benchmarkScenarioOperations &&
+             datagramClientSent < benchmarkScenarioOperations &&
+             datagramClientSent - datagramClientReceived < maxInFlight)
+      {
+        fillDatagramPayload(datagramClientSent);
+        ssize_t written = quic_datagram_write(
+            conn,
+            0,
+            datagramScratch.data(),
+            payloadSize,
+            0);
+        if (written == tquicErrDone)
+        {
+          break;
+        }
+        if (written <= 0)
+        {
+          break;
+        }
+        ++datagramClientSent;
+        progressed = true;
+      }
+      return progressed;
+    }
+    return false;
+  }
+
+  bool flushServerDatagramEchoes(ServerStreamState *state)
+  {
+    if constexpr (mode & Mode::server)
+    {
+      if (benchmarkScenario != BenchmarkScenario::datagram ||
+          state == nullptr ||
+          state->conn == nullptr)
+      {
+        return false;
+      }
+      const size_t payloadSize = datagramPayloadSize();
+      bool progressed = false;
+      while (!state->datagramPendingEchoes.empty())
+      {
+        fillDatagramPayload(state->datagramPendingEchoes.front());
+        ssize_t written = quic_datagram_write(
+            state->conn,
+            0,
+            datagramScratch.data(),
+            payloadSize,
+            0);
+        if (written == tquicErrDone)
+        {
+          break;
+        }
+        if (written <= 0)
+        {
+          break;
+        }
+        state->datagramPendingEchoes.pop_front();
+        ++state->datagramEchoed;
+        progressed = true;
+      }
+      markServerStateComplete(state);
+      return progressed;
+    }
+    return false;
+  }
+
+  bool flushServerDatagramEchoes(void)
+  {
+    if constexpr (mode & Mode::server)
+    {
+      if (benchmarkScenario != BenchmarkScenario::datagram)
+      {
+        return false;
+      }
+      bool progressed = false;
+      for (auto& state : serverStates)
+      {
+        progressed = flushServerDatagramEchoes(state.get()) || progressed;
+      }
+      return progressed;
+    }
+    return false;
+  }
+
+  void readDatagrams(quic_conn_t *connection)
+  {
+    std::array<uint8_t, benchmarkAppChunkSize> buffer = {};
+    while (true)
+    {
+      ssize_t read = quic_datagram_read(connection, buffer.data(), buffer.size());
+      if (read <= 0)
+      {
+        break;
+      }
+      if constexpr (mode & Mode::server)
+      {
+        auto state = serverStateFor(connection);
+        const uint64_t sequence = decodeDatagramSequence(buffer.data(), static_cast<size_t>(read));
+        if (markDatagramSeen(state->datagramSeen, sequence))
+        {
+          ++state->datagramReceived;
+          state->datagramPendingEchoes.push_back(sequence);
+        }
+        flushServerDatagramEchoes(state);
+      }
+      else
+      {
+        const uint64_t sequence = decodeDatagramSequence(buffer.data(), static_cast<size_t>(read));
+        if (markDatagramSeen(datagramClientSeen, sequence))
+        {
+          ++datagramClientReceived;
+        }
+        if (datagramClientReceived >= benchmarkScenarioOperations &&
+            datagramClientDrainDeadlineUs == 0)
+        {
+          datagramClientDrainDeadlineUs = timeNowUs() + 100'000;
+        }
+      }
+    }
+    if constexpr (mode & Mode::client)
+    {
+      sendClientDatagrams();
+    }
+  }
+
+  static void onDatagramReadable(void *context, quic_conn_t *connection)
+  {
+    auto self = static_cast<Tquic<mode> *>(context);
+    self->readDatagrams(connection);
   }
 
   static void encodeU64(uint64_t value, std::array<uint8_t, sizeof(uint64_t)>& out)
@@ -507,7 +747,7 @@ private:
       self->resumedObserved = quic_conn_is_resumed(connection);
       const uint8_t *reason = nullptr;
       size_t reasonLen = 0;
-      if (quic_conn_early_data_reason(connection, &reason, &reasonLen) == 0 &&
+      if (quic_conn_early_data_reason_string(connection, &reason, &reasonLen) == 0 &&
           reason != nullptr && reasonLen > 0 &&
           (reasonLen != strlen("accepted") || memcmp(reason, "accepted", reasonLen) != 0))
       {
@@ -1261,6 +1501,8 @@ private:
     quic_config_set_recv_udp_payload_size(config, benchmarkUdpPayloadSize);
     enable_dplpmtud(config, false);
     quic_config_set_send_udp_payload_size(config, benchmarkUdpPayloadSize);
+    quic_config_set_max_connection_window(config, benchmarkConnectionWindow);
+    quic_config_set_max_stream_window(config, benchmarkStreamWindow);
     quic_config_set_initial_max_data(config, benchmarkConnectionWindow);
     quic_config_set_initial_max_stream_data_bidi_local(config, benchmarkStreamWindow);
     quic_config_set_initial_max_stream_data_bidi_remote(config, benchmarkStreamWindow);
@@ -1278,10 +1520,11 @@ private:
       quic_config_set_initial_congestion_window(config, 32);
     }
     quic_config_enable_pacing(config, true);
-    quic_config_set_max_connection_window(config, benchmarkConnectionWindow);
-    quic_config_set_max_stream_window(config, benchmarkStreamWindow);
     quic_config_set_max_concurrent_conns(config, benchmarkServerTargetConnections);
     quic_config_set_send_batch_size(config, benchmarkUdpBatchSize);
+    quic_config_set_max_datagram_frame_size(config, benchmarkUdpPayloadSize);
+    quic_config_set_max_datagram_send_queue_size(config, benchmarkDatagramQueueSlots);
+    quic_config_set_max_datagram_recv_queue_size(config, benchmarkDatagramQueueSlots);
 
     const char *protos[] = {"perf"};
     sslCtx = SSL_CTX_new(TLS_method());
@@ -1350,6 +1593,8 @@ private:
       }
       quic_endpoint_process_connections(endpoint);
 
+      const bool sentDatagrams = sendClientDatagrams();
+      const bool flushedDatagrams = flushServerDatagramEchoes();
       uint64_t timeoutMs = quic_endpoint_timeout(endpoint);
       if (timeoutMs == 0)
       {
@@ -1360,6 +1605,21 @@ private:
       if (timeoutMs != std::numeric_limits<uint64_t>::max())
       {
         timeoutUs = std::min<uint64_t>(timeoutMs * 1000, 100'000);
+      }
+      if (sentDatagrams || flushedDatagrams)
+      {
+        timeoutUs = 0;
+      }
+      if constexpr (mode & Mode::client)
+      {
+        if (benchmarkScenario == BenchmarkScenario::datagram &&
+            datagramClientDrainDeadlineUs != 0)
+        {
+          const uint64_t nowUs = timeNowUs();
+          timeoutUs = datagramClientDrainDeadlineUs > nowUs
+                          ? std::min<int64_t>(timeoutUs, static_cast<int64_t>(datagramClientDrainDeadlineUs - nowUs))
+                          : 0;
+        }
       }
 
       bool timedout = networkHub->recvmsgWithTimeout(timeoutUs, [&](UDPContext *msg) -> void {
@@ -1402,6 +1662,9 @@ public:
         .on_stream_writable = onStreamWritable,
         .on_stream_closed = onStreamClosed,
         .on_new_token = nullptr,
+        .on_datagram_readable = onDatagramReadable,
+        .on_datagram_lost = nullptr,
+        .on_datagram_acked = nullptr,
     };
     static quic_packet_send_methods_t sendMethods = {
         .on_packets_send = sendPackets,
@@ -1495,6 +1758,16 @@ public:
           writeClientGenericStream(item.second, conn, item.first);
         }
         advance();
+        return;
+      }
+      if (benchmarkScenario == BenchmarkScenario::datagram)
+      {
+        datagramClientSent = 0;
+        datagramClientReceived = 0;
+        datagramClientDrainDeadlineUs = 0;
+        datagramClientSeen.assign(static_cast<size_t>((benchmarkScenarioOperations + 7U) >> 3), 0);
+        advance();
+        benchmarkRecordDatagramClientCounters(datagramClientSent, datagramClientReceived);
         return;
       }
       bytesInFlight = static_cast<int64_t>(nBytes);

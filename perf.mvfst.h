@@ -87,6 +87,7 @@ private:
   folly::SocketAddress localAddress;
   quic::QuicAsyncUDPSocket::ReadCallback *readCallback = nullptr;
   quic::QuicAsyncUDPSocket::WriteCallback *writeCallback = nullptr;
+  MultiUDPContext *pendingWriteBatch = nullptr;
   bool readPaused = true;
 
   static quic::Expected<void, quic::QuicError> ok(void)
@@ -146,6 +147,25 @@ private:
     networkHub->flush();
     networkHub->drainSendCompletions();
     return networkHub->sendPool.get();
+  }
+
+  void queuePendingWriteBatch(void)
+  {
+    if (pendingWriteBatch == nullptr)
+    {
+      return;
+    }
+    MultiUDPContext *packets = pendingWriteBatch;
+    pendingWriteBatch = nullptr;
+    if (packets->count > 0)
+    {
+      networkHub->sendBatch(packets);
+    }
+    else
+    {
+      packets->reset();
+      networkHub->sendPool.relinquish(packets);
+    }
   }
 
 public:
@@ -215,23 +235,29 @@ public:
 
   ssize_t write(const folly::SocketAddress& address, const struct iovec *vec, size_t iovecLen) override
   {
-    MultiUDPContext *packets = takeSendPool();
-    if (packets == nullptr)
+    if (pendingWriteBatch == nullptr)
+    {
+      pendingWriteBatch = takeSendPool();
+    }
+    if (pendingWriteBatch == nullptr)
     {
       errno = EAGAIN;
       return -1;
     }
 
-    ssize_t written = appendPacket(packets, address, vec, iovecLen);
+    ssize_t written = appendPacket(pendingWriteBatch, address, vec, iovecLen);
     if (written >= 0)
     {
-      networkHub->sendBatch(packets);
-      networkHub->flush();
+      if (pendingWriteBatch->isFull())
+      {
+        queuePendingWriteBatch();
+      }
     }
     else
     {
-      packets->reset();
-      networkHub->sendPool.relinquish(packets);
+      pendingWriteBatch->reset();
+      networkHub->sendPool.relinquish(pendingWriteBatch);
+      pendingWriteBatch = nullptr;
     }
     return written;
   }
@@ -239,6 +265,7 @@ public:
   int writem(quic::AddressRange addrs, iovec *iov,
              size_t *numIovecsInBuffer, size_t count) override
   {
+    queuePendingWriteBatch();
     MultiUDPContext *packets = nullptr;
     size_t iovOffset = 0;
     int sent = 0;
@@ -287,6 +314,12 @@ public:
       return -1;
     }
     return sent;
+  }
+
+  void flushPendingWrites(void)
+  {
+    queuePendingWriteBatch();
+    networkHub->flush();
   }
 
   ssize_t writeGSO(const folly::SocketAddress& address, const struct iovec *vec,
@@ -459,14 +492,11 @@ public:
   void setSocket(std::shared_ptr<quic::QuicSocket> value)
   {
     socket = std::move(value);
-    if (benchmarkScenario == BenchmarkScenario::datagram)
+    auto result = socket->setDatagramCallback(this);
+    if (result.hasError())
     {
-      auto result = socket->setDatagramCallback(this);
-      if (result.hasError())
-      {
-        fprintf(stderr, "mvfst datagram callback setup failed\n");
-        connectionError = true;
-      }
+      fprintf(stderr, "mvfst datagram callback setup failed\n");
+      connectionError = true;
     }
   }
 
@@ -618,6 +648,7 @@ private:
   std::shared_ptr<fizz::server::FizzServerContext> serverContext;
   std::shared_ptr<quic::FizzClientQuicHandshakeContext> clientContext;
   MvfstEarlyDataAppParams earlyDataAppParams;
+  MvfstNetworkSocket<mode> *clientNetworkSocket = nullptr;
   quic::StreamId stream = UINT64_MAX;
   alignas(64) std::array<uint8_t, benchmarkAppChunkSize> buffer = {};
   bool importedResumption = false;
@@ -655,6 +686,7 @@ private:
   struct ServerConn {
     folly::SocketAddress peer;
     std::unique_ptr<MvfstHandler> handler;
+    MvfstNetworkSocket<mode> *networkSocket = nullptr;
     std::unique_ptr<quic::DefaultConnectionIdAlgo> connIdAlgo;
     std::shared_ptr<quic::QuicServerTransport> transport;
     std::vector<GenericServerStream> genericStreams;
@@ -738,14 +770,9 @@ private:
     settings.canIgnorePathMTU = true;
     settings.maxBatchSize = benchmarkUdpBatchSize;
     settings.writeConnectionDataPacketsLimit = benchmarkUdpBatchSize;
-    if (benchmarkScenario == BenchmarkScenario::datagram)
-    {
-      settings.datagramConfig.enabled = true;
-      settings.datagramConfig.readBufSize = static_cast<uint32_t>(
-          std::max<uint64_t>(benchmarkScenarioStreamsInFlight * 2ULL, 64ULL));
-      settings.datagramConfig.writeBufSize = static_cast<uint32_t>(
-          std::max<uint64_t>(benchmarkScenarioStreamsInFlight * 2ULL, 64ULL));
-    }
+    settings.datagramConfig.enabled = true;
+    settings.datagramConfig.readBufSize = benchmarkDatagramQueueSlots;
+    settings.datagramConfig.writeBufSize = benchmarkDatagramQueueSlots;
     std::array<uint8_t, quic::kStatelessResetTokenSecretLength> resetSecret = {};
     for (size_t i = 0; i < resetSecret.size(); ++i)
     {
@@ -761,13 +788,30 @@ private:
 
   void driveEvents(void)
   {
+    flushPendingSocketWrites();
     for (int i = 0; i < 4; ++i)
     {
       eventBase.loopOnce(EVLOOP_NONBLOCK);
     }
+    flushPendingSocketWrites();
     networkHub->flush();
     networkHub->drainSendCompletions();
     failOnClientConnectionError("driveEvents");
+  }
+
+  void flushPendingSocketWrites(void)
+  {
+    if (clientNetworkSocket != nullptr)
+    {
+      clientNetworkSocket->flushPendingWrites();
+    }
+    for (auto& owned : serverConns)
+    {
+      if (owned->networkSocket != nullptr)
+      {
+        owned->networkSocket->flushPendingWrites();
+      }
+    }
   }
 
   void failOnClientConnectionError(const char *where) const
@@ -901,6 +945,7 @@ private:
     owned->connIdAlgo = std::make_unique<quic::DefaultConnectionIdAlgo>();
 
     auto socket = std::make_unique<MvfstNetworkSocket<mode>>(networkHub, quicEventBase);
+    owned->networkSocket = socket.get();
     owned->transport = std::make_shared<quic::QuicServerTransport>(
         quicEventBase,
         std::move(socket),
@@ -1590,6 +1635,7 @@ private:
   void startClientConnection(struct sockaddr *address)
   {
     auto socket = std::make_unique<MvfstNetworkSocket<mode>>(networkHub, quicEventBase);
+    clientNetworkSocket = socket.get();
     clientHandler = std::make_unique<MvfstHandler>();
     client = quic::QuicClientTransport::newClient(
         quicEventBase,

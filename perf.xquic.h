@@ -1748,10 +1748,7 @@ private:
     settings.init_recv_window = static_cast<uint32_t>(benchmarkConnectionWindow);
     settings.max_streams_bidi = benchmarkMaxBidiStreams;
     settings.max_streams_uni = benchmarkMaxUniStreams;
-    if (benchmarkScenario == BenchmarkScenario::datagram)
-    {
-      settings.max_datagram_frame_size = benchmarkUdpPayloadSize;
-    }
+    settings.max_datagram_frame_size = benchmarkUdpPayloadSize;
     return settings;
   }
 

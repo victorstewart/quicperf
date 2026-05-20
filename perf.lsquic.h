@@ -1360,10 +1360,7 @@ public:
     settings.es_init_max_stream_data_uni = static_cast<unsigned>(benchmarkStreamWindow);
     settings.es_init_max_streams_bidi = static_cast<unsigned>(benchmarkMaxBidiStreams);
     settings.es_init_max_streams_uni = static_cast<unsigned>(benchmarkMaxUniStreams);
-    if (benchmarkScenario == BenchmarkScenario::datagram)
-    {
-      settings.es_datagrams = 1;
-    }
+    settings.es_datagrams = 1;
 
     memset(&streamConfig, 0, sizeof(streamConfig));
     streamConfig.on_new_conn = connectionOpen;

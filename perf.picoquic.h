@@ -84,7 +84,7 @@ static inline const char *benchmarkPicoquicAdapterFeatures(void)
 {
   static thread_local char features[256];
   const bool gsoRequested = benchmarkUdpGsoEnabled();
-  const bool nativeGso = benchmarkPicoquicPacketTrainMode && gsoRequested && !benchmarkIsLossRecovery();
+  const bool nativeGso = benchmarkPicoquicPacketTrainMode && gsoRequested;
   const char *udpGso = "off";
   if (nativeGso)
   {
@@ -1327,6 +1327,13 @@ private:
       }
       if constexpr (mode & Mode::iouring)
       {
+        if constexpr (mode & Mode::server)
+        {
+          if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario) && perfComplete())
+          {
+            usTil = 0;
+          }
+        }
         if (benchmarkIsZeroRttReqResp())
         {
           usTil = std::min<int64_t>(usTil, 1000);
@@ -1419,9 +1426,7 @@ public:
   {
     // printf("picoquic %s: instanceSetup\n", modeToString(mode));
 
-    // Loss rows keep picoquic packetized so the shared impairment layer can
-    // drop deterministic QUIC packets, then NetworkHub re-coalesces survivors.
-    useUdpGso = benchmarkPicoquicPacketTrainMode && benchmarkUdpGsoEnabled() && !benchmarkIsLossRecovery();
+    useUdpGso = benchmarkPicoquicPacketTrainMode && benchmarkUdpGsoEnabled();
 
     this->localPort = localPort;
     networkHub = new NetworkHub<mode>(localPort);

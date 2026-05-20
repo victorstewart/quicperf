@@ -1401,8 +1401,8 @@ public:
     quiche_config_set_max_connection_window(config, benchmarkConnectionWindow);
     quiche_config_set_max_stream_window(config, benchmarkStreamWindow);
     quiche_config_enable_dgram(config, true,
-                               std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight) * 1024,
-                               std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight) * 1024);
+                               benchmarkDatagramQueueBytes,
+                               benchmarkDatagramQueueBytes);
     quiche_config_enable_early_data(config);
     if (quiche_config_set_ticket_key(config, ticketKey.data(), ticketKey.size()) != 0)
     {

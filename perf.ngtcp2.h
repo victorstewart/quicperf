@@ -1057,10 +1057,7 @@ private:
     params.initial_max_data = benchmarkConnectionWindow;
     params.max_idle_timeout = benchmarkIdleTimeoutMs * NGTCP2_MILLISECONDS;
     params.max_udp_payload_size = benchmarkUdpPayloadSize;
-    if (benchmarkScenario == BenchmarkScenario::datagram)
-    {
-      params.max_datagram_frame_size = benchmarkUdpPayloadSize;
-    }
+    params.max_datagram_frame_size = benchmarkUdpPayloadSize;
     params.ack_delay_exponent = benchmarkAckDelayExponent;
     params.max_ack_delay = benchmarkMaxAckDelayMs * NGTCP2_MILLISECONDS;
     params.original_dcid = hd.dcid;
@@ -1137,10 +1134,7 @@ private:
     params.initial_max_data = benchmarkConnectionWindow;
     params.max_idle_timeout = benchmarkIdleTimeoutMs * NGTCP2_MILLISECONDS;
     params.max_udp_payload_size = benchmarkUdpPayloadSize;
-    if (benchmarkScenario == BenchmarkScenario::datagram)
-    {
-      params.max_datagram_frame_size = benchmarkUdpPayloadSize;
-    }
+    params.max_datagram_frame_size = benchmarkUdpPayloadSize;
     params.ack_delay_exponent = benchmarkAckDelayExponent;
     params.max_ack_delay = benchmarkMaxAckDelayMs * NGTCP2_MILLISECONDS;
 

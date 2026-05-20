@@ -2101,11 +2101,6 @@ public:
     config.use_bbr = !benchmarkCongestionProfileUsesCubic();
     config.connection_window = benchmarkConnectionWindow;
     config.stream_window = benchmarkStreamWindow;
-    if constexpr (Abi::is_zig)
-    {
-      config.connection_window = std::min<uint64_t>(benchmarkConnectionWindow, benchmarkDefaultConnectionWindow);
-      config.stream_window = std::min<uint64_t>(benchmarkStreamWindow, benchmarkDefaultStreamWindow);
-    }
     config.max_bidi_streams = benchmarkMaxBidiStreams;
     config.max_uni_streams = benchmarkMaxUniStreams;
     config.idle_timeout_ms = benchmarkIdleTimeoutMs;
@@ -2113,7 +2108,6 @@ public:
     if constexpr (Abi::is_zig)
     {
       config.send_backlog_limit = config.stream_window;
-      config.disable_pacing = true;
     }
     config.now_us = nowUs();
     engine = Abi::engineNew(&config);

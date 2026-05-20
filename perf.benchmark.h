@@ -233,7 +233,7 @@ static inline bool benchmarkScenarioCloseCleanupProfileSupported(void)
 
 constexpr static bool benchmarkScenarioDatagramSupportedByAdapter(void)
 {
-#if defined(QUINNPERF) || defined(NOQPERF) || defined(NEQOPERF) || defined(S2NPERF) || defined(QUICZIGPERF) || defined(QUICHEPERF) || defined(PICOPERF) || defined(LSPERF) || defined(XQUICPERF) || defined(NGTCP2PERF) || defined(MVFSTPERF)
+#if defined(QUINNPERF) || defined(NOQPERF) || defined(NEQOPERF) || defined(S2NPERF) || defined(QUICZIGPERF) || defined(QUICHEPERF) || defined(PICOPERF) || defined(LSPERF) || defined(TQUICPERF) || defined(XQUICPERF) || defined(NGTCP2PERF) || defined(MVFSTPERF)
   return true;
 #else
   return false;
@@ -295,6 +295,8 @@ constexpr static uint64_t benchmarkMaxAckDelayUs = benchmarkMaxAckDelayMs * 1000
 constexpr static uint64_t benchmarkAckDelayExponent = 3;
 constexpr static uint32_t benchmarkUdpPayloadSize = 1500 - 40 - 8;
 constexpr static uint32_t benchmarkUdpBatchSize = 150;
+constexpr static uint32_t benchmarkDatagramQueueSlots = 2048;
+constexpr static uint32_t benchmarkDatagramQueueBytes = 1024 * 1024;
 constexpr static uint32_t benchmarkAppChunkSize = 256 * 1024;
 constexpr static uint32_t benchmarkTcpTlsBufferSize = benchmarkAppChunkSize;
 static inline const char *benchmarkBuildProfile = "native-lto";
