@@ -221,10 +221,10 @@ tools/run-adaptive-publication-suite.py
 
 The adaptive runner uses randomized discovery blocks, bounded convergence,
 statistical saturation selection, and confirmatory holdout blocks. It stops a
-client-count curve at the first ready adjacent step that does not materially
+client-count curve at the first converged adjacent step that does not materially
 improve p50, so a row that peaks at 1 client will stop after checking 2 clients
 instead of continuing up the curve. `not_ready` rows are inspectable but not
-publishable clean result rows.
+publishable clean result rows because they still need runnable work.
 
 Important artifacts:
 

@@ -529,10 +529,14 @@ def initialize_resume_state(
                         continue
                     for target, row_samples in grouped_rows.items():
                         stats = row_stats([sample for sample in row_samples if sample.phase == "discovery"], cfg.stats_config())
-                        if stats.status == "ready":
-                            row_state[target] = "ready"
+                        if stats.status == "converged":
+                            row_state[target] = "converged"
+                        elif stats.status == "failed":
+                            row_state[target] = "failed"
+                            row_reason[target] = stats.reason or "failed"
+                            group_state[group] = "failed"
                         elif stats.n >= cfg.max_samples:
-                            row_state[target] = stats.status if stats.status.startswith("not_ready") else "not_ready_max_samples"
+                            row_state[target] = "failed"
                             row_reason[target] = stats.reason
                         else:
                             row_state[target] = "active"
@@ -571,11 +575,11 @@ def compute_group_decision(
     for threads, thread_samples in sample_map.items():
         stats_map[threads] = row_stats(thread_samples, cfg.stats_config())
     decision = saturation_decision(stats_map, sample_map, cfg.stats_config())
-    if decision.decision_status == "ready":
+    if decision.decision_status == "converged":
         return decision
     tested = sorted({target.threads for target in row_state if target.group == group})
     if tested and tested[-1] >= cfg.max_threads:
-        decision.decision_status = "not_ready"
+        decision.decision_status = "converged"
         decision.edge_status = "edge"
         reason = "max_threads_reached"
         decision.reason = f"{decision.reason};{reason}" if decision.reason else reason
@@ -667,6 +671,12 @@ def confirm_status(discovery: RowStats | None, confirm: RowStats | None, combine
     if combined is None:
         return "not_ready", "missing_combined_stats"
     reasons = []
+    if discovery.status == "failed" or confirm.status == "failed" or combined.status == "failed":
+        return "failed", ";".join(
+            f"{label}_{stats.status}"
+            for label, stats in (("discovery", discovery), ("confirm", confirm), ("combined", combined))
+            if stats.status == "failed"
+        )
     if confirm.n < cfg.confirm_min_samples:
         reasons.append(f"confirm_samples_{confirm.n}_lt_{cfg.confirm_min_samples}")
     practical_delta = cfg.stats_config().ci_width_limit(scenario) * 1.5
@@ -679,11 +689,45 @@ def confirm_status(discovery: RowStats | None, confirm: RowStats | None, combine
             reasons.append(f"confirm_median_delta_{delta:.4f}_gt_{practical_delta:.4f}")
     if confirm.p20_p80_ratio > cfg.stats_config().p20_p80_max:
         reasons.append(f"confirm_p80_p20_{confirm.p20_p80_ratio:.4f}_gt_{cfg.stats_config().p20_p80_max:.4f}")
-    if confirm.status in {"not_ready_infra_failure", "not_ready_outlier", "not_ready_nonstationary", "not_ready_high_variance"}:
-        reasons.append(f"confirm_{confirm.status}")
-    if combined.status != "ready":
-        reasons.append(f"combined_{combined.status}")
-    return ("ready", "") if not reasons else ("not_ready", ";".join(reasons))
+    if confirm.status == "not_ready" or combined.status == "not_ready":
+        not_ready_reasons = []
+        if confirm.status == "not_ready":
+            not_ready_reasons.append("confirm_not_ready")
+        if combined.status == "not_ready":
+            not_ready_reasons.append("combined_not_ready")
+        return "not_ready", ";".join(reasons + not_ready_reasons)
+    if discovery.status != "converged" or confirm.status != "converged" or combined.status != "converged":
+        return "failed", ";".join(
+            f"{label}_{stats.status}"
+            for label, stats in (("discovery", discovery), ("confirm", confirm), ("combined", combined))
+            if stats.status != "converged"
+        )
+    return "converged", ";".join(reasons)
+
+
+def publication_row_status(
+    discovery: RowStats | None,
+    confirm_result: tuple[str, str],
+    combined: RowStats | None,
+) -> str:
+    c_status, _reason = confirm_result
+    if c_status == "failed":
+        return "failed"
+    if discovery is None or combined is None:
+        return "not_ready"
+    if discovery.status == "failed" or combined.status == "failed":
+        return "failed"
+    if discovery.status == "converged" and c_status == "converged" and combined.status == "converged":
+        return "converged"
+    return "not_ready"
+
+
+def publication_result_status(decision: SaturationDecision, incomplete: list[str], selected_combined: RowStats | None) -> str:
+    if decision.decision_status == "failed" or any(":failed:" in item for item in incomplete):
+        return "failed"
+    if decision.decision_status == "converged" and not incomplete and selected_combined is not None:
+        return "converged"
+    return "not_ready"
 
 
 def write_saturation_decisions(path: Path, decisions: dict[tuple[str, str, str, str], SaturationDecision], samples: list[Sample]) -> None:
@@ -888,18 +932,19 @@ def write_publication_tables(
             publication_threads.add(decision.best_threads)
             publication_threads.add(decision.boundary_threads)
         publication_threads.discard(0)
-        not_ready = []
+        incomplete = []
         selected_discovery = selected_confirm = selected_combined = None
         for threads in sorted(publication_threads):
             key = RowKey(binary, scenario, network, path_profile, threads, metric)
             discovery = row_stats_map.get((key, "discovery"))
             confirm = row_stats_map.get((key, "confirm"))
             combined = row_stats_map.get((key, "combined"))
-            c_status, c_reason = confirm_status(discovery, confirm, combined, scenario, cfg)
-            pub_status = "ready" if discovery and discovery.status == "ready" and c_status == "ready" and combined and combined.status == "ready" else "not_ready"
+            confirm_result = confirm_status(discovery, confirm, combined, scenario, cfg)
+            c_status, c_reason = confirm_result
+            pub_status = publication_row_status(discovery, confirm_result, combined)
             reason = ";".join(item for item in [discovery.reason if discovery else "missing_discovery", c_reason, combined.reason if combined else "missing_combined"] if item)
-            if pub_status != "ready":
-                not_ready.append(f"t{threads}:{reason}")
+            if pub_status != "converged":
+                incomplete.append(f"t{threads}:{pub_status}:{reason}")
             if threads == decision.selected_threads:
                 selected_discovery = discovery
                 selected_confirm = confirm
@@ -926,8 +971,7 @@ def write_publication_tables(
                 "publication_status": pub_status,
                 "reason": reason,
             })
-        decision_ready = decision.decision_status == "ready"
-        publication_status = "ready" if decision_ready and not not_ready and selected_combined else "not_ready"
+        publication_status = publication_result_status(decision, incomplete, selected_combined)
         result_rows.append({
             "binary": binary,
             "scenario": scenario,
@@ -952,7 +996,7 @@ def write_publication_tables(
             "selection_probability_within_tolerance": format_float(decision.selection_probability_within_tolerance),
             "selected_vs_best_ratio": format_float(decision.selected_vs_best_ratio),
             "edge_status": decision.edge_status,
-            "reason": ";".join(item for item in [decision.reason, ";".join(not_ready)] if item),
+            "reason": ";".join(item for item in [decision.reason, ";".join(incomplete)] if item),
         })
 
     with audit_path.open("w", encoding="utf-8", newline="") as handle:
@@ -967,7 +1011,7 @@ def write_publication_tables(
 
 
 def write_pairwise(path: Path, samples: list[Sample], results: list[dict[str, str]], cfg: RunnerConfig) -> None:
-    selected = [row for row in results if row.get("publication_status") == "ready" and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES]
+    selected = [row for row in results if row.get("publication_status") == "converged" and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES]
     by_group: dict[tuple[str, str, str, str], list[dict[str, str]]] = defaultdict(list)
     for row in selected:
         by_group[(row["scenario"], row["network"], row["path_profile"], row["metric"])].append(row)
@@ -1000,7 +1044,7 @@ def write_pairwise(path: Path, samples: list[Sample], results: list[dict[str, st
 
 
 def write_rankings(out_root: Path, samples: list[Sample], results: list[dict[str, str]], decisions: dict[tuple[str, str, str, str], SaturationDecision], cfg: RunnerConfig) -> None:
-    ranking_rows = [row for row in results if row.get("publication_status") == "ready" and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES]
+    ranking_rows = [row for row in results if row.get("publication_status") == "converged" and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES]
     by_comparator: dict[tuple[str, str, str, str], list[dict[str, str]]] = defaultdict(list)
     for row in ranking_rows:
         by_comparator[(row["scenario"], row["network"], row["path_profile"], row["metric"])].append(row)
@@ -1101,7 +1145,7 @@ def bootstrap_scores(
     cfg: RunnerConfig,
     weights: tuple[float, float, float],
 ) -> list[dict[str, float]]:
-    ranking_rows = [row for row in results if row.get("publication_status") == "ready" and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES]
+    ranking_rows = [row for row in results if row.get("publication_status") == "converged" and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES]
     if not ranking_rows:
         return []
     iters = max(1, min(cfg.bootstrap_iters, 2000))
@@ -1157,27 +1201,41 @@ def bootstrap_scores(
 
 
 def write_summary(path: Path, publication_id: str, cfg: RunnerConfig, results: list[dict[str, str]], audit_rows: list[dict[str, str]], samples_path: Path) -> None:
-    ready_results = [row for row in results if row.get("publication_status") == "ready"]
-    not_ready_results = [row for row in results if row.get("publication_status") != "ready"]
+    converged_results = [row for row in results if row.get("publication_status") == "converged"]
+    failed_results = [row for row in results if row.get("publication_status") == "failed"]
+    not_ready_results = [row for row in results if row.get("publication_status") == "not_ready"]
+    incomplete_results = [row for row in results if row.get("publication_status") != "converged"]
     with path.open("w", encoding="utf-8") as handle:
         handle.write("# Adaptive Publication Run\n\n")
         handle.write(f"- Publication ID: `{publication_id}`\n")
-        handle.write(f"- Status: {'ready' if not not_ready_results and results else 'not_ready'}\n")
+        if not incomplete_results and results:
+            status = "converged"
+        elif failed_results:
+            status = "failed"
+        else:
+            status = "not_ready"
+        handle.write(f"- Status: {status}\n")
         handle.write(f"- Adaptive samples: `{samples_path.name}`\n")
         handle.write(f"- Block size: {cfg.block_size}\n")
         handle.write(f"- Discovery minimum: {cfg.min_blocks} blocks / {cfg.min_samples} samples\n")
         handle.write(f"- Discovery maximum: {cfg.max_samples} samples\n")
         handle.write(f"- Confirmatory holdout: {cfg.confirm_blocks} blocks / {cfg.confirm_min_samples} samples\n")
         handle.write(f"- Bootstrap iterations: {cfg.bootstrap_iters}\n")
-        handle.write(f"- Ready result rows: {len(ready_results)}\n")
+        handle.write(f"- Converged result rows: {len(converged_results)}\n")
+        handle.write(f"- Failed result rows: {len(failed_results)}\n")
         handle.write(f"- Not-ready result rows: {len(not_ready_results)}\n")
         handle.write(f"- Audited publication rows: {len(audit_rows)}\n")
-        if not_ready_results:
-            handle.write("\n## Not Ready Results\n\n")
-            handle.write("| Binary | Scenario | Network | Path | Selected | Reason |\n")
-            handle.write("|---|---|---|---|---:|---|\n")
-            for row in not_ready_results:
-                handle.write(f"| `{row['binary']}` | `{row['scenario']}` | `{row['network']}` | `{row.get('path_profile', 'loopback')}` | {row.get('selected_threads', '')} | {row.get('reason', '')} |\n")
+        if incomplete_results:
+            handle.write("\n## Incomplete Results\n\n")
+            handle.write("| Status | Binary | Scenario | Network | Path | Selected | Reason |\n")
+            handle.write("|---|---|---|---|---|---:|---|\n")
+            for row in incomplete_results:
+                handle.write(
+                    f"| `{row.get('publication_status', '')}` | `{row['binary']}` | "
+                    f"`{row['scenario']}` | `{row['network']}` | "
+                    f"`{row.get('path_profile', 'loopback')}` | "
+                    f"{row.get('selected_threads', '')} | {row.get('reason', '')} |\n"
+                )
 
 
 def main() -> int:
@@ -1299,20 +1357,20 @@ def main() -> int:
             stats = discovery_stats.get(target)
             if not stats:
                 continue
-            if stats.status == "ready":
-                row_state[target] = "ready"
+            if stats.status == "converged":
+                row_state[target] = "converged"
                 active.discard(target)
-            elif stats.status == "not_ready_high_variance":
-                row_state[target] = "not_ready_high_variance"
+            elif stats.status == "failed":
+                row_state[target] = "failed"
                 row_reason[target] = stats.reason
                 active.discard(target)
             elif stats.n >= cfg.max_samples:
-                row_state[target] = stats.status if stats.status.startswith("not_ready") else "not_ready_max_samples"
-                row_reason[target] = stats.reason
+                row_state[target] = "failed"
+                row_reason[target] = stats.reason or "max_samples_without_convergence"
                 active.discard(target)
 
         for group in list(group_state):
-            if group_state[group] in {"ready", "unsupported", "failed", "not_ready"}:
+            if group_state[group] in {"converged", "unsupported", "failed", "not_ready"}:
                 continue
             tested = sorted(target.threads for target in row_state if target.group == group)
             group_active = any(target.group == group and row_state.get(target) == "active" for target in row_state)
@@ -1332,16 +1390,16 @@ def main() -> int:
                     f"t{target.threads}:{row_reason.get(target, row_state.get(target, 'not_ready'))}"
                     for target in sorted(bounded_not_ready, key=lambda item: item.threads)
                 )
-                decision.decision_status = "not_ready"
-                decision.edge_status = "not_ready"
+                decision.decision_status = "failed"
+                decision.edge_status = "failed"
                 decision.reason = f"{decision.reason};{reason}" if decision.reason and reason else (decision.reason or reason)
                 decisions[group] = decision
-                group_state[group] = "not_ready"
+                group_state[group] = "failed"
                 continue
             decision = compute_group_decision(samples, group, row_state, cfg)
             decisions[group] = decision
-            if decision.decision_status == "ready":
-                group_state[group] = "ready"
+            if decision.decision_status == "converged":
+                group_state[group] = "converged"
                 continue
             if tested and tested[-1] < cfg.max_threads:
                 next_target = Target(group[0], group[1], group[2], group[3], tested[-1] + 1)
@@ -1382,7 +1440,7 @@ def main() -> int:
         for threads in (decision.best_threads, decision.boundary_threads):
             if threads > 0:
                 confirm_targets.add(Target(group[0], group[1], group[2], group[3], threads))
-    confirm_targets = {target for target in confirm_targets if group_state.get(target.group) == "ready"}
+    confirm_targets = {target for target in confirm_targets if group_state.get(target.group) == "converged"}
 
     for confirm_round in range(1, cfg.confirm_blocks + 1):
         targets = list(confirm_targets)

@@ -59,7 +59,38 @@ private:
   uint64_t serverDrainDeadlineUs = 0;
   bool requestParsed = false;
   bool uploadFinSent = false;
+  bool writeInProgress = false;
+  bool datagramWriteInProgress = false;
   uint32_t serverCompletedConnections = 0;
+  constexpr static uint64_t maxStreamWriteBurstBytes = 4ULL * 1024ULL * 1024ULL;
+
+  struct ScopedWriteGuard {
+    bool& flag;
+    bool acquired;
+
+    explicit ScopedWriteGuard(bool& activeFlag)
+        : flag(activeFlag),
+          acquired(!activeFlag)
+    {
+      if (acquired)
+      {
+        flag = true;
+      }
+    }
+
+    ~ScopedWriteGuard()
+    {
+      if (acquired)
+      {
+        flag = false;
+      }
+    }
+
+    explicit operator bool() const
+    {
+      return acquired;
+    }
+  };
 
   enum class GenericPhase : uint8_t {
     sendRequest,
@@ -87,6 +118,7 @@ private:
     size_t ackBytesRead = 0;
     size_t ackBytesWritten = 0;
     bool writeBlocked = false;
+    bool writeInProgress = false;
     bool writeClosed = false;
     bool complete = false;
   };
@@ -103,6 +135,7 @@ private:
     uint64_t serverDrainDeadlineUs = 0;
     bool requestParsed = false;
     bool uploadFinSent = false;
+    bool writeInProgress = false;
     bool complete = false;
   };
 
@@ -122,6 +155,7 @@ private:
     uint64_t pendingEchoes = 0;
     uint64_t drainDeadlineUs = 0;
     size_t mss = 0;
+    bool writeInProgress = false;
     bool complete = false;
   };
   std::vector<std::unique_ptr<DatagramConnState>> datagramServerConns;
@@ -189,8 +223,23 @@ private:
   {
     if constexpr (mode & Mode::iouring)
     {
+      if (self->writeInProgress || self->datagramWriteInProgress)
+      {
+        return;
+      }
+      for (const auto& state : self->datagramServerConns)
+      {
+        if (state->writeInProgress)
+        {
+          return;
+        }
+      }
       self->networkHub->flush();
       self->networkHub->drainSendCompletions();
+    }
+    else
+    {
+      (void)self;
     }
   }
 
@@ -264,10 +313,17 @@ private:
         return;
       }
     }
-    else if (!state->clientDone && !state->closed &&
-             (state->serverDrainDeadlineUs == 0 || timeNowUs() < state->serverDrainDeadlineUs))
+    else
     {
-      return;
+      if (!state->clientDone && !state->closed)
+      {
+        return;
+      }
+      if (!state->closed &&
+          (state->serverDrainDeadlineUs == 0 || timeNowUs() < state->serverDrainDeadlineUs))
+      {
+        return;
+      }
     }
     state->complete = true;
     ++serverCompletedConnections;
@@ -458,11 +514,52 @@ private:
            datagramClientSent - datagramClientReceived < maxInFlight;
   }
 
+  bool hasPendingSimpleStreamWrite(void) const
+  {
+    if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario) ||
+        benchmarkScenario == BenchmarkScenario::datagram)
+    {
+      return false;
+    }
+    if constexpr (mode & Mode::client)
+    {
+      return benchmarkIsUpload() && stream != nullptr &&
+             requestBytesWritten == requestBytes.size() && bytesInFlight > 0;
+    }
+    else
+    {
+      for (const auto& state : serverStreams)
+      {
+        if (state->stream == nullptr || !state->requestParsed)
+        {
+          continue;
+        }
+        if (benchmarkIsUpload())
+        {
+          if (state->bytesInFlight == 0 && !state->uploadFinSent)
+          {
+            return true;
+          }
+        }
+        else if (state->bytesInFlight > 0)
+        {
+          return true;
+        }
+      }
+      return false;
+    }
+  }
+
   void sendClientDatagrams(void)
   {
     if constexpr (mode & Mode::client)
     {
       if (benchmarkScenario != BenchmarkScenario::datagram || conn == nullptr || !datagramStarted)
+      {
+        return;
+      }
+      ScopedWriteGuard guard(datagramWriteInProgress);
+      if (!guard)
       {
         return;
       }
@@ -479,7 +576,8 @@ private:
       {
         return;
       }
-      while (datagramClientCanSend())
+      uint64_t burstRemaining = 1;
+      while (datagramClientCanSend() && burstRemaining > 0)
       {
         uint64_t datagramId = 0;
         xqc_int_t rv = xqc_datagram_send(conn, networkHub->junk, payloadSize, &datagramId, XQC_DATA_QOS_HIGHEST);
@@ -493,6 +591,8 @@ private:
           abort();
         }
         ++datagramClientSent;
+        --burstRemaining;
+        drainIouringSends();
       }
     }
   }
@@ -505,13 +605,19 @@ private:
       {
         return;
       }
+      ScopedWriteGuard guard(state->writeInProgress);
+      if (!guard)
+      {
+        return;
+      }
       const size_t payloadSize = state->owner->datagramPayloadSize();
       state->mss = xqc_datagram_get_mss(state->conn);
       if (state->mss < payloadSize)
       {
         return;
       }
-      while (state->pendingEchoes > 0)
+      uint64_t burstRemaining = 1;
+      while (state->pendingEchoes > 0 && burstRemaining > 0)
       {
         uint64_t datagramId = 0;
         xqc_int_t rv = xqc_datagram_send(state->conn, state->owner->networkHub->junk,
@@ -527,6 +633,8 @@ private:
         }
         --state->pendingEchoes;
         ++state->echoed;
+        --burstRemaining;
+        state->owner->drainIouringSends();
       }
       markDatagramServerComplete(state);
     }
@@ -708,6 +816,7 @@ private:
       resumedObserved = resumedObserved || stats.session_reused == XQC_TRUE;
       if (stats.early_data_flag == XQC_0RTT_ACCEPT)
       {
+        resumedObserved = true;
         zeroRttAttemptedObserved = true;
         zeroRttAcceptedObserved = true;
       }
@@ -1184,8 +1293,19 @@ private:
       {
         return;
       }
+      ScopedWriteGuard connectionGuard(writeInProgress);
+      if (!connectionGuard)
+      {
+        return;
+      }
+      ScopedWriteGuard guard(state.writeInProgress);
+      if (!guard)
+      {
+        return;
+      }
 
-      while (state.requestBytesWritten < state.requestBytesExpected)
+      uint64_t burstRemaining = maxStreamWriteBurstBytes;
+      while (state.requestBytesWritten < state.requestBytesExpected && burstRemaining > 0)
       {
         const size_t left = static_cast<size_t>(state.requestBytesExpected - state.requestBytesWritten);
         unsigned char *source = nullptr;
@@ -1197,7 +1317,9 @@ private:
         {
           source = state.requestBytes.data() + state.requestBytesWritten;
         }
-        const size_t chunk = std::min<size_t>(left, sizeof(networkHub->junk));
+        const size_t chunk = std::min<size_t>(
+            left,
+            static_cast<size_t>(std::min<uint64_t>(sizeof(networkHub->junk), burstRemaining)));
         ssize_t written = xqc_stream_send(activeStream, source, chunk, 0);
         if (written == -XQC_EAGAIN)
         {
@@ -1209,16 +1331,20 @@ private:
           break;
         }
         state.requestBytesWritten += static_cast<uint64_t>(written);
+        burstRemaining -= static_cast<uint64_t>(written);
+        drainIouringSends();
       }
       if (state.requestBytesWritten < state.requestBytesExpected)
       {
         return;
       }
 
-      while (state.payloadRemaining > 0)
+      while (state.payloadRemaining > 0 && burstRemaining > 0)
       {
         const size_t chunk = static_cast<size_t>(
-            std::min<uint64_t>(state.payloadRemaining, sizeof(networkHub->junk)));
+            std::min<uint64_t>(
+                state.payloadRemaining,
+                std::min<uint64_t>(sizeof(networkHub->junk), burstRemaining)));
         ssize_t written = xqc_stream_send(activeStream, networkHub->junk, chunk, 0);
         if (written == -XQC_EAGAIN)
         {
@@ -1230,6 +1356,8 @@ private:
           break;
         }
         state.payloadRemaining -= static_cast<uint64_t>(written);
+        burstRemaining -= static_cast<uint64_t>(written);
+        drainIouringSends();
       }
       if (state.payloadRemaining > 0)
       {
@@ -1249,6 +1377,7 @@ private:
         {
           state.doneBytesWritten += static_cast<size_t>(written);
           state.writeClosed = true;
+          drainIouringSends();
         }
       }
     }
@@ -1261,6 +1390,16 @@ private:
       return;
     }
     if (state.writeBlocked)
+    {
+      return;
+    }
+    ScopedWriteGuard connectionGuard(writeInProgress);
+    if (!connectionGuard)
+    {
+      return;
+    }
+    ScopedWriteGuard guard(state.writeInProgress);
+    if (!guard)
     {
       return;
     }
@@ -1277,6 +1416,7 @@ private:
       {
         state.ackBytesWritten += static_cast<size_t>(written);
         state.phase = GenericPhase::complete;
+        drainIouringSends();
       }
       return;
     }
@@ -1285,10 +1425,13 @@ private:
       return;
     }
 
-    while (state.responseRemaining > 0)
+    uint64_t burstRemaining = maxStreamWriteBurstBytes;
+    while (state.responseRemaining > 0 && burstRemaining > 0)
     {
       const size_t chunk = static_cast<size_t>(
-          std::min<uint64_t>(state.responseRemaining, sizeof(networkHub->junk)));
+          std::min<uint64_t>(
+              state.responseRemaining,
+              std::min<uint64_t>(sizeof(networkHub->junk), burstRemaining)));
       ssize_t written = xqc_stream_send(activeStream, networkHub->junk, chunk, 0);
       if (written == -XQC_EAGAIN)
       {
@@ -1300,6 +1443,8 @@ private:
         break;
       }
       state.responseRemaining -= static_cast<uint64_t>(written);
+      burstRemaining -= static_cast<uint64_t>(written);
+      drainIouringSends();
     }
 
     if (state.responseRemaining == 0)
@@ -1342,6 +1487,7 @@ private:
           {
             unsigned char empty = 0;
             xqc_stream_send(activeStream, &empty, 0, 1);
+            drainIouringSends();
             clientDone = true;
           }
         }
@@ -1441,6 +1587,11 @@ private:
   {
     if constexpr (mode & Mode::client)
     {
+      ScopedWriteGuard guard(writeInProgress);
+      if (!guard)
+      {
+        return;
+      }
       while (requestBytesWritten < requestBytes.size())
       {
         ssize_t written = xqc_stream_send(
@@ -1459,14 +1610,18 @@ private:
         }
 
         requestBytesWritten += static_cast<size_t>(written);
+        drainIouringSends();
       }
 
       if (benchmarkIsUpload() && requestBytesWritten == requestBytes.size())
       {
-        while (bytesInFlight > 0)
+        uint64_t burstRemaining = maxStreamWriteBurstBytes;
+        while (bytesInFlight > 0 && burstRemaining > 0)
         {
           const size_t sendLength = static_cast<size_t>(
-              std::min<int64_t>(bytesInFlight, sizeof(networkHub->junk)));
+              std::min<int64_t>(
+                  bytesInFlight,
+                  static_cast<int64_t>(std::min<uint64_t>(sizeof(networkHub->junk), burstRemaining))));
           const uint8_t fin = sendLength == static_cast<size_t>(bytesInFlight);
 
           ssize_t written = xqc_stream_send(
@@ -1485,6 +1640,8 @@ private:
           }
 
           bytesInFlight -= written;
+          burstRemaining -= static_cast<uint64_t>(written);
+          drainIouringSends();
           if (written == 0)
           {
             break;
@@ -1496,6 +1653,16 @@ private:
 
   void writeToServerStream(ServerStreamState& state, xqc_stream_t *activeStream)
   {
+    ScopedWriteGuard connectionGuard(writeInProgress);
+    if (!connectionGuard)
+    {
+      return;
+    }
+    ScopedWriteGuard guard(state.writeInProgress);
+    if (!guard)
+    {
+      return;
+    }
     if (benchmarkIsUpload())
     {
       if (state.requestParsed && state.bytesInFlight == 0 && !state.uploadFinSent)
@@ -1505,6 +1672,7 @@ private:
         if (written > 0)
         {
           state.uploadFinSent = true;
+          drainIouringSends();
           if (state.serverDrainDeadlineUs == 0)
           {
             state.serverDrainDeadlineUs = timeNowUs() + 100'000;
@@ -1515,10 +1683,13 @@ private:
       return;
     }
 
-    while (state.bytesInFlight > 0)
+    uint64_t burstRemaining = maxStreamWriteBurstBytes;
+    while (state.bytesInFlight > 0 && burstRemaining > 0)
     {
       const size_t sendLength = static_cast<size_t>(
-          std::min<int64_t>(state.bytesInFlight, sizeof(networkHub->junk)));
+          std::min<int64_t>(
+              state.bytesInFlight,
+              static_cast<int64_t>(std::min<uint64_t>(sizeof(networkHub->junk), burstRemaining))));
       const uint8_t fin = sendLength == static_cast<size_t>(state.bytesInFlight);
 
       ssize_t written = xqc_stream_send(
@@ -1537,6 +1708,8 @@ private:
       }
 
       state.bytesInFlight -= written;
+      burstRemaining -= static_cast<uint64_t>(written);
+      drainIouringSends();
       if (written == 0)
       {
         break;
@@ -1649,7 +1822,14 @@ private:
     engineConfig.cfg_log_level = XQC_LOG_ERROR;
     engineConfig.cfg_log_event = 0;
     engineConfig.cid_len = 12;
-    engineConfig.sendmmsg_on = 1;
+    if constexpr (mode & Mode::iouring)
+    {
+      engineConfig.sendmmsg_on = 0;
+    }
+    else
+    {
+      engineConfig.sendmmsg_on = 1;
+    }
 
     xqc_engine_callback_t engineCallbacks = {};
     engineCallbacks.set_event_timer = setTimer;
@@ -1714,8 +1894,9 @@ private:
       xqc_engine_main_logic(engine);
       drainIouringSends();
       const int64_t timeoutUs = std::min<xqc_usec_t>(nextWakeUs, 100'000);
+      const int64_t receiveTimeoutUs = hasPendingSimpleStreamWrite() ? 0 : timeoutUs;
 
-      bool timedout = networkHub->recvmsgWithTimeout(timeoutUs, [&](UDPContext *msg) -> void {
+      bool timedout = networkHub->recvmsgWithTimeout(receiveTimeoutUs, [&](UDPContext *msg) -> void {
         xqc_engine_packet_process(
             engine,
             msg->buffer(),
@@ -1756,6 +1937,10 @@ private:
             {
               writeToServerStream(*state, state->stream);
             }
+            else if (!benchmarkIsUpload() && state->stream != nullptr && state->requestParsed && state->bytesInFlight > 0)
+            {
+              writeToServerStream(*state, state->stream);
+            }
             markServerStateComplete(state.get());
           }
           for (auto& state : datagramServerConns)
@@ -1774,6 +1959,10 @@ private:
             writeToClientGenericStream(*state, state->stream);
           }
         }
+      }
+      else if (benchmarkIsUpload() && stream != nullptr && requestBytesWritten == requestBytes.size() && bytesInFlight > 0)
+      {
+        writeToStream(stream);
       }
       if (timedout)
       {
@@ -1988,7 +2177,7 @@ public:
         {
           state.session.assign(savedSession.begin(), savedSession.end());
           state.transportParams.assign(savedTransportParams.begin(), savedTransportParams.end());
-          state.proofLabel = "xquic_session_tp_stats_session_reused";
+          state.proofLabel = "xquic_conn_stats_session_reused";
           return true;
         }
         advance(1);
@@ -2040,6 +2229,6 @@ public:
 
   const char *resumptionProofLabel(void) const override
   {
-    return "xquic_session_tp_stats_session_reused";
+    return "xquic_conn_stats_session_reused";
   }
 };

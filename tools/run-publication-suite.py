@@ -45,7 +45,7 @@ def copy_publication_results(publication_root: Path, combined_dir: Path) -> Path
                 "best_threads",
                 "best_p50",
                 "audited_rows",
-                "not_ready_rows",
+                "failed_rows",
                 "spread_low_pct",
                 "spread_high_pct",
                 "selected_p50_ci95_relative_width",
@@ -121,7 +121,7 @@ def main() -> int:
     warmup = env_value("QUICPERF_PUBLICATION_WARMUP", "2")
     bytes_per_sample = env_value("QUICPERF_PUBLICATION_TEST_BYTES", "1073741824")
     seed_base = int(env_value("QUICPERF_RANDOM_SEED", str(os.getpid())))
-    fail_on_not_ready = env_value("QUICPERF_PUBLICATION_FAIL_ON_NOT_READY", "1") == "1"
+    fail_on_unconverged = env_value("QUICPERF_PUBLICATION_FAIL_ON_UNCONVERGED", "1") == "1"
     source_sweeps = [Path(item) for item in split_words(env_value("QUICPERF_PUBLICATION_SOURCE_SWEEPS", ""))]
 
     common_env = os.environ.copy()
@@ -142,12 +142,12 @@ def main() -> int:
     common_env.setdefault("QUICPERF_TIMEOUT", "360s")
 
     sweep_dirs = []
-    ready = True
+    converged = True
     for source in source_sweeps:
         source_path = source if source.is_absolute() else root / source
         if not (source_path / "saturation-samples.tsv").exists():
             print(f"publication_source_sweep_missing path={source_path}")
-            ready = False
+            converged = False
             continue
         sweep_dirs.append(source_path)
         print(f"publication_source_sweep path={source_path}")
@@ -163,7 +163,7 @@ def main() -> int:
             completed = subprocess.run([str(root / "tools" / "run-saturation-sweep.py")], cwd=root, env=env, stdout=stdout, stderr=subprocess.STDOUT)
         if completed.returncode != 0:
             print(f"publication_sweep_failed index={index} returncode={completed.returncode}")
-            ready = False
+            converged = False
             continue
 
     completed_sweeps = [path for path in sweep_dirs if (path / "saturation-samples.tsv").exists()]
@@ -181,7 +181,7 @@ def main() -> int:
         print(combine.stdout, end="")
         if combine.returncode != 0:
             print(f"publication_combine_failed returncode={combine.returncode}")
-            ready = False
+            converged = False
 
     if completed_sweeps and (combined_dir / "saturation-samples.tsv").exists():
         repeat_count = int(repeat)
@@ -196,20 +196,20 @@ def main() -> int:
             "--max-middle-spread-ratio",
             env_value("QUICPERF_PUBLICATION_MAX_MIDDLE_SPREAD_RATIO", "2.00"),
         ]
-        if fail_on_not_ready:
-            audit_command.append("--fail-on-not-ready")
+        if fail_on_unconverged:
+            audit_command.append("--fail-on-unconverged")
         audit = subprocess.run(audit_command, cwd=root, env=common_env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         (publication_root / "combined.audit.stdout").write_text(audit.stdout, encoding="utf-8")
         print(audit.stdout, end="")
-        if audit.returncode != 0 or "status=not_ready" in audit.stdout:
-            ready = False
+        if audit.returncode != 0 or "status=failed" in audit.stdout:
+            converged = False
 
     results_path = copy_publication_results(publication_root, combined_dir)
     curve_path = copy_publication_curve(publication_root, combined_dir)
     summary_path = publication_root / "publication-summary.md"
     with summary_path.open("w", encoding="utf-8") as handle:
         handle.write("# Publication Suite\n\n")
-        handle.write(f"- Status: {'ready' if ready else 'not_ready'}\n")
+        handle.write(f"- Status: {'converged' if converged else 'failed'}\n")
         handle.write(f"- Sweeps requested: {sweep_count}\n")
         handle.write(f"- Sweeps completed: {len(completed_sweeps)}\n")
         handle.write(f"- Repeat: {repeat}\n")
@@ -219,8 +219,8 @@ def main() -> int:
         handle.write(f"- Result stability: `{results_path.name}`\n")
         handle.write(f"- Client-count curve: `{curve_path.name}`\n")
 
-    print(f"publication_suite out_dir={publication_root} status={'ready' if ready else 'not_ready'} results={results_path} curve={curve_path}")
-    return 1 if fail_on_not_ready and not ready else 0
+    print(f"publication_suite out_dir={publication_root} status={'converged' if converged else 'failed'} results={results_path} curve={curve_path}")
+    return 1 if fail_on_unconverged and not converged else 0
 
 
 if __name__ == "__main__":

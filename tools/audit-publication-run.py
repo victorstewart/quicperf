@@ -79,7 +79,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
     rows = []
     curve_rows = []
     result_rows = []
-    ready = True
+    converged = True
     for selected in read_rows(summary_path):
         binary = selected["binary"]
         scenario = selected["scenario"]
@@ -137,7 +137,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
                 "best_threads": selected.get("best_threads", ""),
                 "best_p50": selected.get("best_p50", ""),
                 "audited_rows": "0",
-                "not_ready_rows": "0",
+                "failed_rows": "0",
                 "spread_low_pct": "",
                 "spread_high_pct": "",
                 "selected_p50_ci95_relative_width": "",
@@ -218,7 +218,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
                 "best_threads": selected.get("best_threads", ""),
                 "boundary_threads": str(boundary_thread) if boundary_thread else "",
                 "boundary_status": selected.get("boundary_status", ""),
-                "publication_status": "ready" if not reasons else "not_ready",
+                "publication_status": "converged" if row_status in ("ok", "plateau") else "failed",
                 "reason": ";".join(reasons),
             })
 
@@ -247,13 +247,14 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
             values = raw_values(out_dir, metric) if out_dir else []
             values.sort()
 
-            reasons = []
+            failure_reasons = []
+            diagnostic_reasons = []
             if status not in ("ok", "plateau"):
-                reasons.append(f"selection_status_{status}")
+                failure_reasons.append(f"selection_status_{status}")
             if row_status not in ("ok", "plateau"):
-                reasons.append(f"row_status_{row_status}")
+                failure_reasons.append(f"row_status_{row_status}")
             if len(values) < args.min_samples:
-                reasons.append(f"samples_{len(values)}_lt_{args.min_samples}")
+                failure_reasons.append(f"samples_{len(values)}_lt_{args.min_samples}")
 
             p50 = quantile(values, 0.50)
             spread_low = quantile(values, args.spread_low_pct / 100.0)
@@ -264,13 +265,14 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
             minmax_spread = (values[-1] / values[0]) if values and values[0] > 0 else 0.0
 
             if p50 > 0 and ci_width > args.max_ci_relative_width:
-                reasons.append(f"p50_ci_width_{ci_width:.3f}_gt_{args.max_ci_relative_width:.3f}")
+                diagnostic_reasons.append(f"p50_ci_width_{ci_width:.3f}_gt_{args.max_ci_relative_width:.3f}")
             if middle_spread > args.max_middle_spread_ratio:
-                reasons.append(f"middle_spread_{middle_spread:.3f}_gt_{args.max_middle_spread_ratio:.3f}")
+                diagnostic_reasons.append(f"middle_spread_{middle_spread:.3f}_gt_{args.max_middle_spread_ratio:.3f}")
 
-            publication_status = "ready" if not reasons else "not_ready"
-            if reasons:
-                ready = False
+            reasons = failure_reasons + diagnostic_reasons
+            publication_status = "converged" if not failure_reasons else "failed"
+            if failure_reasons:
+                converged = False
 
             audit_row = {
                 "sweep": root.name,
@@ -304,17 +306,17 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
             result_audit_rows.append(audit_row)
 
         selected_audit = next((row for row in result_audit_rows if row["publication_role"] == "selected"), None)
-        not_ready_rows = [row for row in result_audit_rows if row["publication_status"] == "not_ready"]
+        failed_rows = [row for row in result_audit_rows if row["publication_status"] == "failed"]
         max_ci = max_metric_row(result_audit_rows, "p50_ci95_relative_width")
         max_middle = max_metric_row(result_audit_rows, "middle_spread_ratio")
-        result_ready = not not_ready_rows and status in ("ok", "plateau")
+        result_converged = not failed_rows and status in ("ok", "plateau")
         result_rows.append({
             "binary": binary,
             "scenario": scenario,
             "network": network,
             "path_profile": profile,
             "selection_status": status,
-            "publication_status": "ready" if result_ready else "not_ready",
+            "publication_status": "converged" if result_converged else "failed",
             "metric": metric,
             "selected_threads": threads,
             "selected_samples": selected.get("selected_samples", ""),
@@ -324,7 +326,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
             "best_threads": selected.get("best_threads", ""),
             "best_p50": selected.get("best_p50", ""),
             "audited_rows": str(len(result_audit_rows)),
-            "not_ready_rows": str(len(not_ready_rows)),
+            "failed_rows": str(len(failed_rows)),
             "spread_low_pct": selected_audit.get("spread_low_pct", "") if selected_audit else "",
             "spread_high_pct": selected_audit.get("spread_high_pct", "") if selected_audit else "",
             "selected_p50_ci95_relative_width": selected_audit.get("p50_ci95_relative_width", "") if selected_audit else "",
@@ -337,7 +339,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
             "max_audited_middle_spread_row_threads": max_middle.get("row_threads", "") if max_middle else "",
             "reason": ";".join(
                 f"{row['publication_role']}:t{row['row_threads']}:{row['reason']}"
-                for row in not_ready_rows
+                for row in failed_rows
                 if row.get("reason")
             ),
             })
@@ -427,7 +429,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
         "best_threads",
         "best_p50",
         "audited_rows",
-        "not_ready_rows",
+        "failed_rows",
         "spread_low_pct",
         "spread_high_pct",
         "selected_p50_ci95_relative_width",
@@ -445,23 +447,23 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
         writer.writeheader()
         writer.writerows(result_rows)
 
-    bad = [row for row in rows if row["publication_status"] == "not_ready"]
-    bad_results = [row for row in result_rows if row["publication_status"] == "not_ready"]
+    bad = [row for row in rows if row["publication_status"] == "failed"]
+    bad_results = [row for row in result_rows if row["publication_status"] == "failed"]
     summary_path = root / "publication-summary.md"
     with summary_path.open("w", encoding="utf-8") as handle:
         handle.write("# Publication Audit\n\n")
-        handle.write(f"- Status: {'ready' if ready else 'not_ready'}\n")
+        handle.write(f"- Status: {'converged' if converged else 'failed'}\n")
         handle.write(f"- Min samples: {args.min_samples}\n")
         handle.write(f"- Max p50 CI relative width: {args.max_ci_relative_width:.3f}\n")
         handle.write(f"- Middle spread band: p{args.spread_low_pct:.1f}/p{args.spread_high_pct:.1f}\n")
         handle.write(f"- Max middle spread ratio: {args.max_middle_spread_ratio:.3f}\n")
         handle.write(f"- Rows audited: {len(rows)}\n")
-        handle.write(f"- Rows not ready: {len(bad)}\n")
-        handle.write(f"- Result rows not ready: {len(bad_results)}\n")
+        handle.write(f"- Failed rows: {len(bad)}\n")
+        handle.write(f"- Failed result rows: {len(bad_results)}\n")
         handle.write(f"- Client-count curve table: `{curve_path.name}`\n")
         handle.write(f"- Result stability table: `{results_path.name}`\n")
         if bad:
-            handle.write("\n## Not Ready Rows\n\n")
+            handle.write("\n## Failed Rows\n\n")
             handle.write("| Binary | Scenario | Network | Path | Row | Role | Samples | p50 CI width | p80/p20 | Reason |\n")
             handle.write("|---|---|---|---|---:|---|---:|---:|---:|---|\n")
             for row in bad:
@@ -472,7 +474,7 @@ def audit_sweep(root: Path, args: argparse.Namespace) -> tuple[Path, bool, list[
                     f"{row['reason']} |\n"
                 )
 
-    return audit_path, ready, rows
+    return audit_path, converged, rows
 
 
 def main() -> int:
@@ -484,15 +486,15 @@ def main() -> int:
     parser.add_argument("--spread-low-pct", type=float, default=20.0)
     parser.add_argument("--spread-high-pct", type=float, default=80.0)
     parser.add_argument("--bootstrap-iterations", type=int, default=2000)
-    parser.add_argument("--fail-on-not-ready", action="store_true")
+    parser.add_argument("--fail-on-unconverged", action="store_true")
     args = parser.parse_args()
 
-    all_ready = True
+    all_converged = True
     for sweep in args.sweep:
-        audit_path, ready, _ = audit_sweep(sweep, args)
-        print(f"publication_audit path={audit_path} status={'ready' if ready else 'not_ready'}")
-        all_ready = all_ready and ready
-    return 1 if args.fail_on_not_ready and not all_ready else 0
+        audit_path, converged, _ = audit_sweep(sweep, args)
+        print(f"publication_audit path={audit_path} status={'converged' if converged else 'failed'}")
+        all_converged = all_converged and converged
+    return 1 if args.fail_on_unconverged and not all_converged else 0
 
 
 if __name__ == "__main__":

@@ -63,10 +63,30 @@ def decision_for(values_by_thread: dict[int, float]):
 
 
 class QuicperfStatsSaturationTests(unittest.TestCase):
+    def test_high_variance_is_converged_with_diagnostic_reason(self):
+        cfg = StatsConfig(
+            min_blocks=4,
+            min_samples=20,
+            bootstrap_iters=50,
+            high_variance_min_blocks=8,
+            high_variance_min_samples=40,
+        )
+        samples = []
+        for index in range(40):
+            samples.extend(make_samples(1, 100.0 if index < 20 else 140.0)[:1])
+            samples[-1].block_id = f"r{(index // 5) + 1:03d}b{(index // 5) + 1:05d}t1"
+            samples[-1].sample_id = f"variance-{index}"
+            samples[-1].run_order = index
+
+        stats = row_stats(samples, cfg)
+
+        self.assertEqual(stats.status, "converged")
+        self.assertIn("drift_", stats.reason)
+
     def test_one_to_two_non_improvement_stops_at_two_clients(self):
         decision = decision_for({1: 100.0, 2: 99.0})
 
-        self.assertEqual(decision.decision_status, "ready")
+        self.assertEqual(decision.decision_status, "converged")
         self.assertEqual(decision.selected_threads, 1)
         self.assertEqual(decision.best_threads, 1)
         self.assertEqual(decision.boundary_threads, 2)
@@ -75,7 +95,7 @@ class QuicperfStatsSaturationTests(unittest.TestCase):
     def test_later_adjacent_non_improvement_stops_at_boundary(self):
         decision = decision_for({1: 100.0, 2: 130.0, 3: 130.5})
 
-        self.assertEqual(decision.decision_status, "ready")
+        self.assertEqual(decision.decision_status, "converged")
         self.assertEqual(decision.selected_threads, 2)
         self.assertEqual(decision.boundary_threads, 3)
         self.assertIn("incremental_improvement_0.38pct_le_1.00pct", decision.reason)

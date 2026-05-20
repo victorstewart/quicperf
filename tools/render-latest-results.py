@@ -255,9 +255,10 @@ def render_markdown(
     run_dir: Path,
 ) -> str:
     summary_rows = read_tsv(run_dir / "publication-results.tsv")
-    ready_rows = sum(1 for row in summary_rows if row.get("publication_status") == "ready")
-    not_ready_rows = sum(1 for row in summary_rows if row.get("publication_status") != "ready")
-    run_status = "ready" if summary_rows and not_ready_rows == 0 else "not_ready"
+    converged_rows = sum(1 for row in summary_rows if row.get("publication_status") == "converged")
+    failed_rows = sum(1 for row in summary_rows if row.get("publication_status") == "failed")
+    not_ready_rows = sum(1 for row in summary_rows if row.get("publication_status") == "not_ready")
+    run_status = "converged" if summary_rows and failed_rows == 0 and not_ready_rows == 0 else ("failed" if failed_rows else "not_ready")
     artifact_sentence = (
         "The TCP+TLS sidecar is excluded from these QUIC tables. Full raw data "
         "and gate details are committed under "
@@ -269,9 +270,9 @@ def render_markdown(
         "",
         (
             "The adaptive publication runner samples each library/network/test row "
-            "in randomized blocks until the row converges or reaches its bounded "
-            "sample cap. Rows that remain noisy or nonstationary are retained with "
-            "their measured distribution instead of being promoted as clean."
+            "in randomized blocks until the row converges or fails. Rows that "
+            "remain noisy or nonstationary are retained as converged with their "
+            "measured distribution and diagnostic reasons."
         ),
         "",
         (
@@ -282,11 +283,10 @@ def render_markdown(
         ),
         "",
         (
-            f"Current run status: `{run_status}`. The run produced {ready_rows} "
-            f"clean publication rows and {not_ready_rows} rows that remain noisy, "
-            "nonstationary, unsupported, or otherwise gated; the tables below use "
-            "the best available measured distributions and the gate details remain "
-            "the source of truth."
+            f"Current run status: `{run_status}`. The run produced {converged_rows} "
+            f"converged publication rows, {failed_rows} failed rows, and "
+            f"{not_ready_rows} still-running/not-ready rows; the tables below use "
+            "the best available measured distributions and diagnostic reasons."
         ),
         "",
         artifact_sentence,

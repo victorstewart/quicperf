@@ -1,5 +1,5 @@
 NAME xquic
-VERSION 1.9.2
+VERSION 1.9.2-quicperf1
 SYSTEM_LIBS ALLOW
 DEPENDS boringssl VERSION main-beddb58-pic
 SOURCE GIT https://github.com/alibaba/xquic.git 64b8df3ac3f64111eb9e00be1a952ba5b07144bb
@@ -10,6 +10,45 @@ CMAKE_DEFINE "SSL_LIB_PATH=${dep:boringssl}/lib/libssl.a;${dep:boringssl}/lib/li
 CMAKE_DEFINE XQC_ENABLE_TESTING=OFF
 CMAKE_DEFINE XQC_SUPPORT_SENDMMSG_BUILD=ON
 CMAKE_DEFINE XQC_ENABLE_BBR2=ON
+CMAKE_BUILD_SH <<'EOF'
+python3 - <<'PY'
+import os
+from pathlib import Path
+
+root = Path(os.environ["DEPO_SOURCE_DIR"])
+
+def replace_once(relative, old, new):
+    path = root / relative
+    text = path.read_text()
+    if new in text:
+        return
+    if old not in text:
+        raise SystemExit(f"missing xquic patch anchor in {relative}")
+    path.write_text(text.replace(old, new, 1))
+
+replace_once(
+    "include/xquic/xquic.h",
+    "    xqc_0rtt_flag_t     early_data_flag;\n    uint32_t            recv_count;\n",
+    "    xqc_0rtt_flag_t     early_data_flag;\n    xqc_bool_t          session_reused;\n    uint32_t            recv_count;\n",
+)
+replace_once(
+    "src/tls/xqc_tls.h",
+    "xqc_tls_early_data_accept_t xqc_tls_is_early_data_accepted(xqc_tls_t *tls);\n\n/**\n * @brief get crypto aead tag length\n",
+    "xqc_tls_early_data_accept_t xqc_tls_is_early_data_accepted(xqc_tls_t *tls);\n\n/**\n * @brief check whether this client connection installed a session ticket\n */\nxqc_bool_t xqc_tls_is_resumption(xqc_tls_t *tls);\n\n/**\n * @brief get crypto aead tag length\n",
+)
+replace_once(
+    "src/tls/xqc_tls.c",
+    "xqc_tls_is_ready_to_send_early_data(xqc_tls_t *tls)\n{\n    if (tls->resumption == XQC_FALSE) {\n",
+    "xqc_tls_is_resumption(xqc_tls_t *tls)\n{\n    return tls != NULL ? tls->resumption : XQC_FALSE;\n}\n\nxqc_bool_t\nxqc_tls_is_ready_to_send_early_data(xqc_tls_t *tls)\n{\n    if (tls->resumption == XQC_FALSE) {\n",
+)
+replace_once(
+    "src/transport/xqc_conn.c",
+    "    conn_stats->early_data_flag = XQC_0RTT_NONE;\n    conn_stats->enable_multipath = conn->enable_multipath;\n",
+    "    conn_stats->early_data_flag = XQC_0RTT_NONE;\n    conn_stats->session_reused = conn->tls ? xqc_tls_is_resumption(conn->tls) : XQC_FALSE;\n    conn_stats->enable_multipath = conn->enable_multipath;\n",
+)
+PY
+cmake --build . --parallel "$(nproc)"
+EOF
 STAGE_FILE BUILD libxquic-static.a lib/libxquic.a
 STAGE_TREE SOURCE include include
 TARGET xquic::xquic STATIC lib/libxquic.a INTERFACE include

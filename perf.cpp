@@ -123,8 +123,11 @@ static const char *benchmarkAdapterFeatures(void)
 #endif
 #ifdef XQUICPERF
   snprintf(features, sizeof(features),
-           "cc=%s|pacing=on|sendmmsg=on|cid_len=12|qlog=off|tls_sigalgs=ssl_ctx_wrap|tls_verify=config_chain_preflight|udp_gso=%s|udp_gro=%s",
-           benchmarkCongestionControllerLabel(), benchmarkCommonUdpGsoFeature(), benchmarkCommonUdpGroFeature());
+           "cc=%s|pacing=on|sendmmsg=%s|cid_len=12|qlog=off|tls_sigalgs=ssl_ctx_wrap|tls_verify=config_chain_preflight|udp_gso=%s|udp_gro=%s",
+           benchmarkCongestionControllerLabel(),
+           strcmp(benchmarkNetworkProfile, "iouring") == 0 ? "off" : "on",
+           benchmarkCommonUdpGsoFeature(),
+           benchmarkCommonUdpGroFeature());
   return features;
 #endif
 #ifdef QUINNPERF

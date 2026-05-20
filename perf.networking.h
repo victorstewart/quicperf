@@ -546,11 +546,13 @@ private:
   uint64_t iouringSendErrorLogs = 0;
   uint64_t iouringPendingSendSqes = 0;
   struct DeferredIouringRecv {
-    UDPContext *packet = nullptr;
-    bool pooled = false;
+    sockaddr_storage sourceAddress = {};
+    socklen_t sourceAddressLen = 0;
+    void *payload = nullptr;
+    size_t payloadLength = 0;
+    uint16_t groSegmentSize = 0;
+    uint16_t bid = 0;
   };
-  std::unique_ptr<Pool<UDPContext>> iouringDeferredRecvPool;
-  std::vector<std::unique_ptr<UDPContext>> iouringDeferredRecvOverflow;
   std::vector<DeferredIouringRecv> iouringDeferredRecv;
 
   [[noreturn]] void failIouringSetup(const char *step, int result)
@@ -638,31 +640,6 @@ private:
     return 0;
   }
 
-  DeferredIouringRecv acquireDeferredIouringRecv(void)
-  {
-    if (iouringDeferredRecvPool)
-    {
-      UDPContext *packet = iouringDeferredRecvPool->get();
-      if (packet != nullptr)
-      {
-        return DeferredIouringRecv {.packet = packet, .pooled = true};
-      }
-    }
-
-    auto owned = std::make_unique<UDPContext>();
-    UDPContext *packet = owned.get();
-    iouringDeferredRecvOverflow.emplace_back(std::move(owned));
-    return DeferredIouringRecv {.packet = packet, .pooled = false};
-  }
-
-  void deferReceivedPayload(const struct sockaddr *sourceAddress, socklen_t sourceAddressLen,
-                            void *payload, size_t payloadLength)
-  {
-    DeferredIouringRecv deferred = acquireDeferredIouringRecv();
-    deferred.packet->copyInPacket(sourceAddress, sourceAddressLen, payload, payloadLength);
-    iouringDeferredRecv.emplace_back(deferred);
-  }
-
   template <typename Consumer>
   void deliverReceivedPacket(UDPContext& view, const struct sockaddr *sourceAddress, socklen_t sourceAddressLen,
                              void *payload, size_t payloadLength, uint16_t groSegmentSize, Consumer& msgConsumer)
@@ -687,25 +664,21 @@ private:
     benchmarkRecordUdpPacketsReceived(delivered);
   }
 
-  void deferReceivedPacket(const struct sockaddr *sourceAddress, socklen_t sourceAddressLen,
+  void deferReceivedPacket(uint16_t bid, const struct sockaddr *sourceAddress, socklen_t sourceAddressLen,
                            void *payload, size_t payloadLength, uint16_t groSegmentSize)
   {
-    if (groSegmentSize == 0 || payloadLength <= groSegmentSize)
+    DeferredIouringRecv deferred = {};
+    deferred.sourceAddressLen = std::min<socklen_t>(
+        sourceAddressLen, static_cast<socklen_t>(sizeof(deferred.sourceAddress)));
+    if (deferred.sourceAddressLen != 0)
     {
-      deferReceivedPayload(sourceAddress, sourceAddressLen, payload, payloadLength);
-      benchmarkRecordUdpPacketsReceived(1);
-      return;
+      memcpy(&deferred.sourceAddress, sourceAddress, deferred.sourceAddressLen);
     }
-
-    uint64_t deferredPackets = 0;
-    for (size_t offset = 0; offset < payloadLength; offset += groSegmentSize)
-    {
-      size_t segmentLength = std::min<size_t>(groSegmentSize, payloadLength - offset);
-      deferReceivedPayload(sourceAddress, sourceAddressLen,
-                           static_cast<uint8_t *>(payload) + offset, segmentLength);
-      ++deferredPackets;
-    }
-    benchmarkRecordUdpPacketsReceived(deferredPackets);
+    deferred.payload = payload;
+    deferred.payloadLength = payloadLength;
+    deferred.groSegmentSize = groSegmentSize;
+    deferred.bid = bid;
+    iouringDeferredRecv.emplace_back(deferred);
   }
 
   template <typename Consumer>
@@ -766,11 +739,13 @@ private:
     if (out != nullptr && out->payloadlen <= MAX_IPV6_UDP_GSO_BUFFER_SIZE)
     {
       deferReceivedPacket(
+          bid,
           reinterpret_cast<const struct sockaddr *>(io_uring_recvmsg_name(out)),
           out->namelen,
           io_uring_recvmsg_payload(out, &iouringRecvMsg),
           out->payloadlen,
           iouringGroSegmentSize(out));
+      return;
     }
 
     recycleIouringRecvBuffer(bid);
@@ -811,20 +786,17 @@ private:
     }
 
     std::vector<DeferredIouringRecv> deferred;
-    std::vector<std::unique_ptr<UDPContext>> overflow;
     deferred.swap(iouringDeferredRecv);
-    overflow.swap(iouringDeferredRecvOverflow);
     for (const DeferredIouringRecv& packet : deferred)
     {
-      msgConsumer(packet.packet);
-    }
-    for (const DeferredIouringRecv& packet : deferred)
-    {
-      packet.packet->reset();
-      if (packet.pooled)
-      {
-        iouringDeferredRecvPool->relinquish(packet.packet);
-      }
+      deliverReceivedPacket(splitRecvView,
+                            reinterpret_cast<const struct sockaddr *>(&packet.sourceAddress),
+                            packet.sourceAddressLen,
+                            packet.payload,
+                            packet.payloadLength,
+                            packet.groSegmentSize,
+                            msgConsumer);
+      recycleIouringRecvBuffer(packet.bid);
     }
     return true;
   }
@@ -848,7 +820,6 @@ public:
 
     if constexpr (usesIouring)
     {
-      iouringDeferredRecvPool = std::make_unique<Pool<UDPContext>>(iouringRecvBufferCount);
       iouringDeferredRecv.reserve(iouringRecvBufferCount);
       int flags = fcntl(socket.fd, F_GETFL, 0);
       if (flags >= 0)

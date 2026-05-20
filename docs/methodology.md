@@ -149,20 +149,24 @@ Selection rules:
 - pick the lowest client count statistically within tolerance of the best p50
 - default tolerance: `1%`
 - default confidence: `95%`
-- stop at the first ready adjacent client-count step that does not improve p50
+- stop at the first converged adjacent client-count step that does not improve p50
   by more than the configured minimum incremental improvement
 - the selected row means fewest clients needed to saturate one server thread
 
-Saturation status:
+Measured-row terminal status:
 
-- `ready`: convergence, saturation probability, and adjacent-increment plateau
+- `converged`: convergence, saturation probability, and adjacent-increment plateau
   boundary passed
-- `edge`: highest tested client count might still be materially better
-- `not_ready`: convergence or saturation gates failed
-- `bounded`: a higher configured row failed or became unsupported
-- `unsupported`: no configured row completed
+- `not_ready`: more sampling/running is still schedulable
+- `failed`: a client, server, infrastructure, or required-sample gate failed
 
-Only `ready` rows are clean publishable rows.
+Capability rows may still report `unsupported` when the adapter cannot provide
+the scenario contract. `edge_status` is a diagnostic column, not a terminal row
+status.
+
+Only `converged` rows are clean publishable rows. Noisy or high-variance rows
+that have reached the convergence decision point are still `converged`; their
+spread, drift, and high-variance details stay in the reason fields.
 
 ## Publication Gates
 
@@ -176,7 +180,8 @@ Default flow:
 - maximum 120 discovery samples unless overridden
 - randomized confirmatory holdout after provisional convergence
 - statistical saturation selection before publication
-- terminal classification for persistent high variance or nonstationarity
+- terminal convergence with high variance or nonstationarity recorded as
+  diagnostic reasons
 
 Default gates:
 
@@ -191,18 +196,18 @@ Default gates:
 | Saturation confidence | >= 95% |
 | Minimum incremental client-count improvement | > 1% |
 
-Severe high-variance classification can stop rows after at least 6 discovery
-blocks and 30 samples when they are far outside stability gates. Persistent
-high variance can stop rows after at least 8 blocks and 40 samples without
-material improvement.
+Severe or persistent high variance is diagnostic, not a not-ready terminal
+state. Once a row has enough samples to stop, it is marked `converged` unless
+the client, server, infrastructure, or required-sample path failed.
 
 `publication-results.tsv` is the selected-row table. `publication-curve.tsv`
 keeps the 1-client row and measured curve through saturation or boundary for
 each binary/scenario/network/path-profile row.
 `publication-row-audit.tsv` preserves gate results for publication rows.
 
-A `not_ready` run can be shared only with status, CI, spread, and caveats
-visible. Do not present it as an audited result.
+A `not_ready` run means sampling is still incomplete. A `failed` run can be
+shared only with status, CI, spread, and failure reasons visible. Do not present
+failed rows as audited results.
 
 `tools/run-publication-suite.py` delegates to the adaptive runner by default.
 The old fixed `3 x 10` runner is only a compatibility smoke path:

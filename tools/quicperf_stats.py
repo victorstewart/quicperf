@@ -590,7 +590,7 @@ def row_stats(samples: list[Sample], config: StatsConfig | None = None) -> RowSt
     if not values:
         bad = [sample for sample in samples if sample.status not in ("ok", "")]
         reason = bad[0].reason if bad and bad[0].reason else "no_measured_samples"
-        status = "not_ready_infra_failure" if bad else "not_ready_need_more_samples"
+        status = "failed" if bad else "not_ready"
         return RowStats(
             n=0,
             blocks=0,
@@ -675,23 +675,15 @@ def row_stats(samples: list[Sample], config: StatsConfig | None = None) -> RowSt
         cfg,
     )
 
-    if infra_failures:
-        status = "not_ready_infra_failure"
-    elif high_variance_reasons:
-        status = "not_ready_high_variance"
+    if high_variance_reasons:
         reasons.extend(high_variance_reasons)
-    elif outlier_count:
-        status = "not_ready_outlier"
+
+    if infra_failures:
+        status = "failed"
     elif block_count < cfg.min_blocks or n < cfg.min_samples:
-        status = "not_ready_need_more_samples"
-    elif n >= cfg.max_samples and reasons:
-        status = "not_ready_max_samples"
-    elif any(reason.startswith("drift_") or reason.startswith("block_median_ratio_") for reason in reasons):
-        status = "not_ready_nonstationary"
-    elif reasons:
-        status = "warning_noisy"
+        status = "not_ready"
     else:
-        status = "ready"
+        status = "converged"
 
     return RowStats(
         n=n,
@@ -952,8 +944,8 @@ def saturation_decision(
             break
     if scenario == "idle_footprint":
         stats = group_stats.get(1)
-        if not stats or stats.status != "ready" or stats.median <= 0.0:
-            return SaturationDecision(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, "no_ready_rows", "not_ready", "idle_footprint_requires_ready_1c1s_row")
+        if not stats or stats.status != "converged" or stats.median <= 0.0:
+            return SaturationDecision(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, "no_converged_rows", "not_ready", "idle_footprint_requires_converged_1c1s_row")
         return SaturationDecision(
             selected_threads=1,
             best_threads=1,
@@ -966,18 +958,18 @@ def saturation_decision(
             selected_vs_best_ci95_high=1.0,
             plateau_sentinel_count=cfg.saturation_sentinels,
             edge_status="fixed",
-            decision_status="ready",
+            decision_status="converged",
             reason="fixed_1c1s_idle_resource_row",
         )
 
-    ready_threads = sorted(thread for thread, stats in group_stats.items() if stats.status == "ready" and stats.median > 0.0)
-    if not ready_threads:
-        return SaturationDecision(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, "no_ready_rows", "not_ready", "no_ready_rows")
+    converged_threads = sorted(thread for thread, stats in group_stats.items() if stats.status == "converged" and stats.median > 0.0)
+    if not converged_threads:
+        return SaturationDecision(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, "no_converged_rows", "not_ready", "no_converged_rows")
 
     boundary_threads = 0
     plateau_reason = ""
-    previous_thread = ready_threads[0]
-    for thread in ready_threads[1:]:
+    previous_thread = converged_threads[0]
+    for thread in converged_threads[1:]:
         previous_p50 = group_stats[previous_thread].median
         current_p50 = group_stats[thread].median
         improvement = (current_p50 / previous_p50) - 1.0 if previous_p50 > 0.0 else 0.0
@@ -990,7 +982,7 @@ def saturation_decision(
             break
         previous_thread = thread
 
-    curve_threads = [thread for thread in ready_threads if boundary_threads == 0 or thread <= boundary_threads]
+    curve_threads = [thread for thread in converged_threads if boundary_threads == 0 or thread <= boundary_threads]
     best_threads = max(curve_threads, key=lambda thread: group_stats[thread].median)
     best_p50 = group_stats[best_threads].median
     selected_threads = best_threads
@@ -1013,7 +1005,7 @@ def saturation_decision(
     sentinel_count = 1 if boundary_threads else 0
 
     edge = "ok"
-    status = "ready"
+    status = "converged"
     reasons = []
     if boundary_threads == 0:
         edge = "edge"
