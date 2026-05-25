@@ -1,0 +1,73 @@
+binary	scenario	network	path_profile	tier	publication_eligible	status	reason	calibrated	workload_kind	selected_work_units	probe_work_units	target_duration_sec	calibration_duration_sec	timeout_sec	env_overrides
+lsperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+lsperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+lsperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.116322	15	QUICPERF_TEST_BYTES=67108864
+lsperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.116290	15	QUICPERF_TEST_BYTES=67108864
+lsperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.118429	15	QUICPERF_TEST_BYTES=67108864
+lsperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.120312	15	QUICPERF_TEST_BYTES=67108864
+mvfstperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+mvfstperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+mvfstperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.153233	15	QUICPERF_TEST_BYTES=67108864
+mvfstperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.156016	15	QUICPERF_TEST_BYTES=67108864
+mvfstperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.325333	15	QUICPERF_TEST_BYTES=67108864
+mvfstperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.227582	15	QUICPERF_TEST_BYTES=67108864
+neqoperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+neqoperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+neqoperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.219011	15	QUICPERF_TEST_BYTES=67108864
+neqoperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.206341	15	QUICPERF_TEST_BYTES=67108864
+neqoperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.258670	16	QUICPERF_TEST_BYTES=67108864
+neqoperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.199240	15	QUICPERF_TEST_BYTES=67108864
+ngtcp2perf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+ngtcp2perf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+ngtcp2perf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.202864	15	QUICPERF_TEST_BYTES=67108864
+ngtcp2perf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.201041	15	QUICPERF_TEST_BYTES=67108864
+ngtcp2perf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.105643	15	QUICPERF_TEST_BYTES=67108864
+ngtcp2perf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.103996	15	QUICPERF_TEST_BYTES=67108864
+noqperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+noqperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+noqperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.222946	15	QUICPERF_TEST_BYTES=67108864
+noqperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.302580	16	QUICPERF_TEST_BYTES=67108864
+noqperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.226901	15	QUICPERF_TEST_BYTES=67108864
+noqperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.238508	15	QUICPERF_TEST_BYTES=67108864
+picoperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+picoperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+picoperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.174535	15	QUICPERF_TEST_BYTES=67108864
+picoperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.126245	15	QUICPERF_TEST_BYTES=67108864
+picoperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.167592	15	QUICPERF_TEST_BYTES=67108864
+picoperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.144603	15	QUICPERF_TEST_BYTES=67108864
+quicheperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+quicheperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+quicheperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.165069	15	QUICPERF_TEST_BYTES=67108864
+quicheperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.124372	15	QUICPERF_TEST_BYTES=67108864
+quicheperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.157509	15	QUICPERF_TEST_BYTES=67108864
+quicheperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.133891	15	QUICPERF_TEST_BYTES=67108864
+quiczigperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+quiczigperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+quiczigperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.117417	15	QUICPERF_TEST_BYTES=67108864
+quiczigperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.123574	15	QUICPERF_TEST_BYTES=67108864
+quiczigperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.116499	15	QUICPERF_TEST_BYTES=67108864
+quiczigperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.129525	15	QUICPERF_TEST_BYTES=67108864
+quinnperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+quinnperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+quinnperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.196928	15	QUICPERF_TEST_BYTES=67108864
+quinnperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.281601	16	QUICPERF_TEST_BYTES=67108864
+quinnperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.199015	15	QUICPERF_TEST_BYTES=67108864
+quinnperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.211604	15	QUICPERF_TEST_BYTES=67108864
+s2nperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+s2nperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+s2nperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.204824	15	QUICPERF_TEST_BYTES=67108864
+s2nperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.190802	15	QUICPERF_TEST_BYTES=67108864
+s2nperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.199928	15	QUICPERF_TEST_BYTES=67108864
+s2nperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.174969	15	QUICPERF_TEST_BYTES=67108864
+tquicperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+tquicperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+tquicperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.154373	15	QUICPERF_TEST_BYTES=67108864
+tquicperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.132914	15	QUICPERF_TEST_BYTES=67108864
+tquicperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.158742	15	QUICPERF_TEST_BYTES=67108864
+tquicperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.145741	15	QUICPERF_TEST_BYTES=67108864
+xquicperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+xquicperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+xquicperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.874606	15	QUICPERF_TEST_BYTES=67108864
+xquicperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.382443	15	QUICPERF_TEST_BYTES=67108864
+xquicperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.464044	16	QUICPERF_TEST_BYTES=67108864
+xquicperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.287275	16	QUICPERF_TEST_BYTES=67108864

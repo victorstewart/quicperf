@@ -254,14 +254,17 @@ def render_markdown(
     artifact_dir: Path,
     run_dir: Path,
 ) -> str:
-    summary_rows = read_tsv(run_dir / "publication-results.tsv")
+    summary_rows = [
+        row
+        for row in read_tsv(run_dir / "publication-results.tsv")
+        if row.get("binary") != "tcpperf"
+    ]
     converged_rows = sum(1 for row in summary_rows if row.get("publication_status") == "converged")
     failed_rows = sum(1 for row in summary_rows if row.get("publication_status") == "failed")
     not_ready_rows = sum(1 for row in summary_rows if row.get("publication_status") == "not_ready")
     run_status = "converged" if summary_rows and failed_rows == 0 and not_ready_rows == 0 else ("failed" if failed_rows else "not_ready")
     artifact_sentence = (
-        "The TCP+TLS sidecar is excluded from these QUIC tables. Full raw data "
-        "and gate details are committed under "
+        "Raw QUIC data and gate details are committed under "
         f"[`{artifact_dir}`]({artifact_dir}/)."
     )
 
@@ -285,7 +288,7 @@ def render_markdown(
         (
             f"Current run status: `{run_status}`. The run produced {converged_rows} "
             f"converged publication rows, {failed_rows} failed rows, and "
-            f"{not_ready_rows} still-running/not-ready rows; the tables below use "
+            f"{not_ready_rows} not-ready rows; the tables below use "
             "the best available measured distributions and diagnostic reasons."
         ),
         "",

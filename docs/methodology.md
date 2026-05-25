@@ -10,8 +10,6 @@ Benchmarked QUIC binaries:
 `ngtcp2perf`, `lsperf`, `tquicperf`, `quicheperf`, `picoperf`, `xquicperf`,
 `quinnperf`, `s2nperf`, `neqoperf`, `noqperf`, `quiczigperf`, `mvfstperf`.
 
-`tcpperf` is a TCP+TLS sidecar baseline and is excluded from QUIC result tables.
-
 ## Workloads
 
 Default workloads:
@@ -40,6 +38,11 @@ Capability rows:
 | `resumed_connect` | `connections_per_second` | Accepted CLI row; unsupported until session-ticket capture/replay is exposed uniformly. |
 | `zero_rtt_reqresp` | `requests_per_second` | Accepted CLI row; unsupported until 0-RTT accepted/rejected controls are exposed uniformly. |
 
+Publication-tier rows use full adaptive convergence. Capability and lifecycle
+rows (`resumed_connect`, `zero_rtt_reqresp`, `reqresp`, `stream_churn`,
+`idle_footprint`, and `close_reset_cleanup`) default to smoke/correctness
+coverage unless explicitly promoted to ranked publication metrics.
+
 Unsupported rows exit with code `77` and write an explicit reason. They are not
 silently remapped to another workload, and they are quicperf adapter-contract
 markers rather than upstream library feature claims.
@@ -52,8 +55,15 @@ before promotion.
 
 `datagram` measures delivered application DATAGRAM echo rate. The client queues
 DATAGRAMs up to the shared in-flight cap, flushes once, drains once, receives
-echoed DATAGRAMs, and repeats until the operation count is reached. The server
-uses the same cycle: drain once, queue echoes for the batch, then flush once.
+echoed DATAGRAMs, and repeats until the operation count is reached. DATAGRAM
+frame size is negotiated through the QUIC DATAGRAM transport parameter, and the
+harness caps the application payload to the adapter's negotiated or effective
+payload limit before sending. Adapters without a public effective DATAGRAM MSS
+API use a conservative packet-payload cap under the QUIC minimum 1200-byte UDP
+payload. Local send and receive queue capacity is a library-local public
+configuration request and the harness treats write backpressure as the
+effective queue limit. The server uses the same cycle: drain once, queue echoes
+for the batch, then flush once.
 
 The harness records sent, received, unreturned, delivery ratio, UDP packets,
 send submit/syscall batches, receive polls, and DATAGRAMs per UDP packet. Rows
@@ -69,9 +79,11 @@ send/read API that matches this contract.
 
 ## Output Schema
 
-Current metrics are `throughput_gbps`, `connections_per_second`, `requests_per_second`,
-`streams_per_second`, `messages_per_second`, and `idle_connections`. Publication scoring only
-normalizes within the same scenario, network backend, path profile, and metric group.
+Current metrics are `throughput_gbps`, `connections_per_second`,
+`requests_per_second`, `streams_per_second`, `messages_per_second`,
+`datagrams_per_second`, and `server_rss_delta_bytes_per_connection`.
+Publication scoring only normalizes within the same scenario, network backend,
+path profile, and metric group.
 
 `tools/run-benchmarks.sh` writes one `summary.tsv` row per
 binary/library/scenario/network/path-profile/client-thread/metric group and writes
@@ -79,6 +91,40 @@ binary/library/scenario/network/path-profile/client-thread/metric group and writ
 runner it appends the same structured rows to `adaptive-samples.tsv`: measured
 rows carry metric values, while unsupported, failed, and thread-check rows carry
 status/reason/log metadata with a blank value.
+
+### Calibration And Workload Sizing
+
+The adaptive runner may run a preflight calibration phase to choose enough bytes
+or operations for stable timing. Calibration is never publication data:
+
+- calibration rows use phase `calibration` and separate artifacts
+- scaled-workload validation attempts use phase `calibration_validation` in
+  `calibration-validation-samples.tsv`; failed candidates are diagnostic
+  fallback evidence, not terminal row failures
+- after a larger candidate fails, the first lower successful candidate is
+  treated as a boundary; the runner validates one additional step down before
+  accepting the workload when possible
+- publication tables, curves, rankings, and p50/p90/p99 use measurement samples only
+- rules are declared by scenario/metric class before the run
+- each row records target duration, selected work units, calibration duration,
+  clamp reason, and fixed-vs-calibrated status
+- calibration may scale bytes/operations for throughput and rate metrics, but
+  must not change adapter transport config, congestion control, flow windows,
+  DATAGRAM queues, packetization policy, backend semantics, or library internals
+- fixed-semantics rows such as single connection setup and `idle_footprint`
+  remain fixed unless separately justified
+- calibrated mode is publishable only after A/B validation against fixed-work
+  rows across fast, median, slow, syscall, iouring, and DATAGRAM cases
+
+This matches established harness practice: Criterion.rs separates warmup from
+measurement and uses warmup timing to size measured samples; Google Benchmark
+has minimum benchmark and warmup time with discarded warmup results; Go adjusts
+`b.N` until timing is reliable; pytest-benchmark has an explicit calibration
+phase. Sources: https://bheisler.github.io/criterion.rs/book/analysis.html,
+https://bheisler.github.io/criterion.rs/book/user_guide/command_line_output.html,
+https://github.com/google/benchmark/blob/main/docs/user_guide.md,
+https://pkg.go.dev/testing/,
+https://pytest-benchmark.readthedocs.io/en/v5.0.0/calibration.html.
 
 `network` is the socket backend dimension (`syscall` or `iouring`). `path_profile`
 is the packet-delivery path dimension. The default is `loopback`; namespace-backed
@@ -175,10 +221,12 @@ Use `tools/run-adaptive-publication-suite.py` for publishable rows.
 Default flow:
 
 - randomized discovery blocks across active rows
-- 5 measured samples per block
-- minimum 4 discovery blocks and 20 discovery samples
+- preflight calibration/failure pass before discovery when calibrated mode is enabled
+- calibrated per-row timeouts instead of a single global timeout where applicable
+- 10 measured samples per discovery block
+- minimum 2 discovery blocks and 20 discovery samples
 - maximum 120 discovery samples unless overridden
-- randomized confirmatory holdout after provisional convergence
+- optional randomized confirmatory holdout after provisional convergence
 - statistical saturation selection before publication
 - terminal convergence with high variance or nonstationarity recorded as
   diagnostic reasons
@@ -205,9 +253,9 @@ keeps the 1-client row and measured curve through saturation or boundary for
 each binary/scenario/network/path-profile row.
 `publication-row-audit.tsv` preserves gate results for publication rows.
 
-A `not_ready` run means sampling is still incomplete. A `failed` run can be
-shared only with status, CI, spread, and failure reasons visible. Do not present
-failed rows as audited results.
+A `not_ready` run means at least one publication row did not satisfy the clean
+publication gate. A `failed` run can be shared only with status, CI, spread, and
+failure reasons visible. Do not present failed rows as audited results.
 
 `tools/run-publication-suite.py` delegates to the adaptive runner by default.
 The old fixed `3 x 10` runner is only a compatibility smoke path:
@@ -226,6 +274,8 @@ The old fixed `3 x 10` runner is only a compatibility smoke path:
 - server app-level completion before client/server exit
 - true per-connection/per-stream server state for multi-client rows
 - fresh random loopback port blocks by default
+- no parallel measured loopback rows unless isolated CPU lanes, server core
+  isolation, IRQ/noise audit, and one-lane-vs-N-lane A/B equivalence are proven
 
 P-256 is still selectable with explicit `QUICPERF_TLS_CERT`,
 `QUICPERF_TLS_KEY`, `QUICPERF_TLS_CHAIN`, and
@@ -240,7 +290,6 @@ P-256 is still selectable with explicit `QUICPERF_TLS_CERT`,
 - C++ owns socket creation, receive, send, batching, backend selection, and
   timeout scheduling for measured adapters
 - `tools/audit-cpp-io-boundary.sh` is part of the build graph
-- `tcpperf` remains syscall-only
 - The shared GSO path coalesces compatible same-destination QUIC packets after
   deterministic loss filtering, so `loss_recovery` still drops at the QUIC
   packet unit. Received UDP GRO packets are split back into QUIC-packet

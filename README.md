@@ -50,7 +50,6 @@ different workload under the requested label.
 | `noqperf` | noq | Rust packet engine; C++ owns UDP I/O |
 | `quiczigperf` | quic-zig | Zig packet engine; C++ owns UDP I/O |
 | `mvfstperf` | mvfst | Folly/mvfst transport; C++ owns UDP I/O |
-| `tcpperf` | TCP+TLS | Sidecar baseline only; excluded from QUIC result tables |
 
 Packet-engine adapters use quicperf-maintained fork branches where upstream has
 not yet absorbed the quicperf C ABI surface:
@@ -98,8 +97,6 @@ General form:
 ```text
 ./build/bin/<binary> <server|client> <syscall|iouring> <any|loopback|ipv6> [scenario]
 ```
-
-`tcpperf` is syscall-only.
 
 ## Batch Runs
 
@@ -209,22 +206,18 @@ audit verifies the shared Ed25519 chain and wrong-chain negative controls.
 ## Publication
 
 ```sh
-QUICPERF_ADAPTIVE_BLOCK_SIZE=5 \
-QUICPERF_ADAPTIVE_MIN_BLOCKS=4 \
-QUICPERF_ADAPTIVE_MIN_SAMPLES=20 \
-QUICPERF_ADAPTIVE_CONFIRM_BLOCKS=2 \
-QUICPERF_ADAPTIVE_MAX_SAMPLES=120 \
-QUICPERF_ADAPTIVE_BOOTSTRAP_ITERS=5000 \
+QUICPERF_PATH_PROFILES=loopback \
+QUICPERF_NETWORKS="syscall iouring" \
 QUICPERF_TEST_BYTES=1073741824 \
 tools/run-adaptive-publication-suite.py
 ```
 
-The adaptive runner uses randomized discovery blocks, bounded convergence,
-statistical saturation selection, and confirmatory holdout blocks. It stops a
-client-count curve at the first converged adjacent step that does not materially
-improve p50, so a row that peaks at 1 client will stop after checking 2 clients
-instead of continuing up the curve. `not_ready` rows are inspectable but not
-publishable clean result rows because they still need runnable work.
+The adaptive runner uses a non-public calibration pass, 10-sample randomized
+discovery blocks, bounded convergence, statistical saturation selection, and an
+optional confirmatory holdout when configured. It stops a client-count curve at
+the first converged adjacent step that does not materially improve p50, so a row
+that peaks at 1 client will stop after checking 2 clients instead of continuing
+up the curve. `not_ready` rows are inspectable but not clean publication rows.
 
 Important artifacts:
 
@@ -270,7 +263,7 @@ row selection details.
 
 ## Results
 
-Latest published results were collected on May 16, 2026.
+Latest committed results were collected on May 25, 2026.
 Current artifacts and caveats are in [docs/latest-results.md](docs/latest-results.md).
 The README intentionally does not duplicate the result table.
 

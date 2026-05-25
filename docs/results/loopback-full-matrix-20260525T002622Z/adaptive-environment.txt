@@ -1,0 +1,9 @@
+quicperf_adaptive_environment date_utc=2026-05-25T00:32:57Z
+quicperf_adaptive_environment publication_id=adaptive-20260525T002622Z-2639460
+quicperf_adaptive_environment git_commit=25c53ca52dde22548d5dfa694abd5b1656bb5ed9
+quicperf_adaptive_environment env_hash=b393b47c762e16be machine_hash=67523892463251b1
+quicperf_adaptive_environment variables
+QUICPERF_NETWORKS=syscall iouring
+QUICPERF_OUT_DIR=.run/full-loopback-matrix-20260525T002622Z-25c53ca-dirty
+QUICPERF_PATH_PROFILES=loopback
+QUICPERF_TEST_BYTES=1073741824

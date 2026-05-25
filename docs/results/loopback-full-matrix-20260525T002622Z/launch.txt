@@ -1,0 +1,8 @@
+run_id=full-loopback-matrix-20260525T002622Z-25c53ca-dirty
+out_dir=.run/full-loopback-matrix-20260525T002622Z-25c53ca-dirty
+started_utc=2026-05-25T00:26:22Z
+git_commit=25c53ca52dde22548d5dfa694abd5b1656bb5ed9
+git_status=dirty
+command=QUICPERF_OUT_DIR=.run/full-loopback-matrix-20260525T002622Z-25c53ca-dirty QUICPERF_PATH_PROFILES=loopback QUICPERF_NETWORKS="syscall iouring" QUICPERF_TEST_BYTES=1073741824 tools/run-adaptive-publication-suite.py
+pid=2639460
+process_group=2639460

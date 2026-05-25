@@ -9,7 +9,7 @@
 - Confirmatory holdout: 2 blocks / 10 samples
 - Bootstrap iterations: 5000
 - Ready result rows: 4
-- Not-ready result rows: 74
+- Not-ready result rows: 68
 - Audited publication rows: 57
 
 ## Not Ready Results
@@ -72,12 +72,6 @@
 | `s2nperf` | `download` | `syscall` | `loopback` | 3 | no_incremental_plateau;t4:p80_p20_1.2013_gt_1.1500;block_median_ratio_1.1663_gt_1.1000;outliers_4;severe_outlier_blocks_3_gte_2;t1:missing_confirm_stats;t2:missing_confirm_stats;t3:missing_confirm_stats |
 | `s2nperf` | `upload` | `iouring` | `loopback` |  | no_ready_rows;t1:p50_ci_width_0.0942_gt_0.0300;block_median_ratio_1.1645_gt_1.1000;drift_0.1093_gt_0.0300;severe_drift_0.1093_gt_0.0800 |
 | `s2nperf` | `upload` | `syscall` | `loopback` | 2 | incremental_improvement_-2.74pct_le_1.00pct;t1:combined_warning_noisy;p50_ci_width_0.0311_gt_0.0300;t2:confirm_p50_ci_width_0.0507_gt_0.0450;t3:combined_warning_noisy;p50_ci_width_0.0310_gt_0.0300 |
-| `tcpperf` | `connect` | `iouring` | `loopback` |  | tcp_tls_syscall_only |
-| `tcpperf` | `connect` | `syscall` | `loopback` |  | no_ready_rows;t1:p50_ci_width_0.0755_gt_0.0500;p80_p20_1.2202_gt_1.1500;block_median_ratio_1.2535_gt_1.1000;drift_0.0378_gt_0.0300;severe_block_median_ratio_1.2535_gt_1.2500 |
-| `tcpperf` | `download` | `iouring` | `loopback` |  | tcp_tls_syscall_only |
-| `tcpperf` | `download` | `syscall` | `loopback` |  | no_ready_rows;t1:p50_ci_width_0.3738_gt_0.0300;p80_p20_1.5021_gt_1.1500;block_median_ratio_1.5579_gt_1.1000;drift_-0.1188_gt_0.0300;severe_block_median_ratio_1.5579_gt_1.2500;severe_p80_p20_1.5021_gt_1.5000;severe_drift_-0.1188_gt_0.0800 |
-| `tcpperf` | `upload` | `iouring` | `loopback` |  | tcp_tls_syscall_only |
-| `tcpperf` | `upload` | `syscall` | `loopback` |  | no_ready_rows;t1:p50_ci_width_0.2610_gt_0.0300;p80_p20_1.4153_gt_1.1500;block_median_ratio_1.6032_gt_1.1000;drift_-0.0813_gt_0.0300;severe_block_median_ratio_1.6032_gt_1.2500;severe_drift_-0.0813_gt_0.0800 |
 | `tquicperf` | `connect` | `iouring` | `loopback` |  | no_ready_rows;t1:p50_ci_width_0.1383_gt_0.0500;p80_p20_1.2298_gt_1.1500;block_median_ratio_1.2567_gt_1.1000;drift_0.0497_gt_0.0300;severe_block_median_ratio_1.2567_gt_1.2500 |
 | `tquicperf` | `connect` | `syscall` | `loopback` |  | no_ready_rows;t1:p50_ci_width_0.1258_gt_0.0500;p80_p20_1.2486_gt_1.1500;block_median_ratio_1.2994_gt_1.1000;drift_-0.0449_gt_0.0300;severe_block_median_ratio_1.2994_gt_1.2500 |
 | `tquicperf` | `download` | `iouring` | `loopback` | 3 | incremental_improvement_-2.74pct_le_1.00pct;t1:combined_not_ready_nonstationary;p50_ci_width_0.0360_gt_0.0300;block_median_ratio_1.1119_gt_1.1000;t2:confirm_p50_ci_width_0.0476_gt_0.0450;confirm_median_delta_0.0497_gt_0.0450;combined_not_ready_nonstationary;p50_ci_width_0.0376_gt_0.0300;block_median_ratio_1.1061_gt_1.1000;t3:confirm_p50_ci_width_0.0786_gt_0.0450;combined_warning_noisy;p50_ci_width_0.0319_gt_0.0300 |
