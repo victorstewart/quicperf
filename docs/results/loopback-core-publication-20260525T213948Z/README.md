@@ -1,4 +1,4 @@
-# Loopback Full Matrix 2026-05-25T21:39Z
+# Loopback Core Publication Subset 2026-05-25T21:39Z
 
 Run ID: `adaptive-20260525T213948Z-3320776`
 Source run directory: `.run/full-matrix-20260525T213948Z`
@@ -9,6 +9,8 @@ Recorded git commit: `e36ee55131379fbfd419fbb584e7cadff6502b8d`
 Recorded dirty flag in samples: `clean`
 
 ## Status
+
+This is the core publication subset (`download`, `upload`, `connect`), not the full scenario matrix.
 
 - Publication status: `converged`
 - Publication rows: 72 converged, 0 not ready, 0 failed

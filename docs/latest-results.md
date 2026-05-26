@@ -4,9 +4,9 @@ The adaptive publication runner samples each library/network/test row in randomi
 
 Client load is swept upward per row to find server saturation. Tables are sorted by bad-tail p99 first; for these throughput and rate metrics that means the higher lower-tail value is better. `p50` is the publication statistic, while `p90` and `p99` are tail-visibility columns because the selected rows use 20 measured samples.
 
-Current run status: `converged`. The run produced 72 converged publication rows, 0 failed rows, and 0 not-ready rows from 8,580 measured discovery samples. Average samples per sampled thread row: 20.00.
+Current core publication subset status: `converged`. This subset covers `download`, `upload`, and `connect` only: 72 converged publication rows, 0 failed rows, and 0 not-ready rows from 8,580 measured discovery samples. Average samples per sampled thread row: 20.00.
 
-Raw QUIC data, audit details, workload plans, and checksums are committed under [`results/loopback-full-matrix-20260525T213948Z`](results/loopback-full-matrix-20260525T213948Z/).
+Raw QUIC data, audit details, workload plans, and checksums are committed under [`results/loopback-core-publication-20260525T213948Z`](results/loopback-core-publication-20260525T213948Z/).
 
 ## Results
 
@@ -109,5 +109,5 @@ Full connection establishment plus bidirectional stream creation; higher rate is
 - `datagram` is omitted from the adaptive publication table; DATAGRAM support is covered by high-value capability smoke and should remain separate until a fair adaptive DATAGRAM publication run is configured.
 - `idle_footprint` is omitted because it was not part of this loopback publication scenario set.
 - Unsupported capability rows are explicit unsupported markers, not crashes or claims that the upstream library lacks the feature.
-- Row-level gate reasons are in [`publication-results.tsv`](results/loopback-full-matrix-20260525T213948Z/publication-results.tsv), [`row-stats.tsv`](results/loopback-full-matrix-20260525T213948Z/row-stats.tsv), [`publication-row-audit.tsv`](results/loopback-full-matrix-20260525T213948Z/publication-row-audit.tsv), and [`saturation-decisions.tsv`](results/loopback-full-matrix-20260525T213948Z/saturation-decisions.tsv).
-- Raw measured samples are in [`adaptive-samples.tsv`](results/loopback-full-matrix-20260525T213948Z/adaptive-samples.tsv); calibration samples are published separately and excluded from the tables.
+- Row-level gate reasons are in [`publication-results.tsv`](results/loopback-core-publication-20260525T213948Z/publication-results.tsv), [`row-stats.tsv`](results/loopback-core-publication-20260525T213948Z/row-stats.tsv), [`publication-row-audit.tsv`](results/loopback-core-publication-20260525T213948Z/publication-row-audit.tsv), and [`saturation-decisions.tsv`](results/loopback-core-publication-20260525T213948Z/saturation-decisions.tsv).
+- Raw measured samples are in [`adaptive-samples.tsv`](results/loopback-core-publication-20260525T213948Z/adaptive-samples.tsv); calibration samples are published separately and excluded from the tables.
