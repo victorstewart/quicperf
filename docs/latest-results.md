@@ -1,12 +1,12 @@
 # Latest Results
 
-The adaptive publication runner samples each library/network/test row in randomized blocks until the row converges or fails. Rows that remain noisy or nonstationary are retained as converged with their measured distribution and diagnostic reasons.
+The adaptive publication runner samples each library/network/test row in randomized blocks until the row converges or fails. Rows that reach the stop decision are marked `converged`; high variance or nonstationarity remains visible in the diagnostic artifacts instead of becoming a separate terminal status.
 
-Client load is swept upward per row to find server saturation using as many client threads as needed within the configured limit. Tables are sorted by best bad-tail p99 first; for rate and throughput metrics that means the higher lower-tail value is better.
+Client load is swept upward per row to find server saturation. Tables are sorted by bad-tail p99 first; for these throughput and rate metrics that means the higher lower-tail value is better. `p50` is the publication statistic, while `p90` and `p99` are tail-visibility columns because the selected rows use 20 measured samples.
 
-Current run status: `not_ready`. The run produced 70 converged publication rows, 0 failed rows, and 2 not-ready rows; the tables below use the best available measured distributions and diagnostic reasons.
+Current run status: `converged`. The run produced 72 converged publication rows, 0 failed rows, and 0 not-ready rows from 8,580 measured discovery samples. Average samples per sampled thread row: 20.00.
 
-Raw QUIC data and gate details are committed under [`results/loopback-full-matrix-20260525T002622Z`](results/loopback-full-matrix-20260525T002622Z/).
+Raw QUIC data, audit details, workload plans, and checksums are committed under [`results/loopback-full-matrix-20260525T213948Z`](results/loopback-full-matrix-20260525T213948Z/).
 
 ## Results
 
@@ -16,30 +16,30 @@ Server-to-client bulk transfer; higher throughput is better.
 
 | Library | Network | CC | Client threads | Samples | Unit | p50 | p90 | p99 |
 |---|---|---|---:|---:|---|---:|---:|---:|
-| ngtcp2 | io_uring | cubic | 2 | 20 | gigabits/second | 16.413 | 15.129 | 14.961 |
-| ngtcp2 | syscall | cubic | 2 | 20 | gigabits/second | 16.204 | 14.610 | 14.205 |
-| LSQUIC | syscall | cubic | 1 | 20 | gigabits/second | 11.540 | 10.832 | 10.646 |
-| LSQUIC | io_uring | cubic | 1 | 20 | gigabits/second | 11.384 | 10.664 | 10.592 |
-| quic-zig | syscall | cubic | 1 | 20 | gigabits/second | 9.432 | 9.037 | 8.985 |
-| quic-zig | io_uring | cubic | 1 | 20 | gigabits/second | 9.268 | 8.929 | 8.815 |
-| quiche | syscall | cubic | 1 | 20 | gigabits/second | 9.375 | 8.499 | 8.270 |
-| picoquic | syscall | cubic | 1 | 20 | gigabits/second | 8.238 | 7.607 | 7.369 |
-| quiche | io_uring | cubic | 2 | 20 | gigabits/second | 7.503 | 6.993 | 6.715 |
-| TQUIC | syscall | cubic | 2 | 20 | gigabits/second | 7.242 | 6.956 | 6.553 |
-| TQUIC | io_uring | cubic | 3 | 20 | gigabits/second | 6.551 | 6.447 | 6.359 |
-| mvfst | io_uring | cubic | 1 | 20 | gigabits/second | 6.613 | 6.459 | 6.109 |
-| mvfst | syscall | cubic | 1 | 20 | gigabits/second | 6.417 | 6.078 | 5.960 |
-| Quinn | io_uring | cubic | 2 | 20 | gigabits/second | 6.529 | 5.702 | 5.625 |
-| Quinn | syscall | cubic | 2 | 20 | gigabits/second | 6.224 | 5.615 | 5.526 |
-| noq | io_uring | cubic | 2 | 20 | gigabits/second | 5.169 | 4.682 | 4.567 |
-| s2n-quic | syscall | cubic | 4 | 20 | gigabits/second | 5.518 | 4.406 | 3.862 |
-| noq | syscall | cubic | 2 | 20 | gigabits/second | 4.735 | 4.536 | 3.730 |
-| picoquic | io_uring | cubic | 1 | 20 | gigabits/second | 5.261 | 4.389 | 3.466 |
-| XQUIC | syscall | cubic | 3 | 20 | gigabits/second | 4.386 | 3.391 | 3.173 |
-| s2n-quic | io_uring | cubic | 5 | 20 | gigabits/second | 5.523 | 4.368 | 3.023 |
-| Neqo | syscall | cubic | 1 | 20 | gigabits/second | 4.112 | 3.876 | 2.578 |
-| XQUIC | io_uring | cubic | 3 | 20 | gigabits/second | 3.455 | 3.128 | 2.462 |
-| Neqo | io_uring | cubic | 1 | 20 | gigabits/second | 4.193 | 3.895 | 2.346 |
+| ngtcp2 | io_uring | cubic | 2 | 20 | gigabits/second | 16.674 | 15.190 | 14.857 |
+| ngtcp2 | syscall | cubic | 1 | 20 | gigabits/second | 15.026 | 13.940 | 13.857 |
+| LSQUIC | syscall | cubic | 1 | 20 | gigabits/second | 11.789 | 10.797 | 10.716 |
+| LSQUIC | io_uring | cubic | 1 | 20 | gigabits/second | 11.392 | 10.850 | 10.099 |
+| quic-zig | syscall | cubic | 1 | 20 | gigabits/second | 9.585 | 8.995 | 8.989 |
+| quiche | syscall | cubic | 2 | 20 | gigabits/second | 8.997 | 8.543 | 8.245 |
+| picoquic | syscall | cubic | 1 | 20 | gigabits/second | 8.050 | 7.741 | 7.179 |
+| TQUIC | syscall | cubic | 4 | 20 | gigabits/second | 7.406 | 7.083 | 6.488 |
+| quiche | io_uring | cubic | 2 | 20 | gigabits/second | 7.756 | 6.742 | 6.460 |
+| TQUIC | io_uring | cubic | 3 | 20 | gigabits/second | 6.547 | 6.240 | 6.161 |
+| mvfst | io_uring | cubic | 1 | 20 | gigabits/second | 6.631 | 6.303 | 6.056 |
+| quic-zig | io_uring | cubic | 1 | 20 | gigabits/second | 9.420 | 8.580 | 6.008 |
+| mvfst | syscall | cubic | 1 | 20 | gigabits/second | 6.460 | 5.984 | 5.686 |
+| Quinn | io_uring | cubic | 2 | 20 | gigabits/second | 6.588 | 5.804 | 5.655 |
+| Quinn | syscall | cubic | 3 | 20 | gigabits/second | 5.831 | 5.692 | 5.613 |
+| noq | io_uring | cubic | 2 | 20 | gigabits/second | 5.255 | 4.731 | 4.674 |
+| noq | syscall | cubic | 3 | 20 | gigabits/second | 4.839 | 4.739 | 4.481 |
+| picoquic | io_uring | cubic | 1 | 20 | gigabits/second | 5.165 | 4.689 | 4.007 |
+| s2n-quic | syscall | cubic | 4 | 20 | gigabits/second | 5.476 | 4.302 | 3.143 |
+| XQUIC | syscall | cubic | 3 | 20 | gigabits/second | 4.865 | 3.960 | 2.450 |
+| Neqo | syscall | cubic | 1 | 20 | gigabits/second | 4.167 | 2.899 | 2.437 |
+| Neqo | io_uring | cubic | 1 | 20 | gigabits/second | 4.084 | 2.574 | 2.337 |
+| XQUIC | io_uring | cubic | 4 | 20 | gigabits/second | 3.384 | 2.851 | 2.311 |
+| s2n-quic | io_uring | cubic | 6 | 20 | gigabits/second | 5.446 | 2.168 | 1.802 |
 
 ### Upload
 
@@ -47,66 +47,67 @@ Client-to-server bulk transfer; higher throughput is better.
 
 | Library | Network | CC | Client threads | Samples | Unit | p50 | p90 | p99 |
 |---|---|---|---:|---:|---|---:|---:|---:|
-| ngtcp2 | syscall | cubic | 2 | 20 | gigabits/second | 27.615 | 24.783 | 24.695 |
-| ngtcp2 | io_uring | cubic | 4 | 20 | gigabits/second | 25.211 | 24.166 | 23.632 |
-| LSQUIC | syscall | cubic | 5 | 20 | gigabits/second | 21.387 | 19.808 | 19.349 |
-| LSQUIC | io_uring | cubic | 5 | 20 | gigabits/second | 20.865 | 19.409 | 19.005 |
-| quiche | syscall | cubic | 6 | 20 | gigabits/second | 13.976 | 13.766 | 13.645 |
-| quiche | io_uring | cubic | 4 | 20 | gigabits/second | 13.080 | 12.478 | 12.259 |
-| picoquic | io_uring | cubic | 6 | 20 | gigabits/second | 11.625 | 11.277 | 11.236 |
-| TQUIC | io_uring | cubic | 4 | 20 | gigabits/second | 10.151 | 9.630 | 9.324 |
-| TQUIC | syscall | cubic | 4 | 20 | gigabits/second | 10.669 | 9.919 | 9.258 |
-| quic-zig | syscall | cubic | 1 | 20 | gigabits/second | 9.731 | 8.847 | 8.733 |
-| quic-zig | io_uring | cubic | 1 | 20 | gigabits/second | 8.916 | 8.303 | 8.082 |
-| mvfst | syscall | cubic | 14 | 20 | gigabits/second | 6.915 | 6.865 | 6.832 |
-| mvfst | io_uring | cubic | 14 | 20 | gigabits/second | 6.629 | 6.431 | 6.290 |
-| s2n-quic | syscall | cubic | 3 | 20 | gigabits/second | 6.080 | 5.746 | 5.471 |
-| picoquic | syscall | cubic | 2 | 20 | gigabits/second | 11.182 | 6.399 | 5.152 |
-| s2n-quic | io_uring | cubic | 3 | 20 | gigabits/second | 5.487 | 4.993 | 4.616 |
-| Quinn | io_uring | cubic | 1 | 20 | gigabits/second | 4.077 | 3.959 | 3.901 |
-| Neqo | syscall | cubic | 1 | 20 | gigabits/second | 4.144 | 3.994 | 3.604 |
-| Quinn | syscall | cubic | 1 | 20 | gigabits/second | 3.432 | 3.391 | 3.366 |
-| noq | io_uring | cubic | 1 | 20 | gigabits/second | 3.484 | 3.411 | 3.220 |
-| noq | syscall | cubic | 1 | 20 | gigabits/second | 2.993 | 2.956 | 2.921 |
-| XQUIC | syscall | cubic | 3 | 20 | gigabits/second | 3.149 | 2.997 | 2.860 |
-| Neqo | io_uring | cubic | 1 | 20 | gigabits/second | 4.051 | 3.396 | 2.649 |
-| XQUIC | io_uring | cubic | 1 | 20 | gigabits/second | 1.759 | 1.218 | 1.110 |
+| ngtcp2 | syscall | cubic | 3 | 20 | gigabits/second | 27.142 | 26.362 | 25.962 |
+| ngtcp2 | io_uring | cubic | 5 | 20 | gigabits/second | 24.267 | 23.791 | 22.805 |
+| LSQUIC | syscall | cubic | 5 | 20 | gigabits/second | 23.330 | 20.795 | 19.885 |
+| quiche | syscall | cubic | 4 | 20 | gigabits/second | 13.907 | 13.451 | 13.217 |
+| quiche | io_uring | cubic | 4 | 20 | gigabits/second | 12.813 | 12.525 | 12.205 |
+| picoquic | io_uring | cubic | 5 | 20 | gigabits/second | 11.475 | 10.960 | 10.846 |
+| TQUIC | syscall | cubic | 5 | 20 | gigabits/second | 11.059 | 10.553 | 9.664 |
+| TQUIC | io_uring | cubic | 5 | 20 | gigabits/second | 10.061 | 9.793 | 9.300 |
+| LSQUIC | io_uring | cubic | 5 | 20 | gigabits/second | 20.705 | 17.673 | 9.239 |
+| quic-zig | syscall | cubic | 1 | 20 | gigabits/second | 9.278 | 8.919 | 8.416 |
+| quic-zig | io_uring | cubic | 1 | 20 | gigabits/second | 9.206 | 8.728 | 8.111 |
+| mvfst | syscall | cubic | 15 | 20 | gigabits/second | 6.907 | 6.779 | 6.670 |
+| picoquic | syscall | cubic | 2 | 20 | gigabits/second | 11.433 | 9.576 | 6.385 |
+| mvfst | io_uring | cubic | 14 | 20 | gigabits/second | 6.553 | 6.165 | 6.078 |
+| s2n-quic | syscall | cubic | 2 | 20 | gigabits/second | 5.989 | 5.690 | 5.589 |
+| s2n-quic | io_uring | cubic | 3 | 20 | gigabits/second | 5.526 | 5.133 | 5.040 |
+| Quinn | io_uring | cubic | 1 | 20 | gigabits/second | 4.130 | 4.039 | 3.989 |
+| Neqo | syscall | cubic | 1 | 20 | gigabits/second | 4.158 | 4.030 | 3.795 |
+| Quinn | syscall | cubic | 1 | 20 | gigabits/second | 3.446 | 3.410 | 3.408 |
+| noq | io_uring | cubic | 1 | 20 | gigabits/second | 3.568 | 3.256 | 3.024 |
+| noq | syscall | cubic | 1 | 20 | gigabits/second | 3.016 | 2.971 | 2.956 |
+| XQUIC | syscall | cubic | 4 | 20 | gigabits/second | 3.132 | 2.926 | 2.843 |
+| Neqo | io_uring | cubic | 1 | 20 | gigabits/second | 3.976 | 3.165 | 2.633 |
+| XQUIC | io_uring | cubic | 1 | 20 | gigabits/second | 1.726 | 1.107 | 1.009 |
 
 ### Connect
 
-Full connection establishment plus stream creation.
+Full connection establishment plus bidirectional stream creation; higher rate is better.
 
 | Library | Network | CC | Client threads | Samples | Unit | p50 | p90 | p99 |
 |---|---|---|---:|---:|---|---:|---:|---:|
-| XQUIC | io_uring | cubic | 16 | 20 | connections/second | 8,610 | 8,185 | 8,122 |
-| ngtcp2 | io_uring | cubic | 15 | 20 | connections/second | 9,480 | 8,355 | 8,048 |
-| LSQUIC | io_uring | cubic | 14 | 20 | connections/second | 8,219 | 7,890 | 7,599 |
-| TQUIC | io_uring | cubic | 10 | 20 | connections/second | 6,674 | 6,345 | 6,240 |
-| noq | io_uring | cubic | 14 | 20 | connections/second | 6,587 | 6,325 | 6,192 |
-| Quinn | io_uring | cubic | 12 | 20 | connections/second | 7,074 | 6,761 | 6,120 |
-| s2n-quic | io_uring | cubic | 15 | 20 | connections/second | 6,196 | 5,816 | 5,596 |
-| quiche | io_uring | cubic | 12 | 20 | connections/second | 5,946 | 5,643 | 5,375 |
-| picoquic | io_uring | cubic | 15 | 20 | connections/second | 4,957 | 4,556 | 3,876 |
-| quic-zig | io_uring | cubic | 13 | 20 | connections/second | 3,946 | 3,646 | 3,589 |
-| XQUIC | syscall | cubic | 7 | 20 | connections/second | 3,703 | 3,365 | 3,250 |
-| noq | syscall | cubic | 6 | 20 | connections/second | 3,073 | 2,922 | 2,805 |
-| LSQUIC | syscall | cubic | 4 | 20 | connections/second | 3,379 | 2,876 | 2,725 |
-| ngtcp2 | syscall | cubic | 7 | 20 | connections/second | 3,000 | 2,783 | 2,707 |
-| s2n-quic | syscall | cubic | 7 | 20 | connections/second | 2,887 | 2,741 | 2,581 |
-| TQUIC | syscall | cubic | 7 | 20 | connections/second | 2,647 | 2,523 | 2,310 |
-| picoquic | syscall | cubic | 7 | 20 | connections/second | 2,186 | 2,096 | 2,006 |
-| quiche | syscall | cubic | 7 | 20 | connections/second | 2,441 | 2,369 | 1,939 |
-| quic-zig | syscall | cubic | 5 | 20 | connections/second | 2,143 | 2,036 | 1,926 |
-| Quinn | syscall | cubic | 4 | 20 | connections/second | 2,977 | 2,591 | 1,448 |
-| mvfst | io_uring | cubic | 7 | 20 | connections/second | 815 | 760 | 710 |
-| Neqo | syscall | cubic | 6 | 20 | connections/second | 816 | 720 | 687 |
-| Neqo | io_uring | cubic | 5 | 20 | connections/second | 740 | 680 | 649 |
-| mvfst | syscall | cubic | 8 | 20 | connections/second | 855 | 737 | 619 |
+| ngtcp2 | io_uring | cubic | 18 | 20 | connections/second | 9,968 | 9,675 | 9,280 |
+| XQUIC | io_uring | cubic | 17 | 20 | connections/second | 8,833 | 8,111 | 7,460 |
+| LSQUIC | io_uring | cubic | 11 | 20 | connections/second | 7,701 | 7,199 | 6,899 |
+| Quinn | io_uring | cubic | 14 | 20 | connections/second | 7,158 | 6,839 | 6,623 |
+| TQUIC | io_uring | cubic | 12 | 20 | connections/second | 7,220 | 6,846 | 6,288 |
+| noq | io_uring | cubic | 10 | 20 | connections/second | 6,190 | 5,961 | 5,952 |
+| quiche | io_uring | cubic | 12 | 20 | connections/second | 5,791 | 5,406 | 4,992 |
+| s2n-quic | io_uring | cubic | 11 | 20 | connections/second | 5,656 | 5,159 | 4,968 |
+| quic-zig | io_uring | cubic | 11 | 20 | connections/second | 3,799 | 3,561 | 3,351 |
+| picoquic | io_uring | cubic | 10 | 20 | connections/second | 4,338 | 3,976 | 3,015 |
+| Quinn | syscall | cubic | 7 | 20 | connections/second | 3,257 | 3,086 | 2,957 |
+| LSQUIC | syscall | cubic | 5 | 20 | connections/second | 3,526 | 3,072 | 2,841 |
+| TQUIC | syscall | cubic | 9 | 20 | connections/second | 2,961 | 2,789 | 2,761 |
+| s2n-quic | syscall | cubic | 7 | 20 | connections/second | 2,828 | 2,693 | 2,665 |
+| ngtcp2 | syscall | cubic | 7 | 20 | connections/second | 3,005 | 2,728 | 2,614 |
+| XQUIC | syscall | cubic | 7 | 20 | connections/second | 3,607 | 3,402 | 2,414 |
+| noq | syscall | cubic | 7 | 20 | connections/second | 3,091 | 2,909 | 2,104 |
+| quic-zig | syscall | cubic | 6 | 20 | connections/second | 2,320 | 2,102 | 2,069 |
+| quiche | syscall | cubic | 8 | 20 | connections/second | 2,437 | 2,131 | 2,062 |
+| picoquic | syscall | cubic | 7 | 20 | connections/second | 2,200 | 2,052 | 2,010 |
+| Neqo | syscall | cubic | 11 | 20 | connections/second | 1,010 | 905 | 777 |
+| mvfst | syscall | cubic | 8 | 20 | connections/second | 858 | 792 | 732 |
+| mvfst | io_uring | cubic | 6 | 20 | connections/second | 839 | 737 | 698 |
+| Neqo | io_uring | cubic | 5 | 20 | connections/second | 784 | 654 | 323 |
 
 ## Caveats
 
-- `idle_footprint` is omitted from the current table because it was not part of this loopback refresh scenario set.
-- `datagram` is omitted from the adaptive publication table; DATAGRAM support is covered by the high-value capability smoke and should remain separate until a fair adaptive DATAGRAM publication run is configured.
-- Unsupported capability rows are explicit unsupported markers, not crashes.
-- Row-level caveats and full gate reasons are in [`publication-results.tsv`](results/loopback-full-matrix-20260525T002622Z/publication-results.tsv), [`row-stats.tsv`](results/loopback-full-matrix-20260525T002622Z/row-stats.tsv), [`publication-row-audit.tsv`](results/loopback-full-matrix-20260525T002622Z/publication-row-audit.tsv), and [`saturation-decisions.tsv`](results/loopback-full-matrix-20260525T002622Z/saturation-decisions.tsv).
-- Raw samples are in [`adaptive-samples.tsv`](results/loopback-full-matrix-20260525T002622Z/adaptive-samples.tsv).
+- This loopback publication table covers `download`, `upload`, and `connect`; other scenarios remain in smoke, capability, or diagnostic artifacts until explicitly promoted.
+- `datagram` is omitted from the adaptive publication table; DATAGRAM support is covered by high-value capability smoke and should remain separate until a fair adaptive DATAGRAM publication run is configured.
+- `idle_footprint` is omitted because it was not part of this loopback publication scenario set.
+- Unsupported capability rows are explicit unsupported markers, not crashes or claims that the upstream library lacks the feature.
+- Row-level gate reasons are in [`publication-results.tsv`](results/loopback-full-matrix-20260525T213948Z/publication-results.tsv), [`row-stats.tsv`](results/loopback-full-matrix-20260525T213948Z/row-stats.tsv), [`publication-row-audit.tsv`](results/loopback-full-matrix-20260525T213948Z/publication-row-audit.tsv), and [`saturation-decisions.tsv`](results/loopback-full-matrix-20260525T213948Z/saturation-decisions.tsv).
+- Raw measured samples are in [`adaptive-samples.tsv`](results/loopback-full-matrix-20260525T213948Z/adaptive-samples.tsv); calibration samples are published separately and excluded from the tables.

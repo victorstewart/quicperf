@@ -113,8 +113,10 @@ or operations for stable timing. Calibration is never publication data:
   DATAGRAM queues, packetization policy, backend semantics, or library internals
 - fixed-semantics rows such as single connection setup and `idle_footprint`
   remain fixed unless separately justified
-- calibrated mode is publishable only after A/B validation against fixed-work
-  rows across fast, median, slow, syscall, iouring, and DATAGRAM cases
+- calibration policy changes require A/B validation against fixed-work rows
+  across fast, median, slow, syscall, iouring, and DATAGRAM cases
+- publication runs using the reviewed calibration policy must publish the
+  workload plan and exclude calibration samples from result statistics
 
 This matches established harness practice: Criterion.rs separates warmup from
 measurement and uses warmup timing to size measured samples; Google Benchmark
@@ -270,7 +272,8 @@ The old fixed `3 x 10` runner is only a compatibility smoke path:
 - shared TLS 1.3 Ed25519 certificate/key/chain by default
 - verified TLS requires `tools/run-tls-verify-audit.sh`
 - loopback CUBIC congestion control for every adapter
-- shared window, stream-limit, and workload profiles where APIs permit
+- shared public window, stream-limit, and workload requests where APIs permit;
+  negotiated or clamped library policy is reported, not overridden
 - server app-level completion before client/server exit
 - true per-connection/per-stream server state for multi-client rows
 - fresh random loopback port blocks by default

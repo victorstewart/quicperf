@@ -1,0 +1,36 @@
+# Launch Metadata
+
+Source run directory: `.run/full-matrix-20260525T213948Z`
+
+## Command
+
+```sh
+QUICPERF_BINARIES="ngtcp2perf lsperf tquicperf quicheperf picoperf xquicperf quinnperf s2nperf neqoperf noqperf quiczigperf mvfstperf" \
+QUICPERF_PATH_PROFILES=loopback \
+QUICPERF_NETWORKS="syscall iouring" \
+QUICPERF_TEST_BYTES=1073741824 \
+QUICPERF_ADAPTIVE_OUT_DIR="$OUT" \
+tools/run-adaptive-publication-suite.py
+```
+
+## Environment
+
+```sh
+QUICPERF_BINARIES=ngtcp2perf lsperf tquicperf quicheperf picoperf xquicperf quinnperf s2nperf neqoperf noqperf quiczigperf mvfstperf
+QUICPERF_PATH_PROFILES=loopback
+QUICPERF_NETWORKS=syscall iouring
+QUICPERF_TEST_BYTES=1073741824
+```
+
+## Launch Table
+
+```tsv
+field	value
+out_dir	.run/full-matrix-20260525T213948Z
+pid	3320765
+started_utc	2026-05-25T21:39:48Z
+path_profiles	loopback
+networks	syscall iouring
+test_bytes	1073741824
+binaries	ngtcp2perf lsperf tquicperf quicheperf picoperf xquicperf quinnperf s2nperf neqoperf noqperf quiczigperf mvfstperf
+```

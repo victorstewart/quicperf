@@ -1,0 +1,10 @@
+quicperf_adaptive_environment date_utc=2026-05-25T21:46:32Z
+quicperf_adaptive_environment publication_id=adaptive-20260525T213948Z-3320776
+quicperf_adaptive_environment git_commit=e36ee55131379fbfd419fbb584e7cadff6502b8d
+quicperf_adaptive_environment env_hash=cb4cd4abe20650f8 machine_hash=81f09a2baab49e36
+quicperf_adaptive_environment variables
+QUICPERF_ADAPTIVE_OUT_DIR=.run/full-matrix-20260525T213948Z
+QUICPERF_BINARIES=ngtcp2perf lsperf tquicperf quicheperf picoperf xquicperf quinnperf s2nperf neqoperf noqperf quiczigperf mvfstperf
+QUICPERF_NETWORKS=syscall iouring
+QUICPERF_PATH_PROFILES=loopback
+QUICPERF_TEST_BYTES=1073741824
