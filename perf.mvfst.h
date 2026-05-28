@@ -88,6 +88,7 @@ private:
   quic::QuicAsyncUDPSocket::ReadCallback *readCallback = nullptr;
   quic::QuicAsyncUDPSocket::WriteCallback *writeCallback = nullptr;
   MultiUDPContext *pendingWriteBatch = nullptr;
+  MvfstNetworkSocket<mode> **ownerSlot = nullptr;
   bool readPaused = true;
 
   static quic::Expected<void, quic::QuicError> ok(void)
@@ -175,6 +176,21 @@ public:
         evb(std::move(eventBase)),
         localAddress(mvfstSocketAddressFromSockaddr(hub->socket.address()))
   {
+  }
+
+  ~MvfstNetworkSocket() override
+  {
+    flushPendingWrites();
+    if (ownerSlot != nullptr && *ownerSlot == this)
+    {
+      *ownerSlot = nullptr;
+    }
+  }
+
+  void registerOwnerSlot(MvfstNetworkSocket<mode> **slot)
+  {
+    ownerSlot = slot;
+    *ownerSlot = this;
   }
 
   quic::Expected<void, quic::QuicError> init(sa_family_t) override
@@ -488,6 +504,7 @@ public:
   bool echoDatagrams = false;
   uint64_t datagramReceived = 0;
   uint64_t datagramEchoed = 0;
+  std::vector<uint8_t> datagramSeen;
 
   void setSocket(std::shared_ptr<quic::QuicSocket> value)
   {
@@ -549,12 +566,6 @@ public:
       connectionEnded = true;
       return;
     }
-    if (benchmarkScenario == BenchmarkScenario::datagram &&
-        datagramReceived >= benchmarkScenarioOperations)
-    {
-      connectionEnded = true;
-      return;
-    }
     fprintf(stderr, "mvfst connection error: %s\n", error.message.c_str());
     connectionError = true;
   }
@@ -586,12 +597,27 @@ public:
     }
     for (const auto& datagram : *result)
     {
+      auto chain = datagram.bufQueue().front()->cloneCoalesced();
+      const uint64_t sequence = benchmarkDecodeDatagramSequence(chain->data(), chain->length());
+      if (!benchmarkMarkDatagramSeen(datagramSeen, sequence))
+      {
+        continue;
+      }
       ++datagramReceived;
       if (!echoDatagrams)
       {
         continue;
       }
-      auto chain = datagram.bufQueue().front()->cloneCoalesced();
+      const uint16_t sizeLimit = socket->getDatagramSizeLimit();
+      if (sizeLimit == 0 || chain->computeChainDataLength() > sizeLimit)
+      {
+        fprintf(stderr,
+                "mvfst datagram echo exceeds negotiated payload limit payload=%zu limit=%u\n",
+                chain->computeChainDataLength(),
+                sizeLimit);
+        connectionError = true;
+        return;
+      }
       auto writeResult = socket->writeDatagram(std::move(chain));
       if (writeResult.hasError())
       {
@@ -618,13 +644,6 @@ public:
   }
 };
 
-static std::shared_ptr<quic::BasicQuicPskCache> mvfstBenchmarkPskCache(void)
-{
-  static std::shared_ptr<quic::BasicQuicPskCache> cache =
-      std::make_shared<quic::BasicQuicPskCache>();
-  return cache;
-}
-
 static folly::ByteRange mvfstBenchmarkTicketSecret(void)
 {
   static const std::array<uint8_t, 32> secret = {
@@ -647,6 +666,7 @@ private:
   std::unique_ptr<MvfstHandler> clientHandler;
   std::shared_ptr<fizz::server::FizzServerContext> serverContext;
   std::shared_ptr<quic::FizzClientQuicHandshakeContext> clientContext;
+  std::shared_ptr<quic::BasicQuicPskCache> pskCache;
   MvfstEarlyDataAppParams earlyDataAppParams;
   MvfstNetworkSocket<mode> *clientNetworkSocket = nullptr;
   quic::StreamId stream = UINT64_MAX;
@@ -657,6 +677,7 @@ private:
   bool zeroRttAttemptedObserved = false;
   bool zeroRttAcceptedObserved = false;
   bool zeroRttRejectedObserved = false;
+  bool stallTrace = false;
 
   enum class ServerPhase : uint8_t {
     readRequest,
@@ -896,7 +917,7 @@ private:
     return quic::FizzClientQuicHandshakeContext::Builder()
         .setFizzClientContext(std::move(fizzClientContext))
         .setCertificateVerifier(std::move(verifier))
-        .setPskCache(mvfstBenchmarkPskCache())
+        .setPskCache(pskCache)
         .build();
   }
 
@@ -945,7 +966,7 @@ private:
     owned->connIdAlgo = std::make_unique<quic::DefaultConnectionIdAlgo>();
 
     auto socket = std::make_unique<MvfstNetworkSocket<mode>>(networkHub, quicEventBase);
-    owned->networkSocket = socket.get();
+    socket->registerOwnerSlot(&owned->networkSocket);
     owned->transport = std::make_shared<quic::QuicServerTransport>(
         quicEventBase,
         std::move(socket),
@@ -1577,57 +1598,98 @@ private:
 
   size_t datagramPayloadSize(void) const
   {
-    return std::min<size_t>(benchmarkScenarioMessageBytes, buffer.size());
-  }
-
-  uint64_t datagramMaxAttempts(void) const
-  {
-    const uint64_t maxInFlight = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
-    return benchmarkScenarioOperations +
-           (std::max<uint64_t>(benchmarkScenarioOperations, maxInFlight) * 64ULL);
+    uint64_t maxPayloadBytes = benchmarkDatagramPayloadLimitForFrameBytes(benchmarkUdpPayloadSize);
+    if constexpr (mode & Mode::client)
+    {
+      if (client)
+      {
+        maxPayloadBytes = client->getDatagramSizeLimit();
+      }
+    }
+    return benchmarkDatagramPayloadBytesForPayloadLimit(buffer.size(), maxPayloadBytes);
   }
 
   void runClientDatagram(void)
   {
     const uint64_t operations = benchmarkScenarioOperations;
-    const uint64_t maxInFlight = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
-    const uint64_t maxAttempts = datagramMaxAttempts();
+    const uint64_t burstLimit = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
     const size_t payloadSize = datagramPayloadSize();
+    if (payloadSize == 0)
+    {
+      fprintf(stderr, "mvfst DATAGRAM unsupported by negotiated payload limit\n");
+      abort();
+    }
     uint64_t sent = 0;
     uint64_t drainDeadlineUs = 0;
-    while (clientHandler->datagramReceived < operations ||
+    uint64_t writeBlocked = 0;
+    uint64_t nextDebugUs = timeNowUs() + 1'000'000;
+    while (sent < operations ||
            drainDeadlineUs == 0 ||
            timeNowUs() < drainDeadlineUs)
     {
       bool progressed = false;
-      while (clientHandler->datagramReceived < operations &&
-             sent < maxAttempts &&
-             sent - clientHandler->datagramReceived < maxInFlight)
+      const uint64_t nowUs = timeNowUs();
+      const uint64_t received = clientHandler->datagramReceived;
+      const uint64_t inFlight = sent > received ? sent - received : 0;
+      uint64_t burst = 0;
+      while (sent < operations && burst < burstLimit)
       {
+        benchmarkFillDatagramPayload(buffer.data(), payloadSize, networkHub->junk, sent);
         auto result = client->writeDatagram(
             folly::IOBuf::copyBuffer(buffer.data(), payloadSize));
         if (result.hasError())
         {
+          ++writeBlocked;
           break;
         }
         ++sent;
+        ++burst;
         progressed = true;
       }
-      if (sent >= maxAttempts && clientHandler->datagramReceived < operations)
+      if (sent >= operations && drainDeadlineUs == 0)
       {
-        fprintf(stderr, "mvfst datagram delivery target not reached received=%" PRIu64 " sent=%" PRIu64 " target=%" PRIu64 "\n",
-                clientHandler->datagramReceived, sent, operations);
-        abort();
+        drainDeadlineUs = clientHandler->datagramReceived >= sent
+                              ? timeNowUs()
+                              : timeNowUs() + benchmarkDatagramDrainUs;
       }
-      if (clientHandler->datagramReceived >= operations && drainDeadlineUs == 0)
+      else if (sent >= operations && clientHandler->datagramReceived >= sent)
       {
-        drainDeadlineUs = timeNowUs() + 100'000;
+        drainDeadlineUs = timeNowUs();
       }
-      const uint64_t nowUs = timeNowUs();
-      const uint64_t waitUs = drainDeadlineUs != 0 && nowUs < drainDeadlineUs
-                                  ? std::min<uint64_t>(1000, drainDeadlineUs - nowUs)
+      if (stallTrace && nowUs >= nextDebugUs)
+      {
+        fprintf(stderr,
+                "mvfst debug=datagram_client sent=%" PRIu64 " received=%" PRIu64
+                " target=%" PRIu64 " in_flight=%" PRIu64 " write_blocked=%" PRIu64
+                " transport_ready=%u handshake_done=%u connection_ended=%u connection_error=%u"
+                " send_pool=%u pending_send_sqes=%" PRIu64 " outstanding_send_sqes=%" PRIu64
+                " sq_ready=%u cq_ready=%u\n",
+                sent, clientHandler->datagramReceived, operations, inFlight,
+                writeBlocked, clientHandler->transportReady ? 1 : 0,
+                clientHandler->handshakeDone ? 1 : 0,
+                clientHandler->connectionEnded ? 1 : 0,
+                clientHandler->connectionError ? 1 : 0,
+                networkHub->debugSendPoolAvailable(),
+                networkHub->debugPendingSendSqes(),
+                networkHub->debugOutstandingSendSqes(),
+                networkHub->debugSqReady(),
+                networkHub->debugCqReady());
+        nextDebugUs = nowUs + 1'000'000;
+      }
+      const uint64_t waitNowUs = timeNowUs();
+      const uint64_t waitUs = drainDeadlineUs != 0 && waitNowUs < drainDeadlineUs
+                                  ? std::min<uint64_t>(1000, drainDeadlineUs - waitNowUs)
                                   : 1000;
       pumpOnce(progressed ? 0 : waitUs);
+    }
+    client->closeNow(quic::Optional<quic::QuicError> {});
+    for (uint32_t i = 0; i < 64; ++i)
+    {
+      pumpOnce(1000);
+      if (clientHandler->connectionEnded || clientHandler->connectionError)
+      {
+        break;
+      }
     }
     benchmarkRecordDatagramClientCounters(sent, clientHandler->datagramReceived);
   }
@@ -1635,7 +1697,7 @@ private:
   void startClientConnection(struct sockaddr *address)
   {
     auto socket = std::make_unique<MvfstNetworkSocket<mode>>(networkHub, quicEventBase);
-    clientNetworkSocket = socket.get();
+    socket->registerOwnerSlot(&clientNetworkSocket);
     clientHandler = std::make_unique<MvfstHandler>();
     client = quic::QuicClientTransport::newClient(
         quicEventBase,
@@ -1668,17 +1730,18 @@ private:
   {
     waitForTargetServerConnections();
     uint32_t completed = 0;
+    uint64_t nextDebugUs = timeNowUs() + 1'000'000;
     while (completed < benchmarkServerTargetConnections)
     {
       completed = 0;
       const uint64_t nowUs = timeNowUs();
       for (auto& owned : serverConns)
       {
-        if (owned->handler->datagramEchoed >= benchmarkScenarioOperations)
+        if (owned->handler->connectionEnded || owned->handler->connectionError)
         {
           if (owned->datagramDrainDeadlineUs == 0)
           {
-            owned->datagramDrainDeadlineUs = nowUs + 100'000;
+            owned->datagramDrainDeadlineUs = nowUs + benchmarkDatagramDrainUs;
           }
           if (nowUs >= owned->datagramDrainDeadlineUs)
           {
@@ -1689,6 +1752,38 @@ private:
       if (completed >= benchmarkServerTargetConnections)
       {
         break;
+      }
+      if (stallTrace && nowUs >= nextDebugUs)
+      {
+        fprintf(stderr,
+                "mvfst debug=datagram_server conns=%zu completed=%u target_conns=%u "
+                "send_pool=%u pending_send_sqes=%" PRIu64 " outstanding_send_sqes=%" PRIu64
+                " sq_ready=%u cq_ready=%u\n",
+                serverConns.size(), completed, benchmarkServerTargetConnections,
+                networkHub->debugSendPoolAvailable(),
+                networkHub->debugPendingSendSqes(),
+                networkHub->debugOutstandingSendSqes(),
+                networkHub->debugSqReady(),
+                networkHub->debugCqReady());
+        for (size_t index = 0; index < serverConns.size(); ++index)
+        {
+          const auto& owned = serverConns[index];
+          fprintf(stderr,
+                  "mvfst debug=datagram_server_conn index=%zu received=%" PRIu64
+                  " echoed=%" PRIu64 " target=%" PRIu64
+                  " drain_deadline_set=%u transport_ready=%u handshake_done=%u"
+                  " connection_ended=%u connection_error=%u\n",
+                  index,
+                  owned->handler->datagramReceived,
+                  owned->handler->datagramEchoed,
+                  benchmarkScenarioOperations,
+                  owned->datagramDrainDeadlineUs != 0 ? 1 : 0,
+                  owned->handler->transportReady ? 1 : 0,
+                  owned->handler->handshakeDone ? 1 : 0,
+                  owned->handler->connectionEnded ? 1 : 0,
+                  owned->handler->connectionError ? 1 : 0);
+        }
+        nextDebugUs = nowUs + 1'000'000;
       }
       pumpOnce(1000);
     }
@@ -1892,6 +1987,7 @@ public:
     (void)argc;
     (void)argv;
     std::fill(buffer.begin(), buffer.end(), 0x7);
+    stallTrace = std::getenv("QUICPERF_MVFST_STALL_DEBUG") != nullptr;
     networkHub = new NetworkHub<mode>(localPort);
     quicEventBase = std::make_shared<quic::FollyQuicEventBase>(&eventBase);
     if constexpr (mode & Mode::server)
@@ -1901,6 +1997,7 @@ public:
     }
     else
     {
+      pskCache = std::make_shared<quic::BasicQuicPskCache>();
       clientContext = makeClientContext();
     }
   }
@@ -2031,11 +2128,16 @@ public:
     {
       for (unsigned i = 0; i < 200; ++i)
       {
-        if (mvfstBenchmarkPskCache()->getPsk("localhost").has_value())
+        if (pskCache)
         {
-          state.session.assign({'m', 'v', 'f', 's', 't', '-', 'p', 's', 'k'});
-          state.proofLabel = "mvfst_basic_quic_psk_cache_and_zero_rtt_state";
-          return true;
+          auto psk = pskCache->getPsk("localhost");
+          if (psk.has_value())
+          {
+            state.session.assign({'m', 'v', 'f', 's', 't', '-', 'p', 's', 'k'});
+            state.opaqueState = std::make_shared<quic::QuicCachedPsk>(*psk);
+            state.proofLabel = "mvfst_basic_quic_psk_cache_and_zero_rtt_state";
+            return true;
+          }
         }
         pumpOnce();
       }
@@ -2047,10 +2149,16 @@ public:
   {
     if constexpr (mode & Mode::client)
     {
-      if (state.session.empty())
+      if (state.session.empty() || !pskCache || !state.opaqueState)
       {
         return false;
       }
+      auto psk = std::static_pointer_cast<quic::QuicCachedPsk>(state.opaqueState);
+      if (!psk)
+      {
+        return false;
+      }
+      pskCache->putPsk("localhost", *psk);
       importedResumption = true;
       importedZeroRtt = enableZeroRtt;
       resumedObserved = false;

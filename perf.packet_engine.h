@@ -16,8 +16,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 struct PacketStreamDebug {
@@ -408,9 +410,14 @@ private:
 
   struct DatagramServerConn {
     uint64_t conn = UINT64_MAX;
+    uint64_t doneStream = UINT64_MAX;
     uint64_t received = 0;
     uint64_t echoed = 0;
-    uint64_t pendingEchoes = 0;
+    std::deque<uint64_t> pendingEchoes;
+    std::vector<uint8_t> seen;
+    uint8_t done = 0;
+    size_t doneRead = 0;
+    bool clientDone = false;
   };
 
   void check(int result) const
@@ -1596,7 +1603,9 @@ private:
 
   void runClientDatagrams(uint64_t operations)
   {
-    const size_t payloadSize = static_cast<size_t>(benchmarkScenarioMessageBytes);
+    const size_t payloadSize = benchmarkDatagramPayloadBytesForNoMssApiLimit(
+        buffer.size(),
+        benchmarkUdpPayloadSize);
     if (payloadSize == 0 || payloadSize > buffer.size())
     {
       fprintf(stderr, "%s invalid DATAGRAM payload size %zu\n", Abi::label, payloadSize);
@@ -1605,25 +1614,23 @@ private:
 
     uint64_t sent = 0;
     uint64_t received = 0;
-    const uint64_t maxInFlight = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
-    const uint64_t maxAttempts = std::max<uint64_t>(
-        4096ULL, operations + (std::max<uint64_t>(operations, maxInFlight) * 64ULL));
-    while (received < operations)
+    const uint64_t burstLimit = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
+    bool doneStreamSent = false;
+    uint64_t drainDeadlineUs = 0;
+    std::vector<uint8_t> seen(benchmarkDatagramSeenBytes(operations), 0);
+    while (sent < operations || !doneStreamSent || drainDeadlineUs == 0 || nowUs() < drainDeadlineUs)
     {
       bool progressed = false;
-      if (sent >= maxAttempts && received < operations)
+      uint64_t sentThisLoop = 0;
+      while (sent < operations && sentThisLoop < burstLimit)
       {
-        fprintf(stderr, "%s DATAGRAM delivery target not reached received=%" PRIu64 " sent=%" PRIu64 " target=%" PRIu64 "\n",
-                Abi::label, received, sent, operations);
-        abort();
-      }
-      while ((sent - received) < maxInFlight && sent < maxAttempts)
-      {
+        benchmarkFillDatagramPayload(buffer.data(), payloadSize, networkHub->junk, sent);
         if (!queueDatagram(connection, buffer.data(), payloadSize))
         {
           break;
         }
         ++sent;
+        ++sentThisLoop;
         progressed = true;
       }
       flushOutgoingPackets();
@@ -1632,13 +1639,41 @@ private:
       drainReadyIncomingPackets();
       while (popDatagram(connection, buffer.data(), buffer.size(), read))
       {
-        (void)read;
-        ++received;
-        progressed = true;
-        if (received >= operations)
+        const uint64_t sequence = benchmarkDecodeDatagramSequence(buffer.data(), read);
+        if (benchmarkMarkDatagramSeen(seen, sequence, operations))
         {
-          break;
+          ++received;
+          progressed = true;
         }
+      }
+      if (sent >= operations && !doneStreamSent)
+      {
+        uint64_t doneStream = openClientBidiStream();
+        uint8_t done = 0;
+        size_t doneWritten = 0;
+        while (doneWritten < sizeof(done))
+        {
+          size_t written = sendSome(doneStream, &done + doneWritten, sizeof(done) - doneWritten);
+          if (written == 0)
+          {
+            pumpOnce();
+          }
+          else
+          {
+            doneWritten += written;
+          }
+        }
+        finishStream(doneStream);
+        doneStreamSent = true;
+        progressed = true;
+      }
+      if (doneStreamSent && drainDeadlineUs == 0)
+      {
+        drainDeadlineUs = received >= sent ? nowUs() : nowUs() + benchmarkDatagramDrainUs;
+      }
+      else if (doneStreamSent && received >= sent)
+      {
+        drainDeadlineUs = nowUs();
       }
 
       if (!progressed)
@@ -1936,7 +1971,9 @@ private:
 
   void runServerDatagrams(void)
   {
-    const size_t payloadSize = static_cast<size_t>(benchmarkScenarioMessageBytes);
+    const size_t payloadSize = benchmarkDatagramPayloadBytesForNoMssApiLimit(
+        buffer.size(),
+        benchmarkUdpPayloadSize);
     if (payloadSize == 0 || payloadSize > buffer.size())
     {
       fprintf(stderr, "%s invalid DATAGRAM payload size %zu\n", Abi::label, payloadSize);
@@ -1960,42 +1997,73 @@ private:
         {
           break;
         }
-        conns.push_back(DatagramServerConn {.conn = accepted});
+        DatagramServerConn active = {};
+        active.conn = accepted;
+        conns.push_back(std::move(active));
         progressed = true;
       }
 
       bool allConnectionsComplete = conns.size() >= benchmarkServerTargetConnections;
       for (DatagramServerConn& active : conns)
       {
+        if (active.doneStream == UINT64_MAX)
+        {
+          uint64_t acceptedStream = UINT64_MAX;
+          int result = Abi::acceptBidi(engine, active.conn, &acceptedStream, nowUs());
+          check(result);
+          if (result == 1)
+          {
+            active.doneStream = acceptedStream;
+            progressed = true;
+          }
+        }
+        if (active.doneStream != UINT64_MAX && !active.clientDone)
+        {
+          size_t read = 0;
+          bool fin = false;
+          check(Abi::streamRecv(engine, active.conn, active.doneStream,
+                                &active.done + active.doneRead,
+                                sizeof(active.done) - active.doneRead,
+                                &read, &fin, nowUs()));
+          active.doneRead += read;
+          if (read > 0 || fin)
+          {
+            active.clientDone = true;
+            progressed = true;
+          }
+        }
         size_t read = 0;
         while (popDatagram(active.conn, buffer.data(), buffer.size(), read))
         {
-          (void)read;
-          ++active.received;
-          // Echo every received DATAGRAM. A peer reaching its local
-          // target is the only reliable completion signal in this row.
-          ++active.pendingEchoes;
-          progressed = true;
+          const uint64_t sequence = benchmarkDecodeDatagramSequence(buffer.data(), read);
+          if (benchmarkMarkDatagramSeen(active.seen, sequence))
+          {
+            ++active.received;
+            active.pendingEchoes.push_back(sequence);
+            progressed = true;
+          }
         }
 
-        while (active.pendingEchoes > 0)
+        while (!active.pendingEchoes.empty())
         {
+          benchmarkFillDatagramPayload(buffer.data(), payloadSize, networkHub->junk, active.pendingEchoes.front());
           if (!queueDatagram(active.conn, buffer.data(), payloadSize))
           {
             break;
           }
-          --active.pendingEchoes;
+          active.pendingEchoes.pop_front();
           ++active.echoed;
           progressed = true;
         }
 
         allConnectionsComplete = allConnectionsComplete &&
-                                 active.echoed >= benchmarkScenarioOperations;
+                                 active.clientDone &&
+                                 active.pendingEchoes.empty();
       }
 
       if (allConnectionsComplete && (drainDeadlineUs == 0 || progressed))
       {
-        drainDeadlineUs = nowUs() + 100'000;
+        drainDeadlineUs = nowUs() + benchmarkDatagramDrainUs;
       }
       flushOutgoingPackets();
 

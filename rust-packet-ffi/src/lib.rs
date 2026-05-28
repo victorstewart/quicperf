@@ -1219,7 +1219,9 @@ macro_rules! proto_engine {
                         );
                     }
                     Ok(state.connected
-                        && (state.conn.accepted_0rtt()
+                        && (shared_session_store_taken(self.tls_verify_peer)
+                            > self.resumption_take_baseline
+                            || state.conn.accepted_0rtt()
                             || (state.conn.has_0rtt()
                                 && shared_session_store_early_taken(self.tls_verify_peer)
                                     > self.resumption_early_take_baseline)))
@@ -1525,12 +1527,15 @@ mod neqo_engine {
                 .pmtud(false);
             let now = Instant::now();
             let server = if config.is_server {
+                let anti_replay_window = Duration::from_secs(10);
+                let anti_replay_now = now.checked_sub(anti_replay_window).unwrap_or(now);
                 Some(
                     Server::new(
                         now,
                         test_fixture::DEFAULT_KEYS,
                         test_fixture::DEFAULT_ALPN,
-                        test_fixture::anti_replay(),
+                        nss::AntiReplay::new(anti_replay_now, anti_replay_window, 7, 14)
+                            .map_err(|e| format!("neqo anti replay config: {e:?}"))?,
                         Box::new(AllowZeroRtt {}),
                         Rc::new(RefCell::new(
                             test_fixture::CountingConnectionIdGenerator::default(),
@@ -1944,7 +1949,18 @@ mod neqo_engine {
                 Ok((read, fin)) => (read, fin),
                 Err(Error::NoMoreData) => (0, true),
                 Err(Error::NotAvailable) => (0, false),
-                Err(error) => return Err(format!("neqo stream_recv: {error:?}")),
+                Err(error) => {
+                    let zero_rtt_state = if self.is_server {
+                        self.server_conns
+                            .get(&conn_id)
+                            .map(|state| state.conn.borrow().zero_rtt_state())
+                    } else {
+                        self.client.as_ref().map(Connection::zero_rtt_state)
+                    };
+                    return Err(format!(
+                        "neqo stream_recv: {error:?} stream={stream_id} zero_rtt_state={zero_rtt_state:?}"
+                    ));
+                }
             };
             self.drive_output(Instant::now());
             Ok(result)

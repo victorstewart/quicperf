@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -134,6 +136,8 @@ private:
   bool downloadCompletionAckRead = false;
   bool uploadFinSent = false;
   uint32_t serverCompletedConnections = 0;
+  bool stallTrace = false;
+  uint64_t nextStallTraceUs = 0;
 
   enum class GenericPhase : uint8_t {
     sendRequest,
@@ -141,6 +145,10 @@ private:
     sendPayload,
     readPayload,
     sendResponse,
+    readDone,
+    sendDone,
+    sendAck,
+    readAck,
     complete
   };
 
@@ -156,6 +164,10 @@ private:
     uint64_t requestBytesWritten = 0;
     uint64_t payloadRemaining = 0;
     uint64_t responseRemaining = 0;
+    size_t doneBytesRead = 0;
+    size_t doneBytesWritten = 0;
+    size_t ackBytesRead = 0;
+    size_t ackBytesWritten = 0;
     bool complete = false;
   };
 
@@ -287,7 +299,8 @@ private:
     picoquic_cnx_t *cnx = nullptr;
     uint64_t received = 0;
     uint64_t echoed = 0;
-    uint64_t pendingEchoes = 0;
+    std::deque<uint64_t> pendingEchoes;
+    std::vector<uint8_t> seen;
     uint64_t drainDeadlineUs = 0;
     bool clientDone = false;
     bool complete = false;
@@ -299,6 +312,8 @@ private:
   bool datagramStarted = false;
   bool datagramDoneSignalSent = false;
   bool datagramDoneStreamWritten = false;
+  std::vector<uint8_t> datagramClientSeen;
+  std::array<uint8_t, benchmarkAppChunkSize> datagramScratch = {};
 
   bool perfComplete(void) const
   {
@@ -323,7 +338,7 @@ private:
       }
       if (benchmarkScenario == BenchmarkScenario::datagram)
       {
-        return datagramClientReceived >= benchmarkScenarioOperations &&
+        return datagramClientSent >= benchmarkScenarioOperations &&
                datagramDoneSignalSent &&
                datagramDoneStreamWritten &&
                datagramClientDrainDeadlineUs != 0 &&
@@ -431,6 +446,12 @@ private:
     return bswap_64(value);
   }
 
+  static bool genericUsesTerminalAck(void)
+  {
+    return benchmarkScenario == BenchmarkScenario::multistream_download ||
+           benchmarkScenario == BenchmarkScenario::bidi;
+  }
+
   uint64_t genericTransferBytesForStream(uint64_t index) const
   {
     const uint64_t count = std::max<uint64_t>(1, benchmarkGenericStreamsPerConnection());
@@ -510,16 +531,19 @@ private:
     {
       return;
     }
-    if (state->echoed < benchmarkScenarioOperations &&
-        (state->received < benchmarkScenarioOperations || state->pendingEchoes != 0))
+    if (!state->clientDone || !state->pendingEchoes.empty())
     {
       return;
     }
     if (state->drainDeadlineUs == 0)
     {
-      state->drainDeadlineUs = timeNowUs() + 100'000;
+      state->drainDeadlineUs = timeNowUs() + benchmarkDatagramDrainUs;
     }
-    if (!state->clientDone && timeNowUs() < state->drainDeadlineUs)
+    if (!state->clientDone)
+    {
+      return;
+    }
+    if (timeNowUs() < state->drainDeadlineUs)
     {
       return;
     }
@@ -537,18 +561,7 @@ private:
       }
       for (auto& owned : datagramServerConns)
       {
-        auto *state = owned.get();
-        if (state->complete || state->drainDeadlineUs == 0)
-        {
-          continue;
-        }
-        if (state->echoed < benchmarkScenarioOperations &&
-            (state->received < benchmarkScenarioOperations || state->pendingEchoes != 0))
-        {
-          continue;
-        }
-        state->complete = true;
-        ++serverCompletedConnections;
+        markDatagramServerComplete(owned.get());
       }
     }
   }
@@ -557,19 +570,25 @@ private:
   {
     if constexpr (mode & Mode::server)
     {
-      const size_t payloadSize = std::min<size_t>(
-          benchmarkScenarioMessageBytes, sizeof(networkHub->junk));
+      const size_t payloadSize = benchmarkDatagramPayloadBytesForNoMssApiLimit(
+          sizeof(networkHub->junk),
+          benchmarkUdpPayloadSize);
+      if (payloadSize == 0)
+      {
+        return;
+      }
       for (auto& owned : datagramServerConns)
       {
         auto *state = owned.get();
-        while (state->pendingEchoes > 0)
+        while (!state->pendingEchoes.empty())
         {
-          int rv = picoquic_queue_datagram_frame(state->cnx, payloadSize, networkHub->junk);
+          benchmarkFillDatagramPayload(datagramScratch.data(), payloadSize, networkHub->junk, state->pendingEchoes.front());
+          int rv = picoquic_queue_datagram_frame(state->cnx, payloadSize, datagramScratch.data());
           if (rv != 0)
           {
             break;
           }
-          --state->pendingEchoes;
+          state->pendingEchoes.pop_front();
           ++state->echoed;
         }
         markDatagramServerComplete(state);
@@ -584,33 +603,34 @@ private:
       if (benchmarkScenario != BenchmarkScenario::datagram ||
           cnx == nullptr ||
           !datagramStarted ||
-          datagramClientReceived >= benchmarkScenarioOperations)
+          datagramClientSent >= benchmarkScenarioOperations)
       {
         return;
       }
       const uint64_t maxInFlight = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
-      const uint64_t maxAttempts = benchmarkScenarioOperations +
-                                   (std::max<uint64_t>(benchmarkScenarioOperations, maxInFlight) * 64ULL);
-      if (datagramClientSent >= maxAttempts && datagramClientReceived < benchmarkScenarioOperations)
+      const size_t payloadSize = benchmarkDatagramPayloadBytesForNoMssApiLimit(
+          sizeof(networkHub->junk),
+          benchmarkUdpPayloadSize);
+      if (payloadSize == 0)
       {
-        fprintf(stderr, "picoquic datagram delivery target not reached received=%" PRIu64 " sent=%" PRIu64 " target=%" PRIu64 "\n",
-                datagramClientReceived, datagramClientSent, benchmarkScenarioOperations);
-        abort();
+        return;
       }
-      const size_t payloadSize = std::min<size_t>(
-          benchmarkScenarioMessageBytes, sizeof(networkHub->junk));
       uint64_t sentThisCall = 0;
       while (sentThisCall < maxInFlight &&
-             datagramClientSent < maxAttempts &&
-             datagramClientSent - datagramClientReceived < maxInFlight)
+             datagramClientSent < benchmarkScenarioOperations)
       {
-        int rv = picoquic_queue_datagram_frame(cnx, payloadSize, networkHub->junk);
+        benchmarkFillDatagramPayload(datagramScratch.data(), payloadSize, networkHub->junk, datagramClientSent);
+        int rv = picoquic_queue_datagram_frame(cnx, payloadSize, datagramScratch.data());
         if (rv != 0)
         {
           break;
         }
         ++datagramClientSent;
         ++sentThisCall;
+      }
+      if (datagramClientSent >= benchmarkScenarioOperations && !datagramDoneSignalSent)
+      {
+        sendClientDatagramDoneSignal();
       }
     }
   }
@@ -628,7 +648,9 @@ private:
       {
         datagramDoneSignalSent = true;
         datagramDoneStreamWritten = true;
-        datagramClientDrainDeadlineUs = timeNowUs() + 100'000;
+        datagramClientDrainDeadlineUs = datagramClientReceived >= datagramClientSent
+                                            ? timeNowUs()
+                                            : timeNowUs() + benchmarkDatagramDrainUs;
       }
     }
   }
@@ -786,6 +808,26 @@ private:
                 consumed += static_cast<size_t>(copied);
                 if (genericState->responseRemaining == 0)
                 {
+                  if (genericUsesTerminalAck())
+                  {
+                    genericState->phase = GenericPhase::sendDone;
+                    picoquic_mark_active_stream(cnx, stream_id, true, genericState);
+                  }
+                  else
+                  {
+                    instance->markGenericClientComplete(genericState);
+                  }
+                }
+              }
+              if (genericUsesTerminalAck() &&
+                  genericState->phase == GenericPhase::readAck &&
+                  genericState->ackBytesRead < 1 && consumed < length)
+              {
+                const size_t copied = std::min<size_t>(1 - genericState->ackBytesRead, length - consumed);
+                genericState->ackBytesRead += copied;
+                consumed += copied;
+                if (genericState->ackBytesRead >= 1)
+                {
                   instance->markGenericClientComplete(genericState);
                 }
               }
@@ -843,6 +885,19 @@ private:
                 if (genericState->payloadRemaining == 0)
                 {
                   genericState->phase = GenericPhase::sendResponse;
+                  picoquic_mark_active_stream(cnx, stream_id, true, genericState);
+                }
+              }
+              if (genericUsesTerminalAck() &&
+                  genericState->phase == GenericPhase::readDone &&
+                  genericState->doneBytesRead < 1 && consumed < length)
+              {
+                const size_t copied = std::min<size_t>(1 - genericState->doneBytesRead, length - consumed);
+                genericState->doneBytesRead += copied;
+                consumed += copied;
+                if (genericState->doneBytesRead >= 1)
+                {
+                  genericState->phase = GenericPhase::sendAck;
                   picoquic_mark_active_stream(cnx, stream_id, true, genericState);
                 }
               }
@@ -924,7 +979,7 @@ private:
           {
             if constexpr (mode & Mode::client)
             {
-              if (instance->datagramClientReceived >= benchmarkScenarioOperations &&
+              if (instance->datagramClientSent >= benchmarkScenarioOperations &&
                   !instance->datagramDoneSignalSent)
               {
                 instance->sendClientDatagramDoneSignal();
@@ -936,7 +991,9 @@ private:
                 {
                   buffer[0] = 0;
                   instance->datagramDoneStreamWritten = true;
-                  instance->datagramClientDrainDeadlineUs = timeNowUs() + 100'000;
+                  instance->datagramClientDrainDeadlineUs = instance->datagramClientReceived >= instance->datagramClientSent
+                                                                ? timeNowUs()
+                                                                : timeNowUs() + benchmarkDatagramDrainUs;
                 }
               }
             }
@@ -959,7 +1016,8 @@ private:
                              ? instance->networkHub->junk
                              : genericState->requestBytes.data() + genericState->requestBytesWritten;
                 stillActive = sendLength < left || genericState->payloadRemaining > 0;
-                finished = sendLength == left && genericState->payloadRemaining == 0;
+                finished = sendLength == left && genericState->payloadRemaining == 0 &&
+                           !genericUsesTerminalAck();
               }
               else if (genericState->payloadRemaining > 0)
               {
@@ -967,7 +1025,16 @@ private:
                     std::min<uint64_t>(length, genericState->payloadRemaining));
                 source = instance->networkHub->junk;
                 stillActive = sendLength < genericState->payloadRemaining;
-                finished = sendLength == genericState->payloadRemaining;
+                finished = sendLength == genericState->payloadRemaining &&
+                           !genericUsesTerminalAck();
+              }
+              else if (genericUsesTerminalAck() &&
+                       genericState->phase == GenericPhase::sendDone &&
+                       genericState->doneBytesWritten < 1)
+              {
+                sendLength = std::min<size_t>(length, 1 - genericState->doneBytesWritten);
+                source = instance->networkHub->junk;
+                finished = sendLength == 1 - genericState->doneBytesWritten;
               }
 
               uint8_t *buffer = picoquic_provide_stream_data_buffer(bytes, sendLength, finished, stillActive);
@@ -982,6 +1049,15 @@ private:
                 {
                   genericState->payloadRemaining -= sendLength;
                 }
+                else if (genericUsesTerminalAck() &&
+                         genericState->phase == GenericPhase::sendDone)
+                {
+                  genericState->doneBytesWritten += sendLength;
+                  if (genericState->doneBytesWritten >= 1)
+                  {
+                    genericState->phase = GenericPhase::readAck;
+                  }
+                }
               }
             }
             else
@@ -990,25 +1066,48 @@ private:
               const uint8_t *source = nullptr;
               bool finished = false;
               bool stillActive = false;
-              if (genericState->phase == GenericPhase::sendResponse && genericState->responseRemaining > 0)
+              if (genericState->phase == GenericPhase::sendAck &&
+                  genericState->ackBytesWritten < 1)
+              {
+                sendLength = std::min<size_t>(length, 1 - genericState->ackBytesWritten);
+                source = instance->networkHub->junk;
+                finished = sendLength == 1 - genericState->ackBytesWritten;
+              }
+              else if (genericState->phase == GenericPhase::sendResponse && genericState->responseRemaining > 0)
               {
                 sendLength = static_cast<size_t>(
                     std::min<uint64_t>(length, genericState->responseRemaining));
                 source = instance->networkHub->junk;
                 stillActive = sendLength < genericState->responseRemaining;
-                finished = sendLength == genericState->responseRemaining;
+                finished = sendLength == genericState->responseRemaining &&
+                           !genericUsesTerminalAck();
               }
 
               uint8_t *buffer = picoquic_provide_stream_data_buffer(bytes, sendLength, finished, stillActive);
               if (buffer != nullptr && sendLength > 0 && source != nullptr)
               {
                 memcpy(buffer, source, sendLength);
-                if (genericState->phase == GenericPhase::sendResponse)
+                if (genericState->phase == GenericPhase::sendAck)
+                {
+                  genericState->ackBytesWritten += sendLength;
+                  if (genericState->ackBytesWritten >= 1)
+                  {
+                    instance->markGenericServerComplete(genericState);
+                  }
+                }
+                else if (genericState->phase == GenericPhase::sendResponse)
                 {
                   genericState->responseRemaining -= sendLength;
                   if (genericState->responseRemaining == 0)
                   {
-                    instance->markGenericServerComplete(genericState);
+                    if (genericUsesTerminalAck())
+                    {
+                      genericState->phase = GenericPhase::readDone;
+                    }
+                    else
+                    {
+                      instance->markGenericServerComplete(genericState);
+                    }
                   }
                 }
               }
@@ -1191,8 +1290,16 @@ private:
           {
             if constexpr (mode & Mode::client)
             {
-              ++instance->datagramClientReceived;
-              if (instance->datagramClientReceived >= benchmarkScenarioOperations &&
+              const uint64_t sequence = benchmarkDecodeDatagramSequence(bytes, length);
+              if (benchmarkMarkDatagramSeen(instance->datagramClientSeen, sequence))
+              {
+                ++instance->datagramClientReceived;
+              }
+              if (instance->datagramDoneStreamWritten && instance->datagramClientReceived >= instance->datagramClientSent)
+              {
+                instance->datagramClientDrainDeadlineUs = timeNowUs();
+              }
+              if (instance->datagramClientSent >= benchmarkScenarioOperations &&
                   !instance->datagramDoneSignalSent)
               {
                 instance->sendClientDatagramDoneSignal();
@@ -1205,8 +1312,12 @@ private:
             else
             {
               auto *datagramState = instance->datagramServerStateFor(cnx);
-              ++datagramState->received;
-              ++datagramState->pendingEchoes;
+              const uint64_t sequence = benchmarkDecodeDatagramSequence(bytes, length);
+              if (benchmarkMarkDatagramSeen(datagramState->seen, sequence))
+              {
+                ++datagramState->received;
+                datagramState->pendingEchoes.push_back(sequence);
+              }
               instance->sendPendingServerDatagrams();
             }
           }
@@ -1320,7 +1431,8 @@ private:
         markDatagramServerCompleteAfterSendPass();
       }
 
-      usTil = picoquic_get_next_wake_delay(engine, timeNowUs(), 300'000);
+      const uint64_t nowUs = timeNowUs();
+      usTil = picoquic_get_next_wake_delay(engine, nowUs, 300'000);
       if (usTil > 300'000)
       {
         usTil = 300'000;
@@ -1338,6 +1450,33 @@ private:
         {
           usTil = std::min<int64_t>(usTil, 1000);
         }
+        if (benchmarkScenario == BenchmarkScenario::datagram)
+        {
+          usTil = std::min<int64_t>(usTil, 1000);
+        }
+      }
+
+      if (stallTrace && cnx != nullptr && nowUs >= nextStallTraceUs)
+      {
+        fprintf(stderr,
+                "picoquic debug=advance scenario=%s role=%s state=%d ready=%u perf_complete=%u "
+                "generic_started=%u generic_requested=%" PRIu64 " generic_completed=%" PRIu64
+                " generic_active=%" PRIu64 " zero_available=%u zero_accepted=%u wake_us=%" PRId64
+                " send_pool=%u pending_send_sqes=%" PRIu64 " outstanding_send_sqes=%" PRIu64
+                " sq_ready=%u cq_ready=%u\n",
+                benchmarkScenarioName(benchmarkScenario),
+                (mode & Mode::client) ? "client" : "server",
+                static_cast<int>(cnx->cnx_state), ready ? 1 : 0,
+                perfComplete() ? 1 : 0, genericStarted ? 1 : 0,
+                genericRequestedStreams, genericCompletedStreams,
+                genericActiveStreams, picoquic_is_0rtt_available(cnx) != 0 ? 1 : 0,
+                cnx->zero_rtt_data_accepted != 0 ? 1 : 0, usTil,
+                networkHub->debugSendPoolAvailable(),
+                networkHub->debugPendingSendSqes(),
+                networkHub->debugOutstandingSendSqes(),
+                networkHub->debugSqReady(),
+                networkHub->debugCqReady());
+        nextStallTraceUs = nowUs + 1'000'000;
       }
 
       networkHub->recvmsgWithTimeout(usTil, [&](UDPContext *msg) -> void {
@@ -1422,11 +1561,25 @@ private:
 
 public:
 
+  ~Picoquic() override
+  {
+    if (engine != nullptr)
+    {
+      picoquic_free(engine);
+      engine = nullptr;
+      cnx = nullptr;
+    }
+    delete networkHub;
+    networkHub = nullptr;
+  }
+
   void instanceSetup(uint16_t localPort, int argc, char *argv[])
   {
     // printf("picoquic %s: instanceSetup\n", modeToString(mode));
 
     useUdpGso = benchmarkPicoquicPacketTrainMode && benchmarkUdpGsoEnabled();
+    stallTrace = std::getenv("QUICPERF_PICO_STALL_DEBUG") != nullptr;
+    nextStallTraceUs = timeNowUs();
 
     this->localPort = localPort;
     networkHub = new NetworkHub<mode>(localPort);
@@ -1564,6 +1717,8 @@ public:
         datagramStarted = true;
         datagramDoneSignalSent = false;
         datagramDoneStreamWritten = false;
+        datagramClientSeen.assign(benchmarkDatagramSeenBytes(), 0);
+        datagramScratch.fill(0);
         bytesInFlight = 0;
         sendClientDatagrams();
         advance();

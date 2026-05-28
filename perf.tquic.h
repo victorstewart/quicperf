@@ -50,6 +50,8 @@ private:
   uint64_t datagramClientSent = 0;
   uint64_t datagramClientReceived = 0;
   uint64_t datagramClientDrainDeadlineUs = 0;
+  bool datagramDoneSignalSent = false;
+  bool datagramDoneStreamWritten = false;
   std::vector<uint8_t> datagramClientSeen;
   std::array<uint8_t, benchmarkAppChunkSize> datagramScratch = {};
 
@@ -230,7 +232,9 @@ private:
       }
       if (benchmarkScenario == BenchmarkScenario::datagram)
       {
-        return (datagramClientReceived >= benchmarkScenarioOperations &&
+        return (datagramClientSent >= benchmarkScenarioOperations &&
+                datagramDoneSignalSent &&
+                datagramDoneStreamWritten &&
                 datagramClientDrainDeadlineUs != 0 &&
                 timeNowUs() >= datagramClientDrainDeadlineUs) ||
                closed;
@@ -279,14 +283,13 @@ private:
     }
     if (benchmarkScenario == BenchmarkScenario::datagram)
     {
-      if (state->datagramEchoed < benchmarkScenarioOperations ||
-          !state->datagramPendingEchoes.empty())
+      if (!state->clientDone || !state->datagramPendingEchoes.empty())
       {
         return;
       }
       if (state->datagramDrainDeadlineUs == 0)
       {
-        state->datagramDrainDeadlineUs = timeNowUs() + 100'000;
+        state->datagramDrainDeadlineUs = timeNowUs() + benchmarkDatagramDrainUs;
         return;
       }
       if (timeNowUs() < state->datagramDrainDeadlineUs)
@@ -315,10 +318,17 @@ private:
         return;
       }
     }
-    else if (!state->clientDone && !state->closed &&
-             (state->serverDrainDeadlineUs == 0 || timeNowUs() < state->serverDrainDeadlineUs))
+    else
     {
-      return;
+      if (!state->clientDone && !state->closed)
+      {
+        return;
+      }
+      if (!state->closed &&
+          (state->serverDrainDeadlineUs == 0 || timeNowUs() < state->serverDrainDeadlineUs))
+      {
+        return;
+      }
     }
     state->complete = true;
     ++serverCompletedConnections;
@@ -327,12 +337,16 @@ private:
   size_t datagramPayloadSize(void) const
   {
     constexpr size_t sequenceBytes = sizeof(uint64_t);
-    const size_t maxPayload = benchmarkUdpPayloadSize > 16
-                                  ? benchmarkUdpPayloadSize - 16
-                                  : benchmarkUdpPayloadSize;
-    return std::min<size_t>(
-        std::max<size_t>(sequenceBytes, benchmarkScenarioMessageBytes),
-        std::min<size_t>(benchmarkAppChunkSize, maxPayload));
+    const size_t payloadSize = benchmarkDatagramPayloadBytesForNoMssApiLimit(
+        benchmarkAppChunkSize,
+        benchmarkUdpPayloadSize,
+        sequenceBytes);
+    if (payloadSize < sequenceBytes)
+    {
+      fprintf(stderr, "tquic DATAGRAM negotiated payload limit too small: %zu\n", payloadSize);
+      abort();
+    }
+    return payloadSize;
   }
 
   static void encodeDatagramSequence(uint64_t sequence, uint8_t *out)
@@ -387,17 +401,16 @@ private:
           conn == nullptr ||
           !connected ||
           closed ||
-          datagramClientReceived >= benchmarkScenarioOperations)
+          datagramClientSent >= benchmarkScenarioOperations)
       {
         return false;
       }
 
-      const uint64_t maxInFlight = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
       const size_t payloadSize = datagramPayloadSize();
+      const uint64_t burstLimit = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
+      uint64_t sentThisCall = 0;
       bool progressed = false;
-      while (datagramClientReceived < benchmarkScenarioOperations &&
-             datagramClientSent < benchmarkScenarioOperations &&
-             datagramClientSent - datagramClientReceived < maxInFlight)
+      while (datagramClientSent < benchmarkScenarioOperations && sentThisCall < burstLimit)
       {
         fillDatagramPayload(datagramClientSent);
         ssize_t written = quic_datagram_write(
@@ -415,9 +428,64 @@ private:
           break;
         }
         ++datagramClientSent;
+        ++sentThisCall;
         progressed = true;
       }
+      if (datagramClientSent >= benchmarkScenarioOperations)
+      {
+        quic_stream_wantwrite(conn, streamId, true);
+      }
       return progressed;
+    }
+    return false;
+  }
+
+  void maybeStartDatagramClientDrain(void)
+  {
+    if constexpr (mode & Mode::client)
+    {
+      if (benchmarkScenario != BenchmarkScenario::datagram ||
+          datagramClientSent < benchmarkScenarioOperations ||
+          !datagramDoneStreamWritten)
+      {
+        return;
+      }
+      if (datagramClientReceived >= datagramClientSent)
+      {
+        datagramClientDrainDeadlineUs = timeNowUs();
+      }
+      else if (datagramClientDrainDeadlineUs == 0)
+      {
+        datagramClientDrainDeadlineUs = timeNowUs() + benchmarkDatagramDrainUs;
+      }
+    }
+  }
+
+  bool sendDatagramDoneSignal(void)
+  {
+    if constexpr (mode & Mode::client)
+    {
+      if (datagramDoneSignalSent && datagramDoneStreamWritten)
+      {
+        return true;
+      }
+      if (conn == nullptr || streamId == std::numeric_limits<uint64_t>::max())
+      {
+        return false;
+      }
+      datagramDoneSignalSent = true;
+      uint8_t done = 0;
+      ssize_t written = quic_stream_write(conn, streamId, &done, sizeof(done), true);
+      if (written == tquicErrDone || written <= 0)
+      {
+        quic_stream_wantwrite(conn, streamId, true);
+        return false;
+      }
+      datagramDoneStreamWritten = true;
+      quic_stream_wantwrite(conn, streamId, false);
+      maybeStartDatagramClientDrain();
+      drainIouringSends();
+      return true;
     }
     return false;
   }
@@ -507,16 +575,16 @@ private:
         {
           ++datagramClientReceived;
         }
-        if (datagramClientReceived >= benchmarkScenarioOperations &&
-            datagramClientDrainDeadlineUs == 0)
-        {
-          datagramClientDrainDeadlineUs = timeNowUs() + 100'000;
-        }
+        maybeStartDatagramClientDrain();
       }
     }
     if constexpr (mode & Mode::client)
     {
       sendClientDatagrams();
+      if (datagramClientSent >= benchmarkScenarioOperations)
+      {
+        sendDatagramDoneSignal();
+      }
     }
   }
 
@@ -887,6 +955,11 @@ private:
     }
     else
     {
+      if (benchmarkScenario == BenchmarkScenario::datagram)
+      {
+        self->sendDatagramDoneSignal();
+        return;
+      }
       self->writeStream(connection, id);
     }
   }
@@ -1317,6 +1390,22 @@ private:
       if (read < 0)
       {
         break;
+      }
+
+      if (benchmarkScenario == BenchmarkScenario::datagram)
+      {
+        if (read > 0 || fin)
+        {
+          state.clientDone = true;
+        }
+        if (fin)
+        {
+          quic_stream_wantread(connection, id, false);
+          markServerStateComplete(&state);
+          break;
+        }
+        markServerStateComplete(&state);
+        continue;
       }
 
       size_t consumed = 0;
@@ -1765,7 +1854,14 @@ public:
         datagramClientSent = 0;
         datagramClientReceived = 0;
         datagramClientDrainDeadlineUs = 0;
-        datagramClientSeen.assign(static_cast<size_t>((benchmarkScenarioOperations + 7U) >> 3), 0);
+        datagramDoneSignalSent = false;
+        datagramDoneStreamWritten = false;
+        datagramClientSeen.assign(benchmarkDatagramSeenBytes(), 0);
+        if (streamId == std::numeric_limits<uint64_t>::max())
+        {
+          quic_stream_bidi_new(conn, 0, false, &streamId);
+          quic_stream_wantread(conn, streamId, true);
+        }
         advance();
         benchmarkRecordDatagramClientCounters(datagramClientSent, datagramClientReceived);
         return;

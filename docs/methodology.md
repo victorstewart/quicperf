@@ -34,9 +34,9 @@ Capability rows:
 
 | Scenario | Metric | Status |
 |---|---|---|
-| `datagram` | `datagrams_per_second` | Delivered app DATAGRAM echo rate for `lsperf`, `mvfstperf`, `neqoperf`, `ngtcp2perf`, `noqperf`, `picoperf`, `quicheperf`, `quiczigperf`, `quinnperf`, `s2nperf`, and `xquicperf`; other adapters return `unsupported` until the quicperf adapter exposes the same contract. |
-| `resumed_connect` | `connections_per_second` | Accepted CLI row; unsupported until session-ticket capture/replay is exposed uniformly. |
-| `zero_rtt_reqresp` | `requests_per_second` | Accepted CLI row; unsupported until 0-RTT accepted/rejected controls are exposed uniformly. |
+| `datagram` | `datagrams_per_second` | Delivered app DATAGRAM echo rate for `lsperf`, `mvfstperf`, `neqoperf`, `ngtcp2perf`, `noqperf`, `picoperf`, `quicheperf`, `quiczigperf`, `quinnperf`, `s2nperf`, `tquicperf`, and `xquicperf`; other adapters return `unsupported` until the quicperf adapter exposes the same contract. |
+| `resumed_connect` | `connections_per_second` | Session-ticket resumption connection capability smoke. |
+| `zero_rtt_reqresp` | `requests_per_second` | 0-RTT request/response capability smoke with accepted/rejected state captured by the adapter contract. |
 
 Publication-tier rows use full adaptive convergence. Capability and lifecycle
 rows (`resumed_connect`, `zero_rtt_reqresp`, `reqresp`, `stream_churn`,
@@ -53,29 +53,28 @@ before promotion.
 
 ### DATAGRAM Contract
 
-`datagram` measures delivered application DATAGRAM echo rate. The client queues
-DATAGRAMs up to the shared in-flight cap, flushes once, drains once, receives
-echoed DATAGRAMs, and repeats until the operation count is reached. DATAGRAM
-frame size is negotiated through the QUIC DATAGRAM transport parameter, and the
-harness caps the application payload to the adapter's negotiated or effective
-payload limit before sending. Adapters without a public effective DATAGRAM MSS
-API use a conservative packet-payload cap under the QUIC minimum 1200-byte UDP
-payload. Local send and receive queue capacity is a library-local public
-configuration request and the harness treats write backpressure as the
-effective queue limit. The server uses the same cycle: drain once, queue echoes
-for the batch, then flush once.
+`datagram` measures delivered application DATAGRAM echo rate. The operation
+count is the client accepted-send budget, not required echo delivery. The client
+sends until the budget is accepted by the library, then sends a reliable
+per-connection done marker and drains for a bounded interval, ending earlier if
+all sent sequence numbers are echoed.
 
-The harness records sent, received, unreturned, delivery ratio, UDP packets,
-send submit/syscall batches, receive polls, and DATAGRAMs per UDP packet. Rows
-must pass the delivery-ratio gate before publication.
+DATAGRAM frame size is negotiated through the QUIC DATAGRAM transport parameter,
+and the harness caps the application payload to the adapter's negotiated or
+effective payload limit before sending. Adapters without a public effective
+DATAGRAM MSS API use a conservative packet-payload cap under the QUIC minimum
+1200-byte UDP payload. Local send and receive queue capacity is a library-local
+public configuration request and write backpressure is the effective queue
+limit.
+
+Each DATAGRAM carries a sequence number. The harness records accepted sends,
+unique echoes received, unreturned/lost DATAGRAMs, delivery ratio, UDP packets,
+send submit/syscall batches, receive polls, and DATAGRAMs per UDP packet.
+Delivery ratio is reported, not used to make an unreliable primitive reliable.
 
 Packet-engine adapters must not flush or poll once per app DATAGRAM. C++ owns
 the UDP socket, backend, batching, and timeout loop for DATAGRAM rows just like
 the stream workloads.
-
-`tquicperf` remains unsupported for this row because the current local TQUIC C
-header exposes UDP datagram and PMTU controls, but no application QUIC DATAGRAM
-send/read API that matches this contract.
 
 ## Output Schema
 

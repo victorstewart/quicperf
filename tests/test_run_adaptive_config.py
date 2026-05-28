@@ -24,6 +24,25 @@ def load_runner_module():
 
 
 class RunAdaptiveConfigTests(unittest.TestCase):
+    def test_confirmation_is_disabled_by_default(self):
+        runner = load_runner_module()
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(runner.load_config().confirm_blocks, 0)
+            self.assertEqual(runner.load_config().confirm_min_samples, 0)
+
+    def test_default_block_size_preserves_twenty_sample_floor(self):
+        runner = load_runner_module()
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            cfg = runner.load_config()
+
+        self.assertEqual(cfg.block_size, 10)
+        self.assertEqual(cfg.min_samples, 20)
+        self.assertEqual(cfg.min_blocks, 2)
+        self.assertEqual(cfg.calibration_probe_operations, 1024)
+        self.assertEqual(cfg.calibration_probe_bytes, 16 * 1024 * 1024)
+
     def test_adaptive_random_seed_alias_takes_precedence(self):
         runner = load_runner_module()
 

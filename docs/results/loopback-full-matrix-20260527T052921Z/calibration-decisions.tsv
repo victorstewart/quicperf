@@ -1,0 +1,385 @@
+binary	scenario	network	path_profile	tier	publication_eligible	status	reason	calibrated	workload_kind	selected_work_units	probe_work_units	target_duration_sec	calibration_duration_sec	timeout_sec	env_overrides
+lsperf	bidi	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.723329	15	QUICPERF_BIDI_TEST_BYTES=67108864
+lsperf	bidi	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.156132	15	QUICPERF_BIDI_TEST_BYTES=67108864
+lsperf	close_reset_cleanup	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+lsperf	close_reset_cleanup	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+lsperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+lsperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+lsperf	datagram	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.070358	15	QUICPERF_SCENARIO_OPERATIONS=4096
+lsperf	datagram	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.073609	15	QUICPERF_SCENARIO_OPERATIONS=4096
+lsperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.117784	15	QUICPERF_TEST_BYTES=67108864
+lsperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.108835	15	QUICPERF_TEST_BYTES=67108864
+lsperf	flow_control	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.085238	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+lsperf	flow_control	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.074915	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+lsperf	idle_footprint	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+lsperf	idle_footprint	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+lsperf	loss_recovery	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.107245	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+lsperf	loss_recovery	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.108151	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+lsperf	multistream_download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.666103	15	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+lsperf	multistream_download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.212345	15	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+lsperf	multistream_upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.222132	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+lsperf	multistream_upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.216491	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+lsperf	reqresp	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+lsperf	reqresp	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+lsperf	resumed_connect	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+lsperf	resumed_connect	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+lsperf	small_payload_pps	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.184895	15	QUICPERF_SCENARIO_OPERATIONS=4096
+lsperf	small_payload_pps	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.112532	15	QUICPERF_SCENARIO_OPERATIONS=4096
+lsperf	stream_churn	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+lsperf	stream_churn	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+lsperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.118985	15	QUICPERF_TEST_BYTES=67108864
+lsperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.115760	15	QUICPERF_TEST_BYTES=67108864
+lsperf	zero_rtt_reqresp	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+lsperf	zero_rtt_reqresp	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+mvfstperf	bidi	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.401694	15	QUICPERF_BIDI_TEST_BYTES=67108864
+mvfstperf	bidi	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.295152	15	QUICPERF_BIDI_TEST_BYTES=67108864
+mvfstperf	close_reset_cleanup	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+mvfstperf	close_reset_cleanup	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+mvfstperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+mvfstperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+mvfstperf	datagram	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.086155	15	QUICPERF_SCENARIO_OPERATIONS=4096
+mvfstperf	datagram	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.298487	16	QUICPERF_SCENARIO_OPERATIONS=4096
+mvfstperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.157859	15	QUICPERF_TEST_BYTES=67108864
+mvfstperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.157406	15	QUICPERF_TEST_BYTES=67108864
+mvfstperf	flow_control	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	0.129209	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+mvfstperf	flow_control	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	0.115621	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+mvfstperf	idle_footprint	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+mvfstperf	idle_footprint	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+mvfstperf	loss_recovery	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.156388	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+mvfstperf	loss_recovery	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.159431	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+mvfstperf	multistream_download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.168262	15	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+mvfstperf	multistream_download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.169104	15	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+mvfstperf	multistream_upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.299264	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+mvfstperf	multistream_upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.211925	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+mvfstperf	reqresp	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+mvfstperf	reqresp	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+mvfstperf	resumed_connect	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+mvfstperf	resumed_connect	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+mvfstperf	small_payload_pps	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	4.018218	27	QUICPERF_SCENARIO_OPERATIONS=4096
+mvfstperf	small_payload_pps	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	4.140087	27	QUICPERF_SCENARIO_OPERATIONS=4096
+mvfstperf	stream_churn	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+mvfstperf	stream_churn	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+mvfstperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.321986	15	QUICPERF_TEST_BYTES=67108864
+mvfstperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.259728	15	QUICPERF_TEST_BYTES=67108864
+mvfstperf	zero_rtt_reqresp	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+mvfstperf	zero_rtt_reqresp	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+neqoperf	bidi	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.841284	18	QUICPERF_BIDI_TEST_BYTES=67108864
+neqoperf	bidi	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.767435	18	QUICPERF_BIDI_TEST_BYTES=67108864
+neqoperf	close_reset_cleanup	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+neqoperf	close_reset_cleanup	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+neqoperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+neqoperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+neqoperf	datagram	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	0.172309	15	QUICPERF_SCENARIO_OPERATIONS=4096
+neqoperf	datagram	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	0.171401	15	QUICPERF_SCENARIO_OPERATIONS=4096
+neqoperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.205849	15	QUICPERF_TEST_BYTES=67108864
+neqoperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.202257	15	QUICPERF_TEST_BYTES=67108864
+neqoperf	flow_control	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.103125	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+neqoperf	flow_control	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.103168	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+neqoperf	idle_footprint	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+neqoperf	idle_footprint	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+neqoperf	loss_recovery	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.181085	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+neqoperf	loss_recovery	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.179939	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+neqoperf	multistream_download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.217699	15	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+neqoperf	multistream_download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.602003	17	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+neqoperf	multistream_upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.301840	16	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+neqoperf	multistream_upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.526101	17	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+neqoperf	reqresp	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+neqoperf	reqresp	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+neqoperf	resumed_connect	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+neqoperf	resumed_connect	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+neqoperf	small_payload_pps	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.570175	17	QUICPERF_SCENARIO_OPERATIONS=4096
+neqoperf	small_payload_pps	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.611440	17	QUICPERF_SCENARIO_OPERATIONS=4096
+neqoperf	stream_churn	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+neqoperf	stream_churn	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+neqoperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.206327	15	QUICPERF_TEST_BYTES=67108864
+neqoperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.216981	15	QUICPERF_TEST_BYTES=67108864
+neqoperf	zero_rtt_reqresp	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+neqoperf	zero_rtt_reqresp	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+ngtcp2perf	bidi	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.134179	15	QUICPERF_BIDI_TEST_BYTES=67108864
+ngtcp2perf	bidi	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.136931	15	QUICPERF_BIDI_TEST_BYTES=67108864
+ngtcp2perf	close_reset_cleanup	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+ngtcp2perf	close_reset_cleanup	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+ngtcp2perf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+ngtcp2perf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+ngtcp2perf	datagram	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.071535	15	QUICPERF_SCENARIO_OPERATIONS=4096
+ngtcp2perf	datagram	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.069215	15	QUICPERF_SCENARIO_OPERATIONS=4096
+ngtcp2perf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.204641	15	QUICPERF_TEST_BYTES=67108864
+ngtcp2perf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.203068	15	QUICPERF_TEST_BYTES=67108864
+ngtcp2perf	flow_control	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	0.180579	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+ngtcp2perf	flow_control	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	0.181849	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+ngtcp2perf	idle_footprint	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+ngtcp2perf	idle_footprint	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+ngtcp2perf	loss_recovery	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.210644	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+ngtcp2perf	loss_recovery	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.208262	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+ngtcp2perf	multistream_download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.099886	15	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+ngtcp2perf	multistream_download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.099539	15	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+ngtcp2perf	multistream_upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.105382	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+ngtcp2perf	multistream_upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.099883	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+ngtcp2perf	reqresp	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+ngtcp2perf	reqresp	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+ngtcp2perf	resumed_connect	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+ngtcp2perf	resumed_connect	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+ngtcp2perf	small_payload_pps	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	0.161675	15	QUICPERF_SCENARIO_OPERATIONS=4096
+ngtcp2perf	small_payload_pps	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	0.104374	15	QUICPERF_SCENARIO_OPERATIONS=4096
+ngtcp2perf	stream_churn	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+ngtcp2perf	stream_churn	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+ngtcp2perf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.101426	15	QUICPERF_TEST_BYTES=67108864
+ngtcp2perf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.097000	15	QUICPERF_TEST_BYTES=67108864
+ngtcp2perf	zero_rtt_reqresp	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+ngtcp2perf	zero_rtt_reqresp	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+noqperf	bidi	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.375254	16	QUICPERF_BIDI_TEST_BYTES=67108864
+noqperf	bidi	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.417550	16	QUICPERF_BIDI_TEST_BYTES=67108864
+noqperf	close_reset_cleanup	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+noqperf	close_reset_cleanup	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+noqperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+noqperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+noqperf	datagram	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.070808	15	QUICPERF_SCENARIO_OPERATIONS=4096
+noqperf	datagram	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.098805	15	QUICPERF_SCENARIO_OPERATIONS=4096
+noqperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.239495	15	QUICPERF_TEST_BYTES=67108864
+noqperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.246998	15	QUICPERF_TEST_BYTES=67108864
+noqperf	flow_control	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.125282	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+noqperf	flow_control	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.114356	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+noqperf	idle_footprint	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+noqperf	idle_footprint	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+noqperf	loss_recovery	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.233812	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+noqperf	loss_recovery	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.224496	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+noqperf	multistream_download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.232452	15	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+noqperf	multistream_download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.305061	16	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+noqperf	multistream_upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.204534	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+noqperf	multistream_upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.301295	16	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+noqperf	reqresp	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+noqperf	reqresp	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+noqperf	resumed_connect	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+noqperf	resumed_connect	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+noqperf	small_payload_pps	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.165938	15	QUICPERF_SCENARIO_OPERATIONS=4096
+noqperf	small_payload_pps	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.212480	15	QUICPERF_SCENARIO_OPERATIONS=4096
+noqperf	stream_churn	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+noqperf	stream_churn	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+noqperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.222199	15	QUICPERF_TEST_BYTES=67108864
+noqperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.242857	15	QUICPERF_TEST_BYTES=67108864
+noqperf	zero_rtt_reqresp	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+noqperf	zero_rtt_reqresp	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+picoperf	bidi	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.274900	15	QUICPERF_BIDI_TEST_BYTES=67108864
+picoperf	bidi	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.273575	16	QUICPERF_BIDI_TEST_BYTES=67108864
+picoperf	close_reset_cleanup	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+picoperf	close_reset_cleanup	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+picoperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+picoperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+picoperf	datagram	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.069659	15	QUICPERF_SCENARIO_OPERATIONS=4096
+picoperf	datagram	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.079384	15	QUICPERF_SCENARIO_OPERATIONS=4096
+picoperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.175310	15	QUICPERF_TEST_BYTES=67108864
+picoperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.136684	15	QUICPERF_TEST_BYTES=67108864
+picoperf	flow_control	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.084649	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+picoperf	flow_control	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.087673	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+picoperf	idle_footprint	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+picoperf	idle_footprint	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+picoperf	loss_recovery	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.175112	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+picoperf	loss_recovery	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.153926	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+picoperf	multistream_download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.163878	15	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+picoperf	multistream_download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.143341	15	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+picoperf	multistream_upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.129634	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+picoperf	multistream_upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.644654	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+picoperf	reqresp	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+picoperf	reqresp	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+picoperf	resumed_connect	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+picoperf	resumed_connect	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+picoperf	small_payload_pps	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	0.078117	15	QUICPERF_SCENARIO_OPERATIONS=4096
+picoperf	small_payload_pps	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.076308	15	QUICPERF_SCENARIO_OPERATIONS=4096
+picoperf	stream_churn	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+picoperf	stream_churn	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+picoperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.197628	15	QUICPERF_TEST_BYTES=67108864
+picoperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.146274	15	QUICPERF_TEST_BYTES=67108864
+picoperf	zero_rtt_reqresp	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+picoperf	zero_rtt_reqresp	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quicheperf	bidi	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.247212	15	QUICPERF_BIDI_TEST_BYTES=67108864
+quicheperf	bidi	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.196084	15	QUICPERF_BIDI_TEST_BYTES=67108864
+quicheperf	close_reset_cleanup	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quicheperf	close_reset_cleanup	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quicheperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+quicheperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+quicheperf	datagram	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.066736	15	QUICPERF_SCENARIO_OPERATIONS=4096
+quicheperf	datagram	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.070697	15	QUICPERF_SCENARIO_OPERATIONS=4096
+quicheperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.158073	15	QUICPERF_TEST_BYTES=67108864
+quicheperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.135127	15	QUICPERF_TEST_BYTES=67108864
+quicheperf	flow_control	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.096903	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+quicheperf	flow_control	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.095223	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+quicheperf	idle_footprint	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+quicheperf	idle_footprint	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+quicheperf	loss_recovery	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.228094	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+quicheperf	loss_recovery	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.233610	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+quicheperf	multistream_download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.142333	15	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+quicheperf	multistream_download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.128921	15	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+quicheperf	multistream_upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.158374	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+quicheperf	multistream_upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.152300	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+quicheperf	reqresp	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quicheperf	reqresp	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quicheperf	resumed_connect	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+quicheperf	resumed_connect	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+quicheperf	small_payload_pps	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	0.156963	15	QUICPERF_SCENARIO_OPERATIONS=4096
+quicheperf	small_payload_pps	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	0.153565	15	QUICPERF_SCENARIO_OPERATIONS=4096
+quicheperf	stream_churn	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quicheperf	stream_churn	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quicheperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.137023	15	QUICPERF_TEST_BYTES=67108864
+quicheperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.137845	15	QUICPERF_TEST_BYTES=67108864
+quicheperf	zero_rtt_reqresp	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quicheperf	zero_rtt_reqresp	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quiczigperf	bidi	iouring	loopback	publication	1	ok	inside_envelope;validated_scale	1	bytes	27040234	16777216	5.000000	3.106165	23	QUICPERF_BIDI_TEST_BYTES=27040234
+quiczigperf	bidi	syscall	loopback	publication	1	ok	inside_envelope;validated_scale	1	bytes	26611291	16777216	5.000000	3.169085	23	QUICPERF_BIDI_TEST_BYTES=26611291
+quiczigperf	close_reset_cleanup	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quiczigperf	close_reset_cleanup	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quiczigperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+quiczigperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+quiczigperf	datagram	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.071334	15	QUICPERF_SCENARIO_OPERATIONS=4096
+quiczigperf	datagram	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.069962	15	QUICPERF_SCENARIO_OPERATIONS=4096
+quiczigperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.126537	15	QUICPERF_TEST_BYTES=67108864
+quiczigperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.176055	15	QUICPERF_TEST_BYTES=67108864
+quiczigperf	flow_control	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.206615	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+quiczigperf	flow_control	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.156851	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+quiczigperf	idle_footprint	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+quiczigperf	idle_footprint	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+quiczigperf	loss_recovery	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.134851	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+quiczigperf	loss_recovery	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.131820	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+quiczigperf	multistream_download	iouring	loopback	publication	1	ok	inside_envelope;validated_scale	1	bytes	31734353	16777216	5.000000	2.658390	21	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=31734353
+quiczigperf	multistream_download	syscall	loopback	publication	1	ok	inside_envelope;validated_scale	1	bytes	31038650	16777216	5.000000	3.218076	23	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=31038650
+quiczigperf	multistream_upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.139909	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+quiczigperf	multistream_upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.190775	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+quiczigperf	reqresp	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quiczigperf	reqresp	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quiczigperf	resumed_connect	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+quiczigperf	resumed_connect	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+quiczigperf	small_payload_pps	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	2.512039	21	QUICPERF_SCENARIO_OPERATIONS=4096
+quiczigperf	small_payload_pps	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	2.473833	20	QUICPERF_SCENARIO_OPERATIONS=4096
+quiczigperf	stream_churn	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quiczigperf	stream_churn	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quiczigperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.129097	15	QUICPERF_TEST_BYTES=67108864
+quiczigperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.125139	15	QUICPERF_TEST_BYTES=67108864
+quiczigperf	zero_rtt_reqresp	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quiczigperf	zero_rtt_reqresp	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quinnperf	bidi	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.361999	16	QUICPERF_BIDI_TEST_BYTES=67108864
+quinnperf	bidi	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.406563	16	QUICPERF_BIDI_TEST_BYTES=67108864
+quinnperf	close_reset_cleanup	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quinnperf	close_reset_cleanup	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quinnperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+quinnperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+quinnperf	datagram	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.075058	15	QUICPERF_SCENARIO_OPERATIONS=4096
+quinnperf	datagram	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.084151	15	QUICPERF_SCENARIO_OPERATIONS=4096
+quinnperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.211705	15	QUICPERF_TEST_BYTES=67108864
+quinnperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.278855	16	QUICPERF_TEST_BYTES=67108864
+quinnperf	flow_control	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.115152	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+quinnperf	flow_control	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.129093	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+quinnperf	idle_footprint	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+quinnperf	idle_footprint	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+quinnperf	loss_recovery	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.198473	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+quinnperf	loss_recovery	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.236767	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+quinnperf	multistream_download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.266342	16	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+quinnperf	multistream_download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.287249	16	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+quinnperf	multistream_upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.213687	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+quinnperf	multistream_upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.281814	16	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+quinnperf	reqresp	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quinnperf	reqresp	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quinnperf	resumed_connect	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+quinnperf	resumed_connect	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+quinnperf	small_payload_pps	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.157214	15	QUICPERF_SCENARIO_OPERATIONS=4096
+quinnperf	small_payload_pps	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.208842	15	QUICPERF_SCENARIO_OPERATIONS=4096
+quinnperf	stream_churn	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quinnperf	stream_churn	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quinnperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.204873	15	QUICPERF_TEST_BYTES=67108864
+quinnperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.224083	15	QUICPERF_TEST_BYTES=67108864
+quinnperf	zero_rtt_reqresp	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+quinnperf	zero_rtt_reqresp	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+s2nperf	bidi	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.307176	16	QUICPERF_BIDI_TEST_BYTES=67108864
+s2nperf	bidi	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.459402	16	QUICPERF_BIDI_TEST_BYTES=67108864
+s2nperf	close_reset_cleanup	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+s2nperf	close_reset_cleanup	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+s2nperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+s2nperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+s2nperf	datagram	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.209621	15	QUICPERF_SCENARIO_OPERATIONS=4096
+s2nperf	datagram	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.198800	15	QUICPERF_SCENARIO_OPERATIONS=4096
+s2nperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.210405	15	QUICPERF_TEST_BYTES=67108864
+s2nperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.190196	15	QUICPERF_TEST_BYTES=67108864
+s2nperf	flow_control	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.203324	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+s2nperf	flow_control	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.156273	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+s2nperf	idle_footprint	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+s2nperf	idle_footprint	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+s2nperf	loss_recovery	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.251853	16	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+s2nperf	loss_recovery	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.192832	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+s2nperf	multistream_download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.328688	16	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+s2nperf	multistream_download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.376417	16	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+s2nperf	multistream_upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.333835	16	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+s2nperf	multistream_upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.250840	16	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+s2nperf	reqresp	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+s2nperf	reqresp	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+s2nperf	resumed_connect	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+s2nperf	resumed_connect	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+s2nperf	small_payload_pps	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.213515	15	QUICPERF_SCENARIO_OPERATIONS=4096
+s2nperf	small_payload_pps	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.256617	16	QUICPERF_SCENARIO_OPERATIONS=4096
+s2nperf	stream_churn	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+s2nperf	stream_churn	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+s2nperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.214337	15	QUICPERF_TEST_BYTES=67108864
+s2nperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.191681	15	QUICPERF_TEST_BYTES=67108864
+s2nperf	zero_rtt_reqresp	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+s2nperf	zero_rtt_reqresp	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+tquicperf	bidi	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.767424	15	QUICPERF_BIDI_TEST_BYTES=67108864
+tquicperf	bidi	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.227292	15	QUICPERF_BIDI_TEST_BYTES=67108864
+tquicperf	close_reset_cleanup	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+tquicperf	close_reset_cleanup	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+tquicperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+tquicperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+tquicperf	datagram	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.079509	15	QUICPERF_SCENARIO_OPERATIONS=4096
+tquicperf	datagram	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.074492	15	QUICPERF_SCENARIO_OPERATIONS=4096
+tquicperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.155595	15	QUICPERF_TEST_BYTES=67108864
+tquicperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.137583	15	QUICPERF_TEST_BYTES=67108864
+tquicperf	flow_control	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.101295	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+tquicperf	flow_control	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.097384	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+tquicperf	idle_footprint	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+tquicperf	idle_footprint	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+tquicperf	loss_recovery	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.148435	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+tquicperf	loss_recovery	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.152506	15	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+tquicperf	multistream_download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.674859	15	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+tquicperf	multistream_download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.152230	15	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+tquicperf	multistream_upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	0.656548	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+tquicperf	multistream_upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.147193	15	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+tquicperf	reqresp	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+tquicperf	reqresp	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+tquicperf	resumed_connect	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+tquicperf	resumed_connect	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+tquicperf	small_payload_pps	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	0.627634	15	QUICPERF_SCENARIO_OPERATIONS=4096
+tquicperf	small_payload_pps	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	0.625856	15	QUICPERF_SCENARIO_OPERATIONS=4096
+tquicperf	stream_churn	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+tquicperf	stream_churn	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+tquicperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.158393	15	QUICPERF_TEST_BYTES=67108864
+tquicperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.149115	15	QUICPERF_TEST_BYTES=67108864
+tquicperf	zero_rtt_reqresp	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+tquicperf	zero_rtt_reqresp	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+xquicperf	bidi	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.670562	17	QUICPERF_BIDI_TEST_BYTES=67108864
+xquicperf	bidi	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	2.139927	19	QUICPERF_BIDI_TEST_BYTES=67108864
+xquicperf	close_reset_cleanup	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+xquicperf	close_reset_cleanup	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+xquicperf	connect	iouring	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+xquicperf	connect	syscall	loopback	publication	1	ok	fixed_workload	0	fixed	1073741824	0	5.000000	0.000000	30	
+xquicperf	datagram	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.099975	15	QUICPERF_SCENARIO_OPERATIONS=4096
+xquicperf	datagram	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.089427	15	QUICPERF_SCENARIO_OPERATIONS=4096
+xquicperf	download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.542486	17	QUICPERF_TEST_BYTES=67108864
+xquicperf	download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.281610	16	QUICPERF_TEST_BYTES=67108864
+xquicperf	flow_control	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.120024	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+xquicperf	flow_control	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;max_work_units	1	bytes	16777216	16777216	5.000000	1.117878	15	QUICPERF_FLOW_CONTROL_TEST_BYTES=16777216
+xquicperf	idle_footprint	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+xquicperf	idle_footprint	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+xquicperf	loss_recovery	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.273456	16	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+xquicperf	loss_recovery	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.300491	16	QUICPERF_LOSS_RECOVERY_TEST_BYTES=67108864
+xquicperf	multistream_download	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.654520	17	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+xquicperf	multistream_download	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.319562	16	QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES=67108864
+xquicperf	multistream_upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.814284	18	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+xquicperf	multistream_upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.296803	16	QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES=67108864
+xquicperf	reqresp	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+xquicperf	reqresp	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+xquicperf	resumed_connect	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+xquicperf	resumed_connect	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	fixed	1073741824	0	5.000000	0.000000	30	
+xquicperf	small_payload_pps	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.238306	15	QUICPERF_SCENARIO_OPERATIONS=4096
+xquicperf	small_payload_pps	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	operations	4096	1024	5.000000	1.246998	15	QUICPERF_SCENARIO_OPERATIONS=4096
+xquicperf	stream_churn	iouring	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+xquicperf	stream_churn	syscall	loopback	lifecycle	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+xquicperf	upload	iouring	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.479028	16	QUICPERF_TEST_BYTES=67108864
+xquicperf	upload	syscall	loopback	publication	1	ok	too_fast_scaled_up;max_scale;validated_scale	1	bytes	67108864	16777216	5.000000	1.275158	16	QUICPERF_TEST_BYTES=67108864
+xquicperf	zero_rtt_reqresp	iouring	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	
+xquicperf	zero_rtt_reqresp	syscall	loopback	capability	0	ok	tier_smoke_no_calibration	0	operations	1024	0	5.000000	0.000000	30	

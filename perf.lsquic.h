@@ -3,6 +3,7 @@
 #include <array>
 #include <cerrno>
 #include <cstdlib>
+#include <deque>
 #include <memory>
 #include <vector>
 
@@ -38,6 +39,9 @@ private:
   size_t requestBytesWritten = 0;
   bool requestParsed = false;
   bool clientDone = false;
+  bool clientTerminalFinSent = false;
+  bool clientCompletionAckReceived = false;
+  uint64_t clientTerminalFinDrainDeadlineUs = 0;
   uint32_t serverCompletedConnections = 0;
 
   struct ServerStreamState {
@@ -49,6 +53,7 @@ private:
     size_t requestBytesRead = 0;
     bool requestParsed = false;
     bool clientDone = false;
+    bool completionAckSent = false;
     bool complete = false;
   };
 
@@ -93,14 +98,17 @@ private:
     lsquic_conn_t *conn = nullptr;
     uint64_t received = 0;
     uint64_t echoed = 0;
-    uint64_t pendingEchoes = 0;
+    std::deque<uint64_t> pendingEchoes;
+    std::vector<uint8_t> seen;
     uint64_t drainDeadlineUs = 0;
+    bool clientDone = false;
     bool complete = false;
   };
   std::vector<std::unique_ptr<DatagramConnState>> datagramServerConns;
   uint64_t datagramClientSent = 0;
   uint64_t datagramClientReceived = 0;
   uint64_t datagramClientDrainDeadlineUs = 0;
+  std::vector<uint8_t> datagramClientSeen;
   bool datagramStarted = false;
   bool datagramHandshakeDone = false;
 
@@ -242,11 +250,16 @@ private:
       }
       if (benchmarkScenario == BenchmarkScenario::datagram)
       {
-        return datagramClientReceived >= benchmarkScenarioOperations &&
+        return datagramClientSent >= benchmarkScenarioOperations &&
+               clientTerminalFinSent &&
                datagramClientDrainDeadlineUs != 0 &&
                timeNowUs() >= datagramClientDrainDeadlineUs;
       }
-      return benchmarkIsUpload() ? clientDone : bytesInFlight == 0;
+      if (benchmarkIsUpload() || benchmarkIsConnect())
+      {
+        return benchmarkIsUpload() ? clientDone : bytesInFlight == 0;
+      }
+      return bytesInFlight == 0 && clientTerminalFinSent && (clientCompletionAckReceived || clientDone);
     }
   }
 
@@ -274,7 +287,8 @@ private:
         return;
       }
     }
-    else if (!state->clientDone && (state->serverDrainDeadlineUs == 0 || timeNowUs() < state->serverDrainDeadlineUs))
+    else if (!state->clientDone || !state->completionAckSent ||
+             state->serverDrainDeadlineUs == 0 || timeNowUs() < state->serverDrainDeadlineUs)
     {
       return;
     }
@@ -324,6 +338,50 @@ private:
       networkHub->flush();
       networkHub->drainSendCompletions();
     }
+  }
+
+  bool sendClientTerminalDone(lsquic_stream_t *activeStream)
+  {
+    if (clientTerminalFinSent)
+    {
+      return true;
+    }
+    unsigned char done = 0;
+    ssize_t written = lsquic_stream_write(activeStream, &done, sizeof(done));
+    if (written <= 0)
+    {
+      lsquic_stream_wantwrite(activeStream, 1);
+      lsquic_stream_flush(activeStream);
+      return false;
+    }
+    lsquic_stream_shutdown(activeStream, 1);
+    clientTerminalFinSent = true;
+    clientTerminalFinDrainDeadlineUs = timeNowUs() + 100'000;
+    lsquic_stream_wantwrite(activeStream, 0);
+    lsquic_stream_flush(activeStream);
+    drainIouringSends();
+    return true;
+  }
+
+  bool sendClientGenericDone(GenericStreamState& state)
+  {
+    if (state.writeClosed)
+    {
+      return true;
+    }
+    ssize_t written = lsquic_stream_write(state.stream, &state.done, sizeof(state.done));
+    if (written != static_cast<ssize_t>(sizeof(state.done)))
+    {
+      lsquic_stream_wantwrite(state.stream, 1);
+      lsquic_stream_flush(state.stream);
+      return false;
+    }
+    lsquic_stream_shutdown(state.stream, 1);
+    state.writeClosed = true;
+    lsquic_stream_wantwrite(state.stream, 0);
+    lsquic_stream_flush(state.stream);
+    drainIouringSends();
+    return true;
   }
 
   void finishServerGenericIfReady(GenericStreamState& state)
@@ -453,13 +511,13 @@ private:
     {
       return;
     }
-    if (state->echoed < benchmarkScenarioOperations)
+    if (!state->clientDone || !state->pendingEchoes.empty())
     {
       return;
     }
     if (state->drainDeadlineUs == 0)
     {
-      state->drainDeadlineUs = timeNowUs() + 100'000;
+      state->drainDeadlineUs = timeNowUs() + benchmarkDatagramDrainUs;
     }
     if (timeNowUs() < state->drainDeadlineUs)
     {
@@ -469,23 +527,35 @@ private:
     ++serverCompletedConnections;
   }
 
-  uint64_t datagramMaxAttempts(void) const
+  void maybeStartDatagramClientDrain(void)
   {
-    const uint64_t maxInFlight = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
-    return benchmarkScenarioOperations +
-           (std::max<uint64_t>(benchmarkScenarioOperations, maxInFlight) * 64ULL);
+    if constexpr (mode & Mode::client)
+    {
+      if (benchmarkScenario != BenchmarkScenario::datagram ||
+          datagramClientSent < benchmarkScenarioOperations ||
+          !clientTerminalFinSent)
+      {
+        return;
+      }
+      if (datagramClientReceived >= datagramClientSent)
+      {
+        datagramClientDrainDeadlineUs = timeNowUs();
+      }
+      else if (datagramClientDrainDeadlineUs == 0)
+      {
+        datagramClientDrainDeadlineUs = timeNowUs() + benchmarkDatagramDrainUs;
+      }
+    }
   }
 
   bool datagramClientCanSend(void) const
   {
     if (connection == nullptr || !datagramStarted || !datagramHandshakeDone ||
-        datagramClientReceived >= benchmarkScenarioOperations)
+        datagramClientSent >= benchmarkScenarioOperations)
     {
       return false;
     }
-    const uint64_t maxInFlight = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
-    return datagramClientSent < datagramMaxAttempts() &&
-           datagramClientSent - datagramClientReceived < maxInFlight;
+    return true;
   }
 
   void scheduleClientDatagramWrite(void)
@@ -495,13 +565,6 @@ private:
       if (benchmarkScenario != BenchmarkScenario::datagram || connection == nullptr)
       {
         return;
-      }
-      if (datagramClientSent >= datagramMaxAttempts() &&
-          datagramClientReceived < benchmarkScenarioOperations)
-      {
-        fprintf(stderr, "lsquic datagram delivery target not reached received=%" PRIu64 " sent=%" PRIu64 " target=%" PRIu64 "\n",
-                datagramClientReceived, datagramClientSent, benchmarkScenarioOperations);
-        abort();
       }
       if (datagramClientCanSend())
       {
@@ -520,14 +583,7 @@ private:
     if (benchmarkScenario == BenchmarkScenario::multistream_download &&
         state.responseRemaining == 0 && !state.writeClosed)
     {
-      unsigned char done = 0;
-      ssize_t written = lsquic_stream_write(state.stream, &done, sizeof(done));
-      if (written == static_cast<ssize_t>(sizeof(done)))
-      {
-        lsquic_stream_shutdown(state.stream, 1);
-        state.writeClosed = true;
-        lsquic_stream_flush(state.stream);
-      }
+      sendClientGenericDone(state);
     }
     if (state.responseRemaining == 0 && fin)
     {
@@ -716,6 +772,10 @@ private:
     if (benchmarkScenario == BenchmarkScenario::multistream_download)
     {
       state.phase = GenericPhase::readResponse;
+      if (state.responseRemaining == 0 && !sendClientGenericDone(state))
+      {
+        return;
+      }
       lsquic_stream_wantwrite(state.stream, 0);
       lsquic_stream_flush(state.stream);
       return;
@@ -811,6 +871,7 @@ private:
         auto *state = (DatagramConnState *)lsquic_conn_get_ctx(conn);
         if (state != nullptr)
         {
+          state->clientDone = true;
           state->owner->markDatagramServerComplete(state);
         }
       }
@@ -836,8 +897,9 @@ private:
       self->datagramHandshakeDone = true;
       if (benchmarkScenario == BenchmarkScenario::datagram)
       {
-        const size_t payloadSize = std::min<size_t>(
-            benchmarkScenarioMessageBytes, sizeof(self->networkHub->junk));
+        const size_t payloadSize = benchmarkDatagramPayloadBytesForNoMssApiLimit(
+            sizeof(self->networkHub->junk),
+            benchmarkUdpPayloadSize);
         lsquic_conn_set_min_datagram_size(conn, payloadSize);
         self->scheduleClientDatagramWrite();
       }
@@ -856,7 +918,7 @@ private:
         auto state = self->newGenericStreamState(stream);
         lsquic_stream_set_ctx(stream, (lsquic_stream_ctx_t *)state);
         lsquic_stream_wantread(stream, 1);
-        lsquic_stream_wantwrite(stream, 1);
+        lsquic_stream_wantwrite(state->stream, 1);
         return (lsquic_stream_ctx_t *)state;
       }
       self->stream = stream;
@@ -892,35 +954,43 @@ private:
         lsquic_conn_want_datagram_write(conn, 0);
         return 0;
       }
-      const size_t payloadSize = std::min<size_t>(
-          benchmarkScenarioMessageBytes, sizeof(self->networkHub->junk));
+      const size_t payloadSize = benchmarkDatagramPayloadBytesForNoMssApiLimit(
+          sizeof(self->networkHub->junk),
+          benchmarkUdpPayloadSize);
       if (sz < payloadSize)
       {
         return -1;
       }
-      memcpy(buf, self->networkHub->junk, payloadSize);
+      benchmarkFillDatagramPayload(static_cast<uint8_t *>(buf), payloadSize,
+                                   self->networkHub->junk, self->datagramClientSent);
       ++self->datagramClientSent;
       lsquic_conn_want_datagram_write(conn, self->datagramClientCanSend() ? 1 : 0);
+      if (self->datagramClientSent >= benchmarkScenarioOperations && self->stream != nullptr)
+      {
+        lsquic_stream_wantwrite(self->stream, 1);
+      }
       return static_cast<ssize_t>(payloadSize);
     }
     else
     {
       auto *state = (DatagramConnState *)lsquic_conn_get_ctx(conn);
-      if (state == nullptr || state->pendingEchoes == 0)
+      if (state == nullptr || state->pendingEchoes.empty())
       {
         lsquic_conn_want_datagram_write(conn, 0);
         return 0;
       }
-      const size_t payloadSize = std::min<size_t>(
-          benchmarkScenarioMessageBytes, sizeof(state->owner->networkHub->junk));
+      const size_t payloadSize = benchmarkDatagramPayloadBytesForNoMssApiLimit(
+          sizeof(state->owner->networkHub->junk),
+          benchmarkUdpPayloadSize);
       if (sz < payloadSize)
       {
         return -1;
       }
-      memcpy(buf, state->owner->networkHub->junk, payloadSize);
-      --state->pendingEchoes;
+      benchmarkFillDatagramPayload(static_cast<uint8_t *>(buf), payloadSize,
+                                   state->owner->networkHub->junk, state->pendingEchoes.front());
+      state->pendingEchoes.pop_front();
       ++state->echoed;
-      lsquic_conn_want_datagram_write(conn, state->pendingEchoes > 0 ? 1 : 0);
+      lsquic_conn_want_datagram_write(conn, state->pendingEchoes.empty() ? 0 : 1);
       state->owner->markDatagramServerComplete(state);
       return static_cast<ssize_t>(payloadSize);
     }
@@ -928,8 +998,6 @@ private:
 
   static void datagramRead(lsquic_conn_t *conn, const void *buf, size_t bufsz)
   {
-    (void)buf;
-    (void)bufsz;
     if constexpr (mode & Mode::client)
     {
       auto *self = (Lsquic<mode> *)lsquic_conn_get_ctx(conn);
@@ -937,17 +1005,14 @@ private:
       {
         return;
       }
-      ++self->datagramClientReceived;
-      if (self->datagramClientReceived >= benchmarkScenarioOperations)
+      const auto *data = static_cast<const uint8_t *>(buf);
+      const uint64_t sequence = benchmarkDecodeDatagramSequence(data, bufsz);
+      if (benchmarkMarkDatagramSeen(self->datagramClientSeen, sequence))
       {
-        if (self->datagramClientDrainDeadlineUs == 0)
-        {
-          self->datagramClientDrainDeadlineUs = timeNowUs() + 100'000;
-        }
-        lsquic_conn_want_datagram_write(conn, 0);
-        lsquic_conn_close(conn);
+        ++self->datagramClientReceived;
       }
-      else
+      self->maybeStartDatagramClientDrain();
+      if (self->datagramClientSent < benchmarkScenarioOperations)
       {
         self->scheduleClientDatagramWrite();
       }
@@ -963,9 +1028,14 @@ private:
       {
         return;
       }
-      ++state->received;
-      ++state->pendingEchoes;
-      lsquic_conn_want_datagram_write(conn, 1);
+      const auto *data = static_cast<const uint8_t *>(buf);
+      const uint64_t sequence = benchmarkDecodeDatagramSequence(data, bufsz);
+      if (benchmarkMarkDatagramSeen(state->seen, sequence))
+      {
+        ++state->received;
+        state->pendingEchoes.push_back(sequence);
+        lsquic_conn_want_datagram_write(conn, 1);
+      }
     }
   }
 
@@ -991,6 +1061,16 @@ private:
     if constexpr (mode & Mode::server)
     {
       auto state = (ServerStreamState *)context;
+      if (benchmarkScenario == BenchmarkScenario::datagram)
+      {
+        auto *datagramState = (DatagramConnState *)lsquic_conn_get_ctx(lsquic_stream_conn(state->stream));
+        if (datagramState != nullptr)
+        {
+          datagramState->clientDone = true;
+          datagramState->owner->markDatagramServerComplete(datagramState);
+        }
+        return;
+      }
       state->clientDone = true;
       state->owner->markServerStateComplete(state);
     }
@@ -1008,15 +1088,29 @@ private:
         state->owner->processClientGenericRead(*state, len, fin);
         return len;
       }
-      // throw away the bytes
-      ((Lsquic<mode> *)context)->bytesInFlight -= len;
-      if (((Lsquic<mode> *)context)->bytesInFlight <= 0)
+      auto self = (Lsquic<mode> *)context;
+      size_t consumed = 0;
+      if (self->bytesInFlight > 0)
       {
-        ((Lsquic<mode> *)context)->bytesInFlight = 0;
+        const size_t copied = static_cast<size_t>(std::min<int64_t>(self->bytesInFlight, static_cast<int64_t>(len)));
+        self->bytesInFlight -= copied;
+        consumed += copied;
+        if (self->bytesInFlight <= 0)
+        {
+          self->bytesInFlight = 0;
+        }
+      }
+      if (!benchmarkIsUpload() && self->clientTerminalFinSent && consumed < len)
+      {
+        self->clientCompletionAckReceived = true;
       }
       if (fin)
       {
-        ((Lsquic<mode> *)context)->clientDone = true;
+        self->clientDone = true;
+        if (!benchmarkIsUpload() && self->clientTerminalFinSent)
+        {
+          self->clientCompletionAckReceived = true;
+        }
       }
     }
     else
@@ -1028,6 +1122,16 @@ private:
         return len;
       }
       auto state = (ServerStreamState *)context;
+      if (benchmarkScenario == BenchmarkScenario::datagram)
+      {
+        auto *datagramState = (DatagramConnState *)lsquic_conn_get_ctx(lsquic_stream_conn(state->stream));
+        if (datagramState != nullptr && (len > 0 || fin))
+        {
+          datagramState->clientDone = true;
+          datagramState->owner->markDatagramServerComplete(datagramState);
+        }
+        return len;
+      }
       auto self = state->owner;
       size_t consumed = 0;
 
@@ -1047,6 +1151,17 @@ private:
       if (benchmarkIsUpload() && state->requestParsed && consumed < len)
       {
         state->bytesInFlight -= std::min<int64_t>(state->bytesInFlight, static_cast<int64_t>(len - consumed));
+      }
+      if (!benchmarkIsUpload() && state->requestParsed && consumed < len)
+      {
+        state->clientDone = true;
+        consumed = len;
+        lsquic_stream_wantwrite(state->stream, 1);
+      }
+      if (fin)
+      {
+        state->clientDone = true;
+        lsquic_stream_wantwrite(state->stream, 1);
       }
       self->markServerStateComplete(state);
     }
@@ -1082,9 +1197,16 @@ private:
 
     if constexpr (mode & Mode::client)
     {
-      // printf("received = %.1f\n", (_1GB - ((Lsquic<mode> *)context)->bytesInFlight)/_1GB);
-
-      // we're done
+      auto self = (Lsquic<mode> *)activeContext;
+      if (benchmarkScenario == BenchmarkScenario::datagram)
+      {
+        self->maybeStartDatagramClientDrain();
+        return;
+      }
+      if (!benchmarkIsUpload() && self != nullptr && self->bytesInFlight == 0 && !self->clientTerminalFinSent)
+      {
+        self->sendClientTerminalDone(stream);
+      }
     }
     else
     {
@@ -1120,6 +1242,15 @@ private:
         return;
       }
       auto self = (Lsquic<mode> *)context;
+      if (benchmarkScenario == BenchmarkScenario::datagram)
+      {
+        if (self->datagramClientSent >= benchmarkScenarioOperations &&
+            self->sendClientTerminalDone(stream))
+        {
+          self->maybeStartDatagramClientDrain();
+        }
+        return;
+      }
       while (self->requestBytesWritten < self->requestBytes.size())
       {
         ssize_t written = lsquic_stream_write(
@@ -1147,6 +1278,13 @@ private:
             return;
           }
           self->bytesInFlight -= written;
+        }
+      }
+      else if (self->bytesInFlight == 0 && !self->clientTerminalFinSent)
+      {
+        if (!self->sendClientTerminalDone(stream))
+        {
+          return;
         }
       }
 
@@ -1187,10 +1325,21 @@ private:
 
       if (unlikely(bytesToSend == 0))
       {
-        // the server is done
+        if (state->clientDone && !state->completionAckSent)
+        {
+          unsigned char ack = 0;
+          ssize_t written = lsquic_stream_write(stream, &ack, sizeof(ack));
+          if (written <= 0)
+          {
+            lsquic_stream_flush(stream);
+            return;
+          }
+          state->completionAckSent = true;
+          lsquic_stream_shutdown(stream, 1);
+        }
         lsquic_stream_wantwrite(stream, 0);
         lsquic_stream_flush(stream);
-        if (state->serverDrainDeadlineUs == 0)
+        if (state->completionAckSent && state->serverDrainDeadlineUs == 0)
         {
           state->serverDrainDeadlineUs = timeNowUs() + 100'000;
         }
@@ -1480,9 +1629,19 @@ public:
         datagramClientSent = 0;
         datagramClientReceived = 0;
         datagramClientDrainDeadlineUs = 0;
+        datagramClientSeen.assign(benchmarkDatagramSeenBytes(), 0);
         datagramStarted = true;
-        const size_t payloadSize = std::min<size_t>(
-            benchmarkScenarioMessageBytes, sizeof(networkHub->junk));
+        clientDone = false;
+        clientTerminalFinSent = false;
+        clientCompletionAckReceived = false;
+        clientTerminalFinDrainDeadlineUs = 0;
+        if (stream == nullptr)
+        {
+          openStream();
+        }
+        const size_t payloadSize = benchmarkDatagramPayloadBytesForNoMssApiLimit(
+            sizeof(networkHub->junk),
+            benchmarkUdpPayloadSize);
         if (connection != nullptr)
         {
           lsquic_conn_set_min_datagram_size(connection, payloadSize);

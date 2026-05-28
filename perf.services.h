@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <chrono>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 #include <byteswap.h>
@@ -41,6 +42,7 @@ struct BenchmarkResumptionState {
   std::vector<uint8_t> session;
   std::vector<uint8_t> transportParams;
   std::string proofLabel;
+  std::shared_ptr<void> opaqueState;
 };
 
 template <Mode mode>

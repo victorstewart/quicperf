@@ -125,7 +125,7 @@ static const char *benchmarkAdapterFeatures(void)
   snprintf(features, sizeof(features),
            "cc=%s|pacing=on|sendmmsg=%s|cid_len=12|qlog=off|tls_sigalgs=ssl_ctx_wrap|tls_verify=config_chain_preflight|udp_gso=%s|udp_gro=%s",
            benchmarkCongestionControllerLabel(),
-           strcmp(benchmarkNetworkProfile, "iouring") == 0 ? "off" : "on",
+           "on",
            benchmarkCommonUdpGsoFeature(),
            benchmarkCommonUdpGroFeature());
   return features;
@@ -324,6 +324,13 @@ static const char *envString(const char *name, const char *fallback)
 {
   const char *value = getenv(name);
   return (value == nullptr || value[0] == '\0') ? fallback : value;
+}
+
+static uint64_t steadyNowUs(void)
+{
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
 }
 
 static bool tlsVerifyModeIsKnown(const char *mode)
@@ -828,6 +835,34 @@ int main(int argc, char *argv[])
     std::atomic<bool> guardInstalled = false;
     std::atomic<uint16_t> clientsReady = 0;
     std::atomic<bool> harnessReadyVerified = false;
+    std::atomic<uint64_t> harnessStartAtUs = 0;
+
+    auto releaseClientHarness = [&](uint16_t threadIndex) {
+      clientsReady.fetch_add(1, std::memory_order_acq_rel);
+      while (clientsReady.load(std::memory_order_acquire) != nThreads)
+      {
+        std::this_thread::yield();
+      }
+      if (threadIndex == 0)
+      {
+        verifyThreadCount(argv[1], "harness_ready", nThreads);
+        const uint64_t startAt = nThreads > 1 ? steadyNowUs() + 10'000 : steadyNowUs();
+        harnessStartAtUs.store(startAt, std::memory_order_release);
+        harnessReadyVerified.store(true, std::memory_order_release);
+      }
+      else
+      {
+        while (!harnessReadyVerified.load(std::memory_order_acquire))
+        {
+          std::this_thread::yield();
+        }
+      }
+      const uint64_t startAt = harnessStartAtUs.load(std::memory_order_acquire);
+      while (steadyNowUs() < startAt)
+      {
+        std::this_thread::yield();
+      }
+    };
 
     auto runClientTest = [&]<Mode mode>(QuicLibrary<mode> *client, uint16_t threadIndex) -> void {
       client->instanceSetup(clientBasePort + threadIndex, extraArgc, extraArgv);
@@ -879,23 +914,7 @@ int main(int argc, char *argv[])
           abort();
         }
 
-        clientsReady.fetch_add(1, std::memory_order_acq_rel);
-        while (clientsReady.load(std::memory_order_acquire) != nThreads)
-        {
-          std::this_thread::yield();
-        }
-        if (threadIndex == 0)
-        {
-          verifyThreadCount(argv[1], "harness_ready", nThreads);
-          harnessReadyVerified.store(true, std::memory_order_release);
-        }
-        else
-        {
-          while (!harnessReadyVerified.load(std::memory_order_acquire))
-          {
-            std::this_thread::yield();
-          }
-        }
+        releaseClientHarness(threadIndex);
 
         auto start = std::chrono::steady_clock::now();
         if (benchmarkIsZeroRttReqResp())
@@ -954,23 +973,7 @@ int main(int argc, char *argv[])
 
       if (benchmarkIsConnect())
       {
-        clientsReady.fetch_add(1, std::memory_order_acq_rel);
-        while (clientsReady.load(std::memory_order_acquire) != nThreads)
-        {
-          std::this_thread::yield();
-        }
-        if (threadIndex == 0)
-        {
-          verifyThreadCount(argv[1], "harness_ready", nThreads);
-          harnessReadyVerified.store(true, std::memory_order_release);
-        }
-        else
-        {
-          while (!harnessReadyVerified.load(std::memory_order_acquire))
-          {
-            std::this_thread::yield();
-          }
-        }
+        releaseClientHarness(threadIndex);
 
         auto start = std::chrono::steady_clock::now();
 
@@ -996,23 +999,7 @@ int main(int argc, char *argv[])
       {
         client->connectToServer((struct sockaddr *)server_in6);
         client->openStream();
-        clientsReady.fetch_add(1, std::memory_order_acq_rel);
-        while (clientsReady.load(std::memory_order_acquire) != nThreads)
-        {
-          std::this_thread::yield();
-        }
-        if (threadIndex == 0)
-        {
-          verifyThreadCount(argv[1], "harness_ready", nThreads);
-          harnessReadyVerified.store(true, std::memory_order_release);
-        }
-        else
-        {
-          while (!harnessReadyVerified.load(std::memory_order_acquire))
-          {
-            std::this_thread::yield();
-          }
-        }
+        releaseClientHarness(threadIndex);
 
         auto start = std::chrono::steady_clock::now();
         client->idleHold(benchmarkIdleHoldMs);
@@ -1035,23 +1022,7 @@ int main(int argc, char *argv[])
       {
         client->openStream();
       }
-      clientsReady.fetch_add(1, std::memory_order_acq_rel);
-      while (clientsReady.load(std::memory_order_acquire) != nThreads)
-      {
-        std::this_thread::yield();
-      }
-      if (threadIndex == 0)
-      {
-        verifyThreadCount(argv[1], "harness_ready", nThreads);
-        harnessReadyVerified.store(true, std::memory_order_release);
-      }
-      else
-      {
-        while (!harnessReadyVerified.load(std::memory_order_acquire))
-        {
-          std::this_thread::yield();
-        }
-      }
+      releaseClientHarness(threadIndex);
 
       auto start = std::chrono::steady_clock::now();
       client->startPerfTest(bytesForTest);
@@ -1221,6 +1192,7 @@ int main(int argc, char *argv[])
       const uint64_t udpSendSyscalls = benchmarkUdpSendSyscallsTotal.load(std::memory_order_relaxed);
       const uint64_t udpRecvPolls = benchmarkUdpRecvPollsTotal.load(std::memory_order_relaxed);
       const double datagramsPerUdpPacket = udpPacketsReceived == 0 ? 0.0 : (double)datagramReceived / (double)udpPacketsReceived;
+      const double datagramMetricValue = maxSeconds <= 0.0 ? 0.0 : (double)datagramReceived / maxSeconds;
       printf("quicperf_result library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s threads=%u "
              "build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s path_profile=%s "
              "app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
@@ -1241,7 +1213,7 @@ int main(int argc, char *argv[])
              benchmarkScenarioProfile, benchmarkLossDropEveryPackets, benchmarkLossWarmupPackets,
              unitsPerThread, totalUnits, maxSeconds, datagramSent, datagramReceived, datagramLost,
              datagramDeliveryRatio, udpPacketsSent, udpPacketsReceived, udpSendSyscalls, udpRecvPolls,
-             datagramsPerUdpPacket, benchmarkScenarioMetricName(benchmarkScenario), metricValue);
+             datagramsPerUdpPacket, benchmarkScenarioMetricName(benchmarkScenario), datagramMetricValue);
       return 0;
     }
 

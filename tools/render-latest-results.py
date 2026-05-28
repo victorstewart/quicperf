@@ -33,9 +33,11 @@ BENCHMARK_NAMES = {
     "multistream_download": "multistream download",
     "multistream_upload": "multistream upload",
     "reqresp": "request/response",
+    "resumed_connect": "resumed connect",
     "small_payload_pps": "small payload messages",
     "stream_churn": "stream churn",
     "upload": "upload",
+    "zero_rtt_reqresp": "0-RTT request/response",
 }
 
 BENCHMARK_SUMMARIES = {
@@ -50,6 +52,8 @@ BENCHMARK_SUMMARIES = {
     "loss_recovery": "Deterministic impairment path covering loss recovery behavior.",
     "flow_control": "Small-window transfer pressure and flow-control update behavior.",
     "connect": "Full connection establishment plus stream creation.",
+    "resumed_connect": "Session-ticket resumption proof for connection establishment.",
+    "zero_rtt_reqresp": "Session resumption with early request/response data.",
     "datagram": "Unreliable application DATAGRAM echo capability.",
     "idle_footprint": "Server RSS delta per held idle connection; lower is better.",
     "close_reset_cleanup": "Graceful fresh-stream close and cleanup throughput.",
@@ -67,10 +71,18 @@ BENCHMARK_ORDER = [
     "loss_recovery",
     "flow_control",
     "connect",
+    "resumed_connect",
+    "zero_rtt_reqresp",
     "datagram",
     "idle_footprint",
     "close_reset_cleanup",
 ]
+
+TIER_NAMES = {
+    "publication": "publication",
+    "lifecycle": "lifecycle smoke",
+    "capability": "capability smoke",
+}
 
 NETWORK_NAMES = {
     "syscall": "syscall",
@@ -201,6 +213,7 @@ def load_rows(
             or adapter_feature_value(adapter_features, "cc")
             or "-"
         )
+        tier = TIER_NAMES.get(publication.get("tier", ""), publication.get("tier", "") or "-")
 
         rows.append(
             {
@@ -208,6 +221,7 @@ def load_rows(
                 "scenario": scenario,
                 "benchmark": BENCHMARK_NAMES.get(scenario, scenario),
                 "network": NETWORK_NAMES.get(network, network),
+                "tier": tier,
                 "sort_direction": METRIC_SORT_DIRECTION.get(metric, "ascending"),
                 "client_threads": client_threads,
                 "congestion_controller": congestion_controller,
@@ -262,6 +276,11 @@ def render_markdown(
     converged_rows = sum(1 for row in summary_rows if row.get("publication_status") == "converged")
     failed_rows = sum(1 for row in summary_rows if row.get("publication_status") == "failed")
     not_ready_rows = sum(1 for row in summary_rows if row.get("publication_status") == "not_ready")
+    tier_counts: dict[str, int] = {}
+    for row in summary_rows:
+        tier = TIER_NAMES.get(row.get("tier", ""), row.get("tier", "") or "-")
+        tier_counts[tier] = tier_counts.get(tier, 0) + 1
+    tier_summary = ", ".join(f"{count} {tier}" for tier, count in sorted(tier_counts.items()))
     run_status = "converged" if summary_rows and failed_rows == 0 and not_ready_rows == 0 else ("failed" if failed_rows else "not_ready")
     artifact_sentence = (
         "Raw QUIC data and gate details are committed under "
@@ -287,9 +306,10 @@ def render_markdown(
         "",
         (
             f"Current run status: `{run_status}`. The run produced {converged_rows} "
-            f"converged publication rows, {failed_rows} failed rows, and "
-            f"{not_ready_rows} not-ready rows; the tables below use "
-            "the best available measured distributions and diagnostic reasons."
+            f"converged selected rows, {failed_rows} failed rows, and "
+            f"{not_ready_rows} not-ready rows across {len(summary_rows)} selected rows "
+            f"({tier_summary}). The tables below use the best available measured "
+            "distributions and diagnostic reasons."
         ),
         "",
         artifact_sentence,
@@ -299,22 +319,23 @@ def render_markdown(
     ]
 
     for benchmark, benchmark_rows in grouped_by_benchmark(rows):
+        heading = benchmark if benchmark.startswith("0-RTT") else benchmark.title()
         lines.extend(
             [
-                f"### {benchmark.title()}",
+                f"### {heading}",
                 "",
                 BENCHMARK_SUMMARIES.get(benchmark_rows[0]["scenario"], ""),
                 "",
                 (
-                    "| Library | Network | CC | Client threads | Samples | "
+                    "| Library | Network | Tier | CC | Client threads | Samples | "
                     "Unit | p50 | p90 | p99 |"
                 ),
-                "|---|---|---|---:|---:|---|---:|---:|---:|",
+                "|---|---|---|---|---:|---:|---|---:|---:|---:|",
             ]
         )
         for row in benchmark_rows:
             lines.append(
-                "| {library} | {network} | {congestion_controller} | {client_threads} | "
+                "| {library} | {network} | {tier} | {congestion_controller} | {client_threads} | "
                 "{samples} | {unit} | {p50} | {p90} | {p99} |".format(**row)
             )
         lines.append("")
@@ -323,9 +344,10 @@ def render_markdown(
         [
             "## Caveats",
             "",
-            "- `idle_footprint` is omitted from the current table because it was not part of this loopback refresh scenario set.",
-            "- `datagram` is omitted from the adaptive publication table; DATAGRAM support is covered by the high-value capability smoke and should remain separate until a fair adaptive DATAGRAM publication run is configured.",
-            "- Unsupported capability rows are explicit unsupported markers, not crashes.",
+            "- Publication-tier rows are the ranking-grade rows; lifecycle and capability rows are fixed smoke/proof rows unless explicitly promoted.",
+            "- Calibration and calibration-validation samples are published for auditability but excluded from the result tables.",
+            "- DATAGRAM rows report delivered unique echo rate; delivery/loss counters are in the raw sample TSV.",
+            "- `idle_footprint` reports server RSS delta per connection, where lower is better.",
             (
                 "- Row-level caveats and full gate reasons are in "
                 f"[`publication-results.tsv`]({artifact_dir}/publication-results.tsv), "
@@ -350,7 +372,7 @@ def main() -> None:
     parser.add_argument("--artifact-dir", type=Path, default=Path("results/full31"))
     args = parser.parse_args()
 
-    rows = load_rows(args.run_dir, skip_scenarios={"datagram"})
+    rows = load_rows(args.run_dir)
     args.markdown.write_text(
         render_markdown(rows, args.artifact_dir, args.run_dir) + "\n",
         encoding="utf-8",

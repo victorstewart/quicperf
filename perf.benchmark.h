@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <byteswap.h>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
+#include <vector>
 #include <netinet/in.h>
 #include <sys/socket.h>
 
@@ -297,6 +300,9 @@ constexpr static uint32_t benchmarkUdpPayloadSize = 1500 - 40 - 8;
 constexpr static uint32_t benchmarkUdpBatchSize = 150;
 constexpr static uint32_t benchmarkDatagramQueueSlots = 2048;
 constexpr static uint32_t benchmarkDatagramQueueBytes = 1024 * 1024;
+constexpr static uint32_t benchmarkDatagramNoMssApiPayloadBytes = 1150;
+constexpr static uint64_t benchmarkDatagramDrainUs = 100'000;
+constexpr static size_t benchmarkDatagramSequenceBytes = sizeof(uint64_t);
 constexpr static uint32_t benchmarkAppChunkSize = 256 * 1024;
 constexpr static uint32_t benchmarkTcpTlsBufferSize = benchmarkAppChunkSize;
 static inline const char *benchmarkBuildProfile = "native-lto";
@@ -338,6 +344,71 @@ constexpr static uint32_t benchmarkAggressiveInitialCwndPackets = 32;
 constexpr static uint32_t benchmarkAggressiveAckFrequencyPackets = 10;
 static inline std::atomic<int> benchmarkSocketSndbufEffective {-1};
 static inline std::atomic<int> benchmarkSocketRcvbufEffective {-1};
+
+static inline uint32_t benchmarkQuicVarintEncodedBytes(uint64_t value)
+{
+  if (value < 64)
+  {
+    return 1;
+  }
+  if (value < 16'384)
+  {
+    return 2;
+  }
+  if (value < 1'073'741'824ULL)
+  {
+    return 4;
+  }
+  return 8;
+}
+
+static inline size_t benchmarkDatagramPayloadLimitForFrameBytes(uint64_t maxFrameBytes)
+{
+  if (maxFrameBytes == 0)
+  {
+    return 0;
+  }
+
+  uint64_t payload = maxFrameBytes > 1 ? maxFrameBytes - 1 : 0;
+  while (payload > 0 &&
+         payload + 1 + benchmarkQuicVarintEncodedBytes(payload) > maxFrameBytes)
+  {
+    --payload;
+  }
+  return static_cast<size_t>(payload);
+}
+
+static inline size_t benchmarkDatagramPayloadBytesForPayloadLimit(size_t storageBytes,
+                                                                  uint64_t maxPayloadBytes,
+                                                                  size_t minimumBytes = 1)
+{
+  const size_t requested = std::max<size_t>(minimumBytes, benchmarkScenarioMessageBytes);
+  return std::min<size_t>(
+      std::min<size_t>(requested, storageBytes),
+      static_cast<size_t>(maxPayloadBytes));
+}
+
+static inline size_t benchmarkDatagramPayloadBytesForFrameLimit(size_t storageBytes,
+                                                                uint64_t maxFrameBytes,
+                                                                size_t minimumBytes = 1)
+{
+  return benchmarkDatagramPayloadBytesForPayloadLimit(
+      storageBytes,
+      benchmarkDatagramPayloadLimitForFrameBytes(maxFrameBytes),
+      minimumBytes);
+}
+
+static inline size_t benchmarkDatagramPayloadBytesForNoMssApiLimit(size_t storageBytes,
+                                                                   uint64_t maxFrameBytes,
+                                                                   size_t minimumBytes = 1)
+{
+  return benchmarkDatagramPayloadBytesForPayloadLimit(
+      storageBytes,
+      std::min<uint64_t>(
+          benchmarkDatagramPayloadLimitForFrameBytes(maxFrameBytes),
+          benchmarkDatagramNoMssApiPayloadBytes),
+      minimumBytes);
+}
 
 static inline bool benchmarkEnvFlagEnabled(const char *name, bool fallback)
 {
@@ -436,6 +507,61 @@ static inline void benchmarkRecordDatagramClientCounters(uint64_t sent, uint64_t
 {
   benchmarkDatagramClientSentTotal.fetch_add(sent, std::memory_order_relaxed);
   benchmarkDatagramClientReceivedTotal.fetch_add(received, std::memory_order_relaxed);
+}
+
+static inline size_t benchmarkDatagramSeenBytes(uint64_t operations = benchmarkScenarioOperations)
+{
+  return static_cast<size_t>((operations + 7U) >> 3);
+}
+
+static inline void benchmarkEncodeDatagramSequence(uint64_t sequence, uint8_t *out)
+{
+  uint64_t swapped = bswap_64(sequence);
+  memcpy(out, &swapped, sizeof(swapped));
+}
+
+static inline uint64_t benchmarkDecodeDatagramSequence(const uint8_t *data, size_t length)
+{
+  if (data == nullptr || length < benchmarkDatagramSequenceBytes)
+  {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  uint64_t swapped = 0;
+  memcpy(&swapped, data, sizeof(swapped));
+  return bswap_64(swapped);
+}
+
+static inline void benchmarkFillDatagramPayload(uint8_t *payload, size_t payloadSize, const uint8_t *filler, uint64_t sequence)
+{
+  if (payload == nullptr || payloadSize < benchmarkDatagramSequenceBytes)
+  {
+    return;
+  }
+  if (filler != nullptr && filler != payload)
+  {
+    memcpy(payload, filler, payloadSize);
+  }
+  benchmarkEncodeDatagramSequence(sequence, payload);
+}
+
+static inline bool benchmarkMarkDatagramSeen(std::vector<uint8_t>& seen, uint64_t sequence, uint64_t operations = benchmarkScenarioOperations)
+{
+  if (sequence >= operations)
+  {
+    return false;
+  }
+  const size_t index = static_cast<size_t>(sequence >> 3);
+  const uint8_t mask = static_cast<uint8_t>(1U << (sequence & 7U));
+  if (seen.size() < benchmarkDatagramSeenBytes(operations))
+  {
+    seen.resize(benchmarkDatagramSeenBytes(operations), 0);
+  }
+  if ((seen[index] & mask) != 0)
+  {
+    return false;
+  }
+  seen[index] |= mask;
+  return true;
 }
 
 static inline void benchmarkResetUdpCounters(void)

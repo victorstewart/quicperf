@@ -68,8 +68,22 @@ tools/run-adaptive-publication-suite.py
 
 Use `tools/run-benchmarks.sh` for targeted row checks, not as a substitute for adaptive publication evidence.
 
+The adaptive runner uses a non-public calibration phase by default. Calibration samples go to `calibration-samples.tsv` and must not be used in publication statistics, curves, rankings, or result tables. The workload plan must be declared before measured discovery samples and recorded in `workload-plan.tsv`.
+
+Default loopback matrix policy:
+
+- publication tier rows use calibrated full adaptive convergence
+- capability/lifecycle rows use fixed smoke blocks unless explicitly promoted with `QUICPERF_ADAPTIVE_PROMOTE_SCENARIOS`
+- measured loopback rows stay serial unless CPU/core isolation has been implemented and validated
+- high variance is not a separate terminal status; rows are `converged`, `not_ready`, `failed`, or `unsupported`
+
 Batch output lives under `.run/`. Key files include:
 
+- `calibration-samples.tsv`
+- `calibration-validation-samples.tsv` (scale-up probe evidence; failed
+  candidates are not terminal row failures when fallback succeeds)
+- `calibration-decisions.tsv`
+- `workload-plan.tsv`
 - `adaptive-samples.tsv`
 - `row-stats.tsv`
 - `publication-results.tsv`
@@ -77,7 +91,7 @@ Batch output lives under `.run/`. Key files include:
 - `publication-row-audit.tsv`
 - `saturation-decisions.tsv`
 
-Only `ready` rows are clean publishable rows. `not_ready`, high-variance, failed, or bounded rows may be shared as diagnostics only, with the status and reason visible.
+Only publication-tier rows with `publication_status=converged` are clean publishable ranking rows. `not_ready`, failed, unsupported, capability-only, lifecycle-only, or bounded rows may be shared as diagnostics only, with the status and reason visible.
 
 ## Benchmark Contract
 

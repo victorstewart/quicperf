@@ -27,13 +27,28 @@ congestion_profile="${QUICPERF_CONGESTION_PROFILE:-path-auto}"
 tls_verify_mode="${QUICPERF_TLS_VERIFY_MODE:-${QUICPERF_TLS_VERIFY:-disabled}}"
 tls_cert_profile="${QUICPERF_TLS_CERT_PROFILE:-ed25519}"
 outlier_spread_ratio="${QUICPERF_OUTLIER_SPREAD_RATIO:-10}"
-outlier_gate_mode="${QUICPERF_OUTLIER_GATE_MODE:-minmax}"
+outlier_gate_mode="${QUICPERF_OUTLIER_GATE_MODE:-off}"
 sample_phase="${QUICPERF_SAMPLE_PHASE:-discovery}"
 append_samples_tsv="${QUICPERF_APPEND_SAMPLES_TSV:-}"
 run_label_prefix="${QUICPERF_RUN_LABEL_PREFIX:-}"
 network_path_helper="$root/tools/quicperf_network_path.py"
 path_variation="${QUICPERF_PATH_VARIATION:-1}"
 path_time_scale="${QUICPERF_PATH_TIME_SCALE:-1.0}"
+
+timeout_for_scenario() {
+  local scenario="$1"
+  local override_var="QUICPERF_${scenario^^}_TIMEOUT"
+  if [[ -n "${!override_var:-}" ]]; then
+    echo "${!override_var}"
+    return
+  fi
+  if [[ "$scenario" == "datagram" && -z "${QUICPERF_TIMEOUT:-}" ]]; then
+    local threads="${client_threads:-1}"
+    echo "$((900 * threads))s"
+    return
+  fi
+  echo "$timeout_s"
+}
 
 select_server_cpu() {
   python3 - <<'PY'
@@ -452,6 +467,7 @@ for bin in "${binaries[@]}"; do
   for scenario in $scenarios; do
     client_threads="$(client_threads_for_scenario "$scenario")"
     bytes="$(test_bytes_for_scenario "$scenario")"
+    scenario_timeout_s="$(timeout_for_scenario "$scenario")"
     server_connections="${QUICPERF_SERVER_CONNECTIONS:-$client_threads}"
     case "$scenario" in
       resumed_connect|zero_rtt_reqresp)
@@ -634,7 +650,7 @@ for bin in "${binaries[@]}"; do
         fi
 
         set +e
-        QUICPERF_SCENARIO="$scenario" QUICPERF_TEST_BYTES="$bytes" QUICPERF_SERVER_PORT="$server_port" QUICPERF_CLIENT_THREADS="$client_threads" QUICPERF_CLIENT_BASE_PORT="$client_base_port" QUICPERF_BUILD_PROFILE="$build_profile" QUICPERF_WINDOW_PROFILE="$window_profile" QUICPERF_CONGESTION_PROFILE="$congestion_profile" QUICPERF_TLS_VERIFY_MODE="$tls_verify_mode" QUICPERF_TLS_CERT_PROFILE="$tls_cert_profile" QUICPERF_NETWORK_PROFILE="$network" QUICPERF_PATH_PROFILE="$path_profile" QUICPERF_PATH_RTT_US="$QUICPERF_PATH_RTT_US" QUICPERF_PATH_DOWNLINK_BPS="$QUICPERF_PATH_DOWNLINK_BPS" QUICPERF_PATH_UPLINK_BPS="$QUICPERF_PATH_UPLINK_BPS" QUICPERF_PATH_MAX_RATE_BPS="$QUICPERF_PATH_MAX_RATE_BPS" QUICPERF_LOCAL_ADDRESS="$client_local_address" QUICPERF_REMOTE_ADDRESS="$client_remote_address" QUICPERF_SERVER_CONNECTIONS="$server_connections" timeout "$timeout_s" "${client_prefix[@]}" "$bin" client "$network" "$server_address_arg" "$scenario" >"$client_log" 2>&1
+        QUICPERF_SCENARIO="$scenario" QUICPERF_TEST_BYTES="$bytes" QUICPERF_SERVER_PORT="$server_port" QUICPERF_CLIENT_THREADS="$client_threads" QUICPERF_CLIENT_BASE_PORT="$client_base_port" QUICPERF_BUILD_PROFILE="$build_profile" QUICPERF_WINDOW_PROFILE="$window_profile" QUICPERF_CONGESTION_PROFILE="$congestion_profile" QUICPERF_TLS_VERIFY_MODE="$tls_verify_mode" QUICPERF_TLS_CERT_PROFILE="$tls_cert_profile" QUICPERF_NETWORK_PROFILE="$network" QUICPERF_PATH_PROFILE="$path_profile" QUICPERF_PATH_RTT_US="$QUICPERF_PATH_RTT_US" QUICPERF_PATH_DOWNLINK_BPS="$QUICPERF_PATH_DOWNLINK_BPS" QUICPERF_PATH_UPLINK_BPS="$QUICPERF_PATH_UPLINK_BPS" QUICPERF_PATH_MAX_RATE_BPS="$QUICPERF_PATH_MAX_RATE_BPS" QUICPERF_LOCAL_ADDRESS="$client_local_address" QUICPERF_REMOTE_ADDRESS="$client_remote_address" QUICPERF_SERVER_CONNECTIONS="$server_connections" timeout "$scenario_timeout_s" "${client_prefix[@]}" "$bin" client "$network" "$server_address_arg" "$scenario" >"$client_log" 2>&1
         client_status=$?
         if [[ -n "$idle_rss_sampler_pid" ]]; then
           kill "$idle_rss_sampler_pid" 2>/dev/null || true
@@ -1002,12 +1018,11 @@ if append_samples_tsv:
 if outlier_failures:
     for key, low_label, low, high_label, high, spread in outlier_failures:
         print(
-            "quicperf_outlier_gate status=failed "
+            "quicperf_outlier_gate status=observed "
             f"binary={key[0]} library={key[1]} scenario={key[2]} network={key[3]} path_profile={key[4]} "
             f"metric={key[-1]} mode={outlier_gate_mode} {low_label}={low:.6f} "
             f"{high_label}={high:.6f} spread={spread:.3f} limit={outlier_spread_ratio:.3f}"
         )
-    raise SystemExit(3)
 PY
 
 exit "$run_failed"

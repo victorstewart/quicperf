@@ -1,0 +1,42 @@
+# Launch Metadata
+
+Source run directory: `.run/full-matrix-20260527T052921Z`
+
+## Command
+
+```sh
+QUICPERF_BINARIES="s2nperf neqoperf lsperf xquicperf quicheperf picoperf quinnperf noqperf tquicperf quiczigperf mvfstperf ngtcp2perf" \
+QUICPERF_ADAPTIVE_SCENARIOS="download upload connect reqresp stream_churn multistream_download multistream_upload bidi small_payload_pps loss_recovery flow_control resumed_connect zero_rtt_reqresp datagram idle_footprint close_reset_cleanup" \
+QUICPERF_NETWORKS="syscall iouring" \
+QUICPERF_PATH_PROFILES=loopback \
+QUICPERF_TEST_BYTES=1073741824 \
+QUICPERF_CONGESTION_PROFILE=cubic \
+QUICPERF_ADAPTIVE_OUT_DIR=.run/full-matrix-20260527T052921Z \
+python3 tools/run-adaptive-publication-suite.py
+```
+
+## Environment
+
+```sh
+QUICPERF_BINARIES=s2nperf neqoperf lsperf xquicperf quicheperf picoperf quinnperf noqperf tquicperf quiczigperf mvfstperf ngtcp2perf
+QUICPERF_ADAPTIVE_SCENARIOS=download upload connect reqresp stream_churn multistream_download multistream_upload bidi small_payload_pps loss_recovery flow_control resumed_connect zero_rtt_reqresp datagram idle_footprint close_reset_cleanup
+QUICPERF_NETWORKS=syscall iouring
+QUICPERF_PATH_PROFILES=loopback
+QUICPERF_TEST_BYTES=1073741824
+QUICPERF_CONGESTION_PROFILE=cubic
+```
+
+## Launch Table
+
+```tsv
+field	value
+out_dir	.run/full-matrix-20260527T052921Z
+pid	440980
+started_utc	2026-05-27T05:29:21Z
+path_profiles	loopback
+networks	syscall iouring
+test_bytes	1073741824
+congestion_profile	cubic
+scenarios	download upload connect reqresp stream_churn multistream_download multistream_upload bidi small_payload_pps loss_recovery flow_control resumed_connect zero_rtt_reqresp datagram idle_footprint close_reset_cleanup
+binaries	s2nperf neqoperf lsperf xquicperf quicheperf picoperf quinnperf noqperf tquicperf quiczigperf mvfstperf ngtcp2perf
+```

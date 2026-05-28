@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cstddef>
 #include <ctime>
+#include <deque>
 #include <fcntl.h>
 #include <memory>
 #include <netinet/udp.h>
@@ -523,6 +525,8 @@ private:
 #endif
   constexpr static uint16_t iouringBufferGroup = 7;
   constexpr static uint32_t iouringRecvBufferCount = 1024;
+  constexpr static uint32_t iouringMaxPendingRecvPackets = 1024;
+  constexpr static uint32_t iouringCompletionBatchLimit = 2048;
   constexpr static size_t iouringRecvControlSize = CMSG_SPACE(sizeof(uint16_t));
   constexpr static size_t iouringRecvBufferSize = sizeof(struct io_uring_recvmsg_out) + sizeof(struct sockaddr_storage) + iouringRecvControlSize + MAX_IPV6_UDP_GSO_BUFFER_SIZE;
 
@@ -545,15 +549,18 @@ private:
   uint64_t impairmentPacketOrdinal = 0;
   uint64_t iouringSendErrorLogs = 0;
   uint64_t iouringPendingSendSqes = 0;
-  struct DeferredIouringRecv {
-    sockaddr_storage sourceAddress = {};
-    socklen_t sourceAddressLen = 0;
-    void *payload = nullptr;
-    size_t payloadLength = 0;
+  uint64_t iouringOutstandingSendSqes = 0;
+  uint64_t iouringSendCompletionEpoch = 0;
+  bool iouringProcessingCqes = false;
+
+  struct PendingIouringRecvPacket {
+    sockaddr_storage address = {};
+    socklen_t addressLen = 0;
+    std::vector<uint8_t> payload;
     uint16_t groSegmentSize = 0;
-    uint16_t bid = 0;
   };
-  std::vector<DeferredIouringRecv> iouringDeferredRecv;
+
+  std::deque<PendingIouringRecvPacket> pendingIouringRecvPackets;
 
   [[noreturn]] void failIouringSetup(const char *step, int result)
   {
@@ -664,95 +671,110 @@ private:
     benchmarkRecordUdpPacketsReceived(delivered);
   }
 
-  void deferReceivedPacket(uint16_t bid, const struct sockaddr *sourceAddress, socklen_t sourceAddressLen,
-                           void *payload, size_t payloadLength, uint16_t groSegmentSize)
+  template <typename Handler>
+  bool consumeIouringRecvCqe(struct io_uring_cqe *cqe, Handler&& handler)
   {
-    DeferredIouringRecv deferred = {};
-    deferred.sourceAddressLen = std::min<socklen_t>(
-        sourceAddressLen, static_cast<socklen_t>(sizeof(deferred.sourceAddress)));
-    if (deferred.sourceAddressLen != 0)
+    if ((cqe->flags & IORING_CQE_F_MORE) == 0)
     {
-      memcpy(&deferred.sourceAddress, sourceAddress, deferred.sourceAddressLen);
+      iouringRecvArmed = false;
     }
-    deferred.payload = payload;
-    deferred.payloadLength = payloadLength;
-    deferred.groSegmentSize = groSegmentSize;
-    deferred.bid = bid;
-    iouringDeferredRecv.emplace_back(deferred);
+
+    if ((cqe->flags & IORING_CQE_F_BUFFER) == 0)
+    {
+      return false;
+    }
+
+    uint16_t bid = static_cast<uint16_t>(cqe->flags >> IORING_CQE_BUFFER_SHIFT);
+    if (bid >= iouringRecvBuffers.size())
+    {
+      return false;
+    }
+
+    bool delivered = false;
+    void *buffer = iouringRecvBuffers[bid];
+    if (cqe->res > 0)
+    {
+      struct io_uring_recvmsg_out *out = io_uring_recvmsg_validate(buffer, cqe->res, &iouringRecvMsg);
+      if (out != nullptr && out->payloadlen <= MAX_IPV6_UDP_GSO_BUFFER_SIZE)
+      {
+        handler(reinterpret_cast<const struct sockaddr *>(io_uring_recvmsg_name(out)),
+                out->namelen,
+                io_uring_recvmsg_payload(out, &iouringRecvMsg),
+                out->payloadlen,
+                iouringGroSegmentSize(out));
+        delivered = true;
+      }
+    }
+
+    recycleIouringRecvBuffer(bid);
+    return delivered;
   }
 
   template <typename Consumer>
-  void handleIouringRecvCqe(struct io_uring_cqe *cqe, Consumer& msgConsumer)
+  bool handleIouringRecvCqe(struct io_uring_cqe *cqe, Consumer& msgConsumer)
   {
-    if ((cqe->flags & IORING_CQE_F_MORE) == 0)
-    {
-      iouringRecvArmed = false;
-    }
-
-    if (cqe->res <= 0 || (cqe->flags & IORING_CQE_F_BUFFER) == 0)
-    {
-      return;
-    }
-
-    uint16_t bid = static_cast<uint16_t>(cqe->flags >> IORING_CQE_BUFFER_SHIFT);
-    if (bid >= iouringRecvBuffers.size())
-    {
-      return;
-    }
-
-    void *buffer = iouringRecvBuffers[bid];
-    struct io_uring_recvmsg_out *out = io_uring_recvmsg_validate(buffer, cqe->res, &iouringRecvMsg);
-    if (out != nullptr && out->payloadlen <= MAX_IPV6_UDP_GSO_BUFFER_SIZE)
-    {
+    return consumeIouringRecvCqe(cqe, [&](const struct sockaddr *sourceAddress,
+                                          socklen_t sourceAddressLen,
+                                          void *payload,
+                                          size_t payloadLength,
+                                          uint16_t groSegmentSize) {
       deliverReceivedPacket(iouringRecvView,
-                            reinterpret_cast<const struct sockaddr *>(io_uring_recvmsg_name(out)),
-                            out->namelen,
-                            io_uring_recvmsg_payload(out, &iouringRecvMsg),
-                            out->payloadlen,
-                            iouringGroSegmentSize(out),
+                            sourceAddress,
+                            sourceAddressLen,
+                            payload,
+                            payloadLength,
+                            groSegmentSize,
                             msgConsumer);
-    }
-
-    recycleIouringRecvBuffer(bid);
+    });
   }
 
-  void deferIouringRecvCqe(struct io_uring_cqe *cqe)
+  void queueIouringRecvCqe(struct io_uring_cqe *cqe)
   {
-    if ((cqe->flags & IORING_CQE_F_MORE) == 0)
-    {
-      iouringRecvArmed = false;
-    }
-
-    if (cqe->res <= 0 || (cqe->flags & IORING_CQE_F_BUFFER) == 0)
+    if (pendingIouringRecvPackets.size() >= iouringMaxPendingRecvPackets)
     {
       return;
     }
+    consumeIouringRecvCqe(cqe, [&](const struct sockaddr *sourceAddress,
+                                   socklen_t sourceAddressLen,
+                                   void *payload,
+                                   size_t payloadLength,
+                                   uint16_t groSegmentSize) {
+      auto& packet = pendingIouringRecvPackets.emplace_back();
+      memcpy(&packet.address, sourceAddress, sourceAddressLen);
+      packet.addressLen = sourceAddressLen;
+      packet.payload.resize(payloadLength);
+      memcpy(packet.payload.data(), payload, payloadLength);
+      packet.groSegmentSize = groSegmentSize;
+    });
+  }
 
-    uint16_t bid = static_cast<uint16_t>(cqe->flags >> IORING_CQE_BUFFER_SHIFT);
-    if (bid >= iouringRecvBuffers.size())
+  template <typename Consumer>
+  bool deliverPendingIouringRecvPackets(Consumer& msgConsumer)
+  {
+    bool delivered = false;
+    while (!pendingIouringRecvPackets.empty())
     {
-      return;
+      PendingIouringRecvPacket packet = std::move(pendingIouringRecvPackets.front());
+      pendingIouringRecvPackets.pop_front();
+      deliverReceivedPacket(splitRecvView,
+                            reinterpret_cast<const struct sockaddr *>(&packet.address),
+                            packet.addressLen,
+                            packet.payload.data(),
+                            packet.payload.size(),
+                            packet.groSegmentSize,
+                            msgConsumer);
+      delivered = true;
     }
-
-    void *buffer = iouringRecvBuffers[bid];
-    struct io_uring_recvmsg_out *out = io_uring_recvmsg_validate(buffer, cqe->res, &iouringRecvMsg);
-    if (out != nullptr && out->payloadlen <= MAX_IPV6_UDP_GSO_BUFFER_SIZE)
-    {
-      deferReceivedPacket(
-          bid,
-          reinterpret_cast<const struct sockaddr *>(io_uring_recvmsg_name(out)),
-          out->namelen,
-          io_uring_recvmsg_payload(out, &iouringRecvMsg),
-          out->payloadlen,
-          iouringGroSegmentSize(out));
-      return;
-    }
-
-    recycleIouringRecvBuffer(bid);
+    return delivered;
   }
 
   void handleIouringSendCqe(void *callbackBuffer, int result)
   {
+    ++iouringSendCompletionEpoch;
+    if (iouringOutstandingSendSqes > 0)
+    {
+      --iouringOutstandingSendSqes;
+    }
     if (result < 0 && iouringSendErrorLogs < 16)
     {
       ++iouringSendErrorLogs;
@@ -777,36 +799,63 @@ private:
     }
   }
 
-  template <typename Consumer>
-  bool deliverDeferredIouringRecv(Consumer& msgConsumer)
-  {
-    if (iouringDeferredRecv.empty())
-    {
-      return false;
-    }
-
-    std::vector<DeferredIouringRecv> deferred;
-    deferred.swap(iouringDeferredRecv);
-    for (const DeferredIouringRecv& packet : deferred)
-    {
-      deliverReceivedPacket(splitRecvView,
-                            reinterpret_cast<const struct sockaddr *>(&packet.sourceAddress),
-                            packet.sourceAddressLen,
-                            packet.payload,
-                            packet.payloadLength,
-                            packet.groSegmentSize,
-                            msgConsumer);
-      recycleIouringRecvBuffer(packet.bid);
-    }
-    return true;
-  }
-
 public:
 
   alignas(64) uint8_t junk[benchmarkAppChunkSize];
 
   UDPSocket socket;
   Pool<MultiUDPContext> sendPool;
+
+  uint32_t debugSendPoolAvailable(void)
+  {
+    return sendPool.howManyLeft();
+  }
+
+  uint64_t debugPendingSendSqes(void) const
+  {
+    return iouringPendingSendSqes;
+  }
+
+  uint64_t debugOutstandingSendSqes(void) const
+  {
+    return iouringOutstandingSendSqes;
+  }
+
+  uint64_t debugSendCompletionEpoch(void) const
+  {
+    return iouringSendCompletionEpoch;
+  }
+
+  uint32_t debugSqReady(void) const
+  {
+    if constexpr (usesIouring)
+    {
+      return io_uring_sq_ready(const_cast<struct io_uring *>(&ring));
+    }
+    return 0;
+  }
+
+  uint32_t debugCqReady(void) const
+  {
+    if constexpr (usesIouring)
+    {
+      return io_uring_cq_ready(const_cast<struct io_uring *>(&ring));
+    }
+    return 0;
+  }
+
+  bool iouringSendQueueSaturated(uint64_t limit) const
+  {
+    if constexpr (usesIouring)
+    {
+      return iouringOutstandingSendSqes >= limit;
+    }
+    else
+    {
+      (void)limit;
+      return false;
+    }
+  }
 
   NetworkHub(uint16_t port)
       : recvTimeout(),
@@ -820,7 +869,6 @@ public:
 
     if constexpr (usesIouring)
     {
-      iouringDeferredRecv.reserve(iouringRecvBufferCount);
       int flags = fcntl(socket.fd, F_GETFL, 0);
       if (flags >= 0)
       {
@@ -968,6 +1016,7 @@ public:
         ++packets->sendsInFlight;
         packets->udpPacketsInFlight += packets->msgs[i].udpPacketCount();
         ++iouringPendingSendSqes;
+        ++iouringOutstandingSendSqes;
       }
       if (packets->sendsInFlight == 0)
       {
@@ -1004,44 +1053,54 @@ public:
   {
     if constexpr (usesIouring)
     {
+      flush();
+      if (iouringProcessingCqes)
+      {
+        return;
+      }
       for (int i = 0; i < 8; ++i)
       {
-        io_uring_submit_and_get_events(&ring);
-        struct io_uring_cqe *cqe;
+        io_uring_get_events(&ring);
+        struct io_uring_cqe *cqe = nullptr;
         if (io_uring_peek_cqe(&ring, &cqe) < 0)
         {
           break;
         }
 
-        uint32_t head;
+        uint32_t head = 0;
         uint32_t count = 0;
         io_uring_for_each_cqe(&ring, head, cqe)
         {
-          ++count;
-          uint64_t user_data = (uint64_t)io_uring_cqe_get_data(cqe);
-          int op = user_data >> 48;
-          void *callbackBuffer = (void *)((user_data << 16) >> 16);
-          switch (op)
+          if (count >= iouringCompletionBatchLimit)
           {
-            case IORING_OP_SENDMSG:
-              handleIouringSendCqe(callbackBuffer, cqe->res);
-              break;
-            case IORING_OP_RECVMSG:
-              deferIouringRecvCqe(cqe);
-              break;
-            default:
-              break;
+            break;
           }
+          uint64_t user_data = (uint64_t)io_uring_cqe_get_data(cqe);
+          int op = static_cast<int>(user_data >> 48);
+          void *callbackBuffer = reinterpret_cast<void *>((user_data << 16) >> 16);
+          if (op == IORING_OP_SENDMSG)
+          {
+            handleIouringSendCqe(callbackBuffer, cqe->res);
+          }
+          else if (op == IORING_OP_RECVMSG)
+          {
+            if (pendingIouringRecvPackets.size() >= iouringMaxPendingRecvPackets)
+            {
+              break;
+            }
+            queueIouringRecvCqe(cqe);
+          }
+          ++count;
+        }
+        if (count == 0)
+        {
+          break;
         }
         io_uring_cq_advance(&ring, count);
         if (!iouringRecvArmed)
         {
           armIouringRecv();
-          io_uring_submit(&ring);
-        }
-        if (count == 0)
-        {
-          break;
+          flush();
         }
       }
     }
@@ -1121,89 +1180,113 @@ public:
     }
     else
     {
-      if (deliverDeferredIouringRecv(msgConsumer))
-      {
-        return false;
-      }
-
       armIouringRecv();
-
-      struct io_uring_cqe *cqe;
-      uint64_t user_data;
-      void *callbackBuffer;
-      int op;
-      int result;
-      uint32_t head;
-      uint32_t count = 0;
 
       // printf("unconsumed cqes = %ld\n", io_uring_cq_ready(&ring));
       // printf("unsubmitted sqes = %ld\n", io_uring_sq_ready(&ring));
       // printf("cqe space left = %ld\n", *(ring.cq.kring_entries) - io_uring_cq_ready(&ring));
       // if ((rand() % 250) == 0) printf("sqe space left = %ld\n", *(ring.sq.kring_entries) - io_uring_sq_ready(&ring));
 
-      if (timeoutus <= 0)
+      if (deliverPendingIouringRecvPackets(msgConsumer))
       {
-        io_uring_submit_and_get_events(&ring);
-        if (io_uring_peek_cqe(&ring, &cqe) < 0)
-        {
-          return true;
-        }
-      }
-      else
-      {
-        io_uring_submit(&ring);
-        recvTimeout.setTimeout(timeoutus);
-        if (io_uring_wait_cqe_timeout(&ring, &cqe, &recvTimeout.timeout) < 0)
-        {
-          return true;
-        }
+        return false;
       }
 
-      io_uring_for_each_cqe(&ring, head, cqe)
+      const uint64_t deadline = timeoutus > 0 ? timeNowUs() + static_cast<uint64_t>(timeoutus) : 0;
+      while (true)
       {
-        ++count;
-        user_data = (uint64_t)io_uring_cqe_get_data(cqe);
-        op = user_data >> 48;
-        callbackBuffer = (void *)((user_data << 16) >> 16);
-        result = cqe->res;
-
-        switch (op)
+        struct io_uring_cqe *cqe = nullptr;
+        if (timeoutus <= 0)
         {
-          case IORING_OP_RECVMSG:
-            {
-              handleIouringRecvCqe(cqe, msgConsumer);
-              break;
-            }
-          case IORING_OP_SENDMSG:
-            {
-              // if (result < 0) printf("IORING_OP_SENDMMSG, result = %d\n", result);
-
-              handleIouringSendCqe(callbackBuffer, result);
-
-              break;
-            }
-          default:
-            if (result < 0)
-            {
-              // printf("IORING_OP_SENDMSG, result = %d\n", result);
-              // printf("unconsumed cqes = %ld\n", io_uring_cq_ready(&ring));
-              // printf("unsubmitted sqes = %ld\n", io_uring_sq_ready(&ring));
-              // printf("cqe space left = %ld\n", *(ring.cq.kring_entries) - io_uring_cq_ready(&ring));
-              // printf("sqe space left = %ld\n", *(ring.sq.kring_entries) - io_uring_sq_ready(&ring));
-            }
-            break;
+          flush();
+          io_uring_get_events(&ring);
+          if (io_uring_peek_cqe(&ring, &cqe) < 0)
+          {
+            return true;
+          }
         }
-      }
-
-      // uint32_t cqesAvailable = io_uring_cq_ready(&ring);
-
-      io_uring_cq_advance(&ring, count);
-      if constexpr (usesIouring)
-      {
-        if (!iouringRecvArmed)
+        else
         {
-          armIouringRecv();
           io_uring_submit(&ring);
+          const uint64_t now = timeNowUs();
+          if (now >= deadline)
+          {
+            return true;
+          }
+          recvTimeout.setTimeout(static_cast<int64_t>(deadline - now));
+          if (io_uring_wait_cqe_timeout(&ring, &cqe, &recvTimeout.timeout) < 0)
+          {
+            return true;
+          }
+        }
+
+        uint32_t head = 0;
+        uint32_t count = 0;
+        bool deliveredPacket = false;
+        iouringProcessingCqes = true;
+        io_uring_for_each_cqe(&ring, head, cqe)
+        {
+          if (count >= iouringCompletionBatchLimit)
+          {
+            break;
+          }
+          ++count;
+          uint64_t user_data = (uint64_t)io_uring_cqe_get_data(cqe);
+          int op = static_cast<int>(user_data >> 48);
+          void *callbackBuffer = reinterpret_cast<void *>((user_data << 16) >> 16);
+          int result = cqe->res;
+
+          switch (op)
+          {
+            case IORING_OP_RECVMSG:
+              {
+                deliveredPacket = handleIouringRecvCqe(cqe, msgConsumer) || deliveredPacket;
+                break;
+              }
+            case IORING_OP_SENDMSG:
+              {
+                // if (result < 0) printf("IORING_OP_SENDMMSG, result = %d\n", result);
+
+                handleIouringSendCqe(callbackBuffer, result);
+
+                break;
+              }
+            default:
+              if (result < 0)
+              {
+                // printf("IORING_OP_SENDMSG, result = %d\n", result);
+                // printf("unconsumed cqes = %ld\n", io_uring_cq_ready(&ring));
+                // printf("unsubmitted sqes = %ld\n", io_uring_sq_ready(&ring));
+                // printf("cqe space left = %ld\n", *(ring.cq.kring_entries) - io_uring_cq_ready(&ring));
+                // printf("sqe space left = %ld\n", *(ring.sq.kring_entries) - io_uring_sq_ready(&ring));
+              }
+              break;
+          }
+        }
+        iouringProcessingCqes = false;
+
+        // uint32_t cqesAvailable = io_uring_cq_ready(&ring);
+
+        io_uring_cq_advance(&ring, count);
+        if constexpr (usesIouring)
+        {
+          if (!iouringRecvArmed)
+          {
+            armIouringRecv();
+            io_uring_submit(&ring);
+          }
+        }
+        if (deliverPendingIouringRecvPackets(msgConsumer))
+        {
+          deliveredPacket = true;
+        }
+        if (deliveredPacket)
+        {
+          return false;
+        }
+        if (timeoutus <= 0)
+        {
+          return true;
         }
       }
     }

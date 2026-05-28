@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cinttypes>
+#include <deque>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -81,7 +82,8 @@ private:
     bool complete = false;
     uint64_t datagramReceived = 0;
     uint64_t datagramEchoed = 0;
-    uint64_t datagramPendingEchoes = 0;
+    std::deque<uint64_t> datagramPendingEchoes;
+    std::vector<uint8_t> datagramSeen;
     std::unordered_map<uint64_t, GenericStreamState> genericStreams;
     uint64_t genericCompletedStreams = 0;
   };
@@ -96,6 +98,9 @@ private:
   uint64_t genericCompletedStreams = 0;
   uint64_t datagramClientSent = 0;
   uint64_t datagramClientReceived = 0;
+  uint64_t datagramClientDrainDeadlineUs = 0;
+  std::vector<uint8_t> datagramClientSeen;
+  std::array<uint8_t, benchmarkAppChunkSize> datagramScratch = {};
 
   constexpr static std::array<uint8_t, 48> ticketKey = {
       0x71,
@@ -221,7 +226,10 @@ private:
       }
       if (benchmarkScenario == BenchmarkScenario::datagram)
       {
-        return datagramClientReceived >= benchmarkScenarioOperations && clientDone;
+        return datagramClientSent >= benchmarkScenarioOperations &&
+               clientDone &&
+               datagramClientDrainDeadlineUs != 0 &&
+               timeNowUs() >= datagramClientDrainDeadlineUs;
       }
       if (benchmarkIsUpload())
       {
@@ -249,13 +257,13 @@ private:
     }
     if (benchmarkScenario == BenchmarkScenario::datagram)
     {
-      if (state.datagramEchoed < benchmarkScenarioOperations)
+      if (!state.clientDone || !state.datagramPendingEchoes.empty())
       {
         return;
       }
       if (state.serverDrainDeadlineUs == 0)
       {
-        state.serverDrainDeadlineUs = timeNowUs() + 100'000;
+        state.serverDrainDeadlineUs = timeNowUs() + benchmarkDatagramDrainUs;
         return;
       }
       if (timeNowUs() < state.serverDrainDeadlineUs)
@@ -273,8 +281,7 @@ private:
         return;
       }
     }
-    else if (!state.clientDone &&
-             (benchmarkIsLossRecovery() || state.serverDrainDeadlineUs == 0 || timeNowUs() < state.serverDrainDeadlineUs))
+    else if (!state.clientDone || state.serverDrainDeadlineUs == 0 || timeNowUs() < state.serverDrainDeadlineUs)
     {
       return;
     }
@@ -386,6 +393,27 @@ private:
     }
   }
 
+  void maybeStartDatagramClientDrain(void)
+  {
+    if constexpr (mode & Mode::client)
+    {
+      if (benchmarkScenario != BenchmarkScenario::datagram ||
+          datagramClientSent < benchmarkScenarioOperations ||
+          !clientDone)
+      {
+        return;
+      }
+      if (datagramClientReceived >= datagramClientSent)
+      {
+        datagramClientDrainDeadlineUs = timeNowUs();
+      }
+      else if (datagramClientDrainDeadlineUs == 0)
+      {
+        datagramClientDrainDeadlineUs = timeNowUs() + benchmarkDatagramDrainUs;
+      }
+    }
+  }
+
   void processClientDatagramReadable(void)
   {
     if constexpr (mode & Mode::client)
@@ -395,7 +423,7 @@ private:
         return;
       }
       bool receivedAny = false;
-      while (datagramClientReceived < benchmarkScenarioOperations)
+      while (true)
       {
         static uint8_t buf[65'535];
         ssize_t received = quiche_conn_dgram_recv(conn, buf, sizeof(buf));
@@ -404,14 +432,14 @@ private:
           break;
         }
         receivedAny = true;
-        ++datagramClientReceived;
-        if (datagramClientReceived >= benchmarkScenarioOperations)
+        const uint64_t sequence = benchmarkDecodeDatagramSequence(buf, static_cast<size_t>(received));
+        if (benchmarkMarkDatagramSeen(datagramClientSeen, sequence))
         {
-          signalClientDone();
-          break;
+          ++datagramClientReceived;
         }
+        maybeStartDatagramClientDrain();
       }
-      if (receivedAny && datagramClientReceived < benchmarkScenarioOperations)
+      if (receivedAny && datagramClientSent < benchmarkScenarioOperations)
       {
         processClientDatagramWritable();
       }
@@ -422,32 +450,36 @@ private:
   {
     if constexpr (mode & Mode::client)
     {
-      if (conn == nullptr || datagramClientReceived >= benchmarkScenarioOperations)
+      if (conn == nullptr || datagramClientSent >= benchmarkScenarioOperations)
       {
         return;
       }
       const uint64_t maxInFlight = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
-      const size_t payloadSize = std::min<size_t>(benchmarkScenarioMessageBytes, sizeof(networkHub->junk));
-      const uint64_t maxAttempts = benchmarkScenarioOperations +
-                                   (std::max<uint64_t>(benchmarkScenarioOperations, maxInFlight) * 64ULL);
-      if (datagramClientSent >= maxAttempts && datagramClientReceived < benchmarkScenarioOperations)
+      const ssize_t writableLen = quiche_conn_dgram_max_writable_len(conn);
+      const size_t payloadSize = benchmarkDatagramPayloadBytesForPayloadLimit(
+          sizeof(networkHub->junk),
+          writableLen > 0 ? static_cast<uint64_t>(writableLen) : 0);
+      if (payloadSize == 0)
       {
-        fprintf(stderr, "quiche datagram delivery target not reached received=%" PRIu64 " sent=%" PRIu64 " target=%" PRIu64 "\n",
-                datagramClientReceived, datagramClientSent, benchmarkScenarioOperations);
-        abort();
+        return;
       }
       uint64_t sentThisRound = 0;
       while (sentThisRound < maxInFlight &&
-             datagramClientSent < maxAttempts &&
-             datagramClientSent - datagramClientReceived < maxInFlight)
+             datagramClientSent < benchmarkScenarioOperations)
       {
-        ssize_t sent = quiche_conn_dgram_send(conn, reinterpret_cast<const uint8_t *>(networkHub->junk), payloadSize);
+        benchmarkFillDatagramPayload(datagramScratch.data(), payloadSize, networkHub->junk, datagramClientSent);
+        ssize_t sent = quiche_conn_dgram_send(conn, datagramScratch.data(), payloadSize);
         if (sent <= 0)
         {
           break;
         }
         ++datagramClientSent;
         ++sentThisRound;
+      }
+      if (datagramClientSent >= benchmarkScenarioOperations)
+      {
+        signalClientDone();
+        maybeStartDatagramClientDrain();
       }
     }
   }
@@ -462,8 +494,12 @@ private:
       {
         break;
       }
-      ++state.datagramReceived;
-      ++state.datagramPendingEchoes;
+      const uint64_t sequence = benchmarkDecodeDatagramSequence(buf, static_cast<size_t>(received));
+      if (benchmarkMarkDatagramSeen(state.datagramSeen, sequence))
+      {
+        ++state.datagramReceived;
+        state.datagramPendingEchoes.push_back(sequence);
+      }
     }
     uint64_t streamID = 0;
     quiche_stream_iter *readable = quiche_conn_readable(state.conn);
@@ -494,15 +530,24 @@ private:
 
   void processServerDatagramWritable(ServerConn& state)
   {
-    const size_t payloadSize = std::min<size_t>(benchmarkScenarioMessageBytes, sizeof(networkHub->junk));
-    while (state.datagramPendingEchoes > 0)
+    const ssize_t writableLen = quiche_conn_dgram_max_writable_len(state.conn);
+    const size_t payloadSize = benchmarkDatagramPayloadBytesForPayloadLimit(
+        sizeof(networkHub->junk),
+        writableLen > 0 ? static_cast<uint64_t>(writableLen) : 0);
+    if (payloadSize == 0)
     {
-      ssize_t sent = quiche_conn_dgram_send(state.conn, reinterpret_cast<const uint8_t *>(networkHub->junk), payloadSize);
+      markServerConnComplete(state);
+      return;
+    }
+    while (!state.datagramPendingEchoes.empty())
+    {
+      benchmarkFillDatagramPayload(datagramScratch.data(), payloadSize, networkHub->junk, state.datagramPendingEchoes.front());
+      ssize_t sent = quiche_conn_dgram_send(state.conn, datagramScratch.data(), payloadSize);
       if (sent <= 0)
       {
         break;
       }
-      --state.datagramPendingEchoes;
+      state.datagramPendingEchoes.pop_front();
       ++state.datagramEchoed;
     }
     if (state.datagramEchoed > 0)
@@ -949,7 +994,6 @@ private:
   {
     if constexpr (mode & Mode::iouring)
     {
-      networkHub->flush();
       networkHub->drainSendCompletions();
     }
   }
@@ -1074,14 +1118,34 @@ private:
   {
     if constexpr (mode & Mode::server)
     {
+      uint32_t completeDrainLoops = 0;
       do
       {
+        const bool completeBeforePoll = perfComplete();
+        if (completeBeforePoll)
+        {
+          if constexpr (mode & Mode::iouring)
+          {
+            if (completeDrainLoops++ >= 64)
+            {
+              break;
+            }
+          }
+          else
+          {
+            break;
+          }
+        }
         uint64_t usTil = 100'000;
         for (auto& active : serverConns)
         {
           usTil = std::min<uint64_t>(usTil, flushPackets(*active));
         }
         usTil = std::min<uint64_t>(usTil, 100'000);
+        if (completeBeforePoll)
+        {
+          usTil = 0;
+        }
 
         bool timedout = networkHub->recvmsgWithTimeout(usTil, [&](UDPContext *msg) -> void {
           ServerConn& state = serverConnFor(msg);
@@ -1108,7 +1172,11 @@ private:
           processServerWritable(*active);
           markServerConnComplete(*active);
         }
-      } while (!perfComplete() && (count == 0 || --count > 0));
+        if (count != 0 && --count == 0)
+        {
+          break;
+        }
+      } while (true);
       return;
     }
 
@@ -1491,6 +1559,10 @@ public:
       {
         datagramClientSent = 0;
         datagramClientReceived = 0;
+        datagramClientDrainDeadlineUs = 0;
+        datagramClientSeen.assign(benchmarkDatagramSeenBytes(), 0);
+        datagramScratch.fill(0);
+        clientDone = false;
         processClientDatagramWritable();
         flushPackets();
         advance();

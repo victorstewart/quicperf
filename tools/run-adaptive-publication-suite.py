@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import math
 import os
 import random
 import re
@@ -36,6 +37,28 @@ from quicperf_stats import (
 
 SIDECAR_EXCLUDED_BINARIES = {"tcpperf"}
 DOUBLE_CONNECTION_SCENARIOS = {"resumed_connect", "zero_rtt_reqresp"}
+CAPABILITY_SCENARIOS = {"resumed_connect", "zero_rtt_reqresp"}
+LIFECYCLE_SCENARIOS = {"reqresp", "stream_churn", "idle_footprint", "close_reset_cleanup"}
+BYTE_WORKLOAD_SCENARIOS = {
+    "download",
+    "upload",
+    "multistream_download",
+    "multistream_upload",
+    "bidi",
+    "loss_recovery",
+    "flow_control",
+}
+OPERATION_WORKLOAD_SCENARIOS = {"datagram", "small_payload_pps", "reqresp", "stream_churn", "zero_rtt_reqresp", "close_reset_cleanup"}
+FIXED_WORKLOAD_SCENARIOS = {"connect", "resumed_connect", "idle_footprint"}
+DEFAULT_TEST_BYTES = 1024 * 1024 * 1024
+DEFAULT_SMALL_TEST_BYTES = 64 * 1024 * 1024
+DEFAULT_FLOW_CONTROL_BYTES = 16 * 1024 * 1024
+DEFAULT_OPERATION_SCENARIO_OPERATIONS = 1024
+DEFAULT_DATAGRAM_OPERATIONS = 8_388_608
+MAX_CALIBRATED_OPERATION_SCENARIO_OPERATIONS = 100_000
+MIN_CALIBRATED_BYTES = 16 * 1024 * 1024
+MIN_CALIBRATED_OPERATIONS = 1024
+CALIBRATION_VALIDATION_PHASE = "calibration_validation"
 
 
 @dataclass(frozen=True)
@@ -83,6 +106,21 @@ class RunnerConfig:
     severe_p20_p80_max: float
     severe_drift_rel_max: float
     severe_outlier_blocks_min: int
+    calibration_enabled: bool
+    calibration_samples: int
+    calibration_warmup: int
+    calibration_timeout_sec: int
+    calibration_target_duration_sec: float
+    calibration_min_duration_sec: float
+    calibration_max_duration_sec: float
+    calibration_probe_bytes: int
+    calibration_probe_operations: int
+    calibration_max_scale_factor: float
+    calibrated_timeout_multiplier: float
+    calibrated_timeout_startup_sec: float
+    calibrated_timeout_min_sec: int
+    tier_smoke_samples: int
+    promoted_scenarios: tuple[str, ...]
 
     def stats_config(self) -> StatsConfig:
         return StatsConfig(
@@ -145,6 +183,29 @@ class BlockResult:
     returncode: int
 
 
+@dataclass(frozen=True)
+class WorkloadPlan:
+    binary: str
+    scenario: str
+    network: str
+    path_profile: str
+    tier: str
+    publication_eligible: bool
+    calibrated: bool
+    workload_kind: str
+    selected_work_units: int
+    probe_work_units: int
+    target_duration_sec: float
+    calibration_duration_sec: float
+    timeout_sec: int
+    env_overrides: dict[str, str]
+    reason: str
+
+    @property
+    def group(self) -> tuple[str, str, str, str]:
+        return (self.binary, self.scenario, self.network, self.path_profile)
+
+
 def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -189,6 +250,27 @@ def env_float(name: str, default: float) -> float:
         return default
 
 
+def env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def scenario_tier(scenario: str, promoted_scenarios: tuple[str, ...] = ()) -> str:
+    if scenario in promoted_scenarios:
+        return "publication"
+    if scenario in CAPABILITY_SCENARIOS:
+        return "capability"
+    if scenario in LIFECYCLE_SCENARIOS:
+        return "lifecycle"
+    return "publication"
+
+
+def scenario_publication_eligible(scenario: str, cfg: RunnerConfig) -> bool:
+    return scenario_tier(scenario, cfg.promoted_scenarios) == "publication"
+
+
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -229,12 +311,14 @@ def discover_binaries(root: Path) -> list[str]:
 
 
 def load_config() -> RunnerConfig:
-    block_size = env_int("QUICPERF_ADAPTIVE_BLOCK_SIZE", 5)
-    confirm_blocks = env_int("QUICPERF_ADAPTIVE_CONFIRM_BLOCKS", 2)
+    block_size = env_int("QUICPERF_ADAPTIVE_BLOCK_SIZE", 10)
+    min_samples = env_int("QUICPERF_ADAPTIVE_MIN_SAMPLES", 20)
+    default_min_blocks = max(1, math.ceil(min_samples / max(1, block_size)))
+    confirm_blocks = env_int("QUICPERF_ADAPTIVE_CONFIRM_BLOCKS", 0)
     return RunnerConfig(
         block_size=block_size,
-        min_blocks=env_int("QUICPERF_ADAPTIVE_MIN_BLOCKS", 4),
-        min_samples=env_int("QUICPERF_ADAPTIVE_MIN_SAMPLES", 20),
+        min_blocks=env_int("QUICPERF_ADAPTIVE_MIN_BLOCKS", default_min_blocks),
+        min_samples=min_samples,
         confirm_blocks=confirm_blocks,
         confirm_min_samples=env_int("QUICPERF_ADAPTIVE_CONFIRM_SAMPLES", confirm_blocks * block_size),
         max_samples=env_int("QUICPERF_ADAPTIVE_MAX_SAMPLES", 120),
@@ -256,6 +340,21 @@ def load_config() -> RunnerConfig:
         severe_p20_p80_max=env_float("QUICPERF_ADAPTIVE_SEVERE_P20_P80_MAX", 1.50),
         severe_drift_rel_max=env_float("QUICPERF_ADAPTIVE_SEVERE_DRIFT_REL_MAX", 0.08),
         severe_outlier_blocks_min=env_int("QUICPERF_ADAPTIVE_SEVERE_OUTLIER_BLOCKS_MIN", 2),
+        calibration_enabled=env_bool("QUICPERF_ADAPTIVE_CALIBRATION", True),
+        calibration_samples=env_int("QUICPERF_ADAPTIVE_CALIBRATION_SAMPLES", 2),
+        calibration_warmup=env_int("QUICPERF_ADAPTIVE_CALIBRATION_WARMUP", 1),
+        calibration_timeout_sec=env_int("QUICPERF_ADAPTIVE_CALIBRATION_TIMEOUT_SEC", 45),
+        calibration_target_duration_sec=env_float("QUICPERF_ADAPTIVE_CALIBRATION_TARGET_SEC", 5.0),
+        calibration_min_duration_sec=env_float("QUICPERF_ADAPTIVE_CALIBRATION_MIN_SEC", 2.0),
+        calibration_max_duration_sec=env_float("QUICPERF_ADAPTIVE_CALIBRATION_MAX_SEC", 10.0),
+        calibration_probe_bytes=env_int("QUICPERF_ADAPTIVE_CALIBRATION_PROBE_BYTES", 16 * 1024 * 1024),
+        calibration_probe_operations=env_int("QUICPERF_ADAPTIVE_CALIBRATION_PROBE_OPERATIONS", DEFAULT_OPERATION_SCENARIO_OPERATIONS),
+        calibration_max_scale_factor=env_float("QUICPERF_ADAPTIVE_CALIBRATION_MAX_SCALE", 4.0),
+        calibrated_timeout_multiplier=env_float("QUICPERF_ADAPTIVE_TIMEOUT_MULTIPLIER", 4.0),
+        calibrated_timeout_startup_sec=env_float("QUICPERF_ADAPTIVE_TIMEOUT_STARTUP_SEC", 10.0),
+        calibrated_timeout_min_sec=env_int("QUICPERF_ADAPTIVE_TIMEOUT_MIN_SEC", 15),
+        tier_smoke_samples=env_int("QUICPERF_ADAPTIVE_TIER_SMOKE_SAMPLES", 2),
+        promoted_scenarios=tuple(unique_preserve(split_words(os.environ.get("QUICPERF_ADAPTIVE_PROMOTE_SCENARIOS", "")))),
     )
 
 
@@ -275,6 +374,410 @@ def failure_reason(output: str, returncode: int) -> str:
     return ""
 
 
+FAILED_RESULT_STATUSES = {"failed", "client_failed", "server_failed", "thread_check_failed", "path_failed"}
+
+
+def is_failed_status(status: str | None) -> bool:
+    return (status or "") in FAILED_RESULT_STATUSES
+
+
+def workload_env_name_for_scenario(scenario: str) -> str:
+    if scenario == "multistream_download":
+        return "QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES"
+    if scenario == "multistream_upload":
+        return "QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES"
+    if scenario == "bidi":
+        return "QUICPERF_BIDI_TEST_BYTES"
+    if scenario == "flow_control":
+        return "QUICPERF_FLOW_CONTROL_TEST_BYTES"
+    if scenario == "loss_recovery":
+        return "QUICPERF_LOSS_RECOVERY_TEST_BYTES"
+    if scenario in OPERATION_WORKLOAD_SCENARIOS:
+        return "QUICPERF_SCENARIO_OPERATIONS"
+    return "QUICPERF_TEST_BYTES"
+
+
+def default_work_units_for_scenario(scenario: str) -> int:
+    if scenario == "flow_control":
+        return DEFAULT_FLOW_CONTROL_BYTES
+    if scenario in {"multistream_download", "multistream_upload", "bidi", "loss_recovery"}:
+        return DEFAULT_SMALL_TEST_BYTES
+    if scenario == "datagram":
+        return DEFAULT_DATAGRAM_OPERATIONS
+    if scenario in OPERATION_WORKLOAD_SCENARIOS:
+        return DEFAULT_OPERATION_SCENARIO_OPERATIONS
+    return DEFAULT_TEST_BYTES
+
+
+def max_work_units_for_scenario(scenario: str) -> int:
+    if scenario == "datagram":
+        return DEFAULT_DATAGRAM_OPERATIONS
+    if scenario in OPERATION_WORKLOAD_SCENARIOS:
+        return MAX_CALIBRATED_OPERATION_SCENARIO_OPERATIONS
+    return default_work_units_for_scenario(scenario)
+
+
+def workload_kind_for_scenario(scenario: str) -> str:
+    if scenario in BYTE_WORKLOAD_SCENARIOS:
+        return "bytes"
+    if scenario in OPERATION_WORKLOAD_SCENARIOS:
+        return "operations"
+    return "fixed"
+
+
+def calibration_probe_work_units(scenario: str, cfg: RunnerConfig) -> int:
+    kind = workload_kind_for_scenario(scenario)
+    default_units = default_work_units_for_scenario(scenario)
+    if kind == "bytes":
+        return max(MIN_CALIBRATED_BYTES, min(default_units, cfg.calibration_probe_bytes))
+    if kind == "operations":
+        return max(MIN_CALIBRATED_OPERATIONS, min(max_work_units_for_scenario(scenario), cfg.calibration_probe_operations))
+    return default_units
+
+
+def workload_env_for_scenario(scenario: str, work_units: int) -> dict[str, str]:
+    if scenario in FIXED_WORKLOAD_SCENARIOS:
+        return {}
+    kind = workload_kind_for_scenario(scenario)
+    if kind not in {"bytes", "operations"}:
+        return {}
+    return {workload_env_name_for_scenario(scenario): str(max(1, work_units))}
+
+
+def timeout_for_duration(duration_sec: float, cfg: RunnerConfig) -> int:
+    return max(
+        cfg.calibrated_timeout_min_sec,
+        int(math.ceil((duration_sec * cfg.calibrated_timeout_multiplier) + cfg.calibrated_timeout_startup_sec)),
+    )
+
+
+def fixed_workload_plan(target: Target, cfg: RunnerConfig, reason: str = "fixed_workload") -> WorkloadPlan:
+    tier = scenario_tier(target.scenario, cfg.promoted_scenarios)
+    return WorkloadPlan(
+        binary=target.binary,
+        scenario=target.scenario,
+        network=target.network,
+        path_profile=target.path_profile,
+        tier=tier,
+        publication_eligible=tier == "publication",
+        calibrated=False,
+        workload_kind=workload_kind_for_scenario(target.scenario),
+        selected_work_units=default_work_units_for_scenario(target.scenario),
+        probe_work_units=0,
+        target_duration_sec=cfg.calibration_target_duration_sec,
+        calibration_duration_sec=0.0,
+        timeout_sec=timeout_for_duration(cfg.calibration_target_duration_sec, cfg),
+        env_overrides={},
+        reason=reason,
+    )
+
+
+def build_workload_plan(target: Target, cfg: RunnerConfig, calibration_samples: list[Sample]) -> WorkloadPlan:
+    tier = scenario_tier(target.scenario, cfg.promoted_scenarios)
+    kind = workload_kind_for_scenario(target.scenario)
+    if tier != "publication":
+        return fixed_workload_plan(target, cfg, "tier_smoke_no_calibration")
+    if not cfg.calibration_enabled or kind == "fixed" or target.scenario in FIXED_WORKLOAD_SCENARIOS:
+        return fixed_workload_plan(target, cfg)
+    durations = [sample.duration_sec for sample in calibration_samples if sample.measured and sample.duration_sec > 0.0]
+    probe_units = calibration_probe_work_units(target.scenario, cfg)
+    max_units = max_work_units_for_scenario(target.scenario)
+    if not durations:
+        return fixed_workload_plan(target, cfg, "missing_calibration_duration")
+    observed_duration = median(durations)
+    scale = cfg.calibration_target_duration_sec / observed_duration if observed_duration > 0.0 else 1.0
+    selected_units = int(round(probe_units * scale))
+    if kind == "bytes":
+        floor = MIN_CALIBRATED_BYTES
+    else:
+        floor = MIN_CALIBRATED_OPERATIONS
+    clamp_reasons = []
+    if selected_units < floor:
+        selected_units = floor
+        clamp_reasons.append("min_floor")
+    max_scaled_units = max(floor, int(round(probe_units * max(1.0, cfg.calibration_max_scale_factor))))
+    if selected_units > max_scaled_units:
+        selected_units = max_scaled_units
+        clamp_reasons.append("max_scale")
+    if selected_units > max_units:
+        selected_units = max_units
+        clamp_reasons.append("max_work_units")
+    if cfg.calibration_min_duration_sec <= observed_duration <= cfg.calibration_max_duration_sec:
+        duration_reason = "inside_envelope"
+    elif observed_duration < cfg.calibration_min_duration_sec:
+        duration_reason = "too_fast_scaled_up"
+    else:
+        duration_reason = "too_slow_scaled_down"
+    estimated_duration = max(0.001, observed_duration * (selected_units / max(1, probe_units)))
+    reason = ";".join([duration_reason] + clamp_reasons)
+    return WorkloadPlan(
+        binary=target.binary,
+        scenario=target.scenario,
+        network=target.network,
+        path_profile=target.path_profile,
+        tier=tier,
+        publication_eligible=tier == "publication",
+        calibrated=True,
+        workload_kind=kind,
+        selected_work_units=selected_units,
+        probe_work_units=probe_units,
+        target_duration_sec=cfg.calibration_target_duration_sec,
+        calibration_duration_sec=observed_duration,
+        timeout_sec=timeout_for_duration(estimated_duration, cfg),
+        env_overrides=workload_env_for_scenario(target.scenario, selected_units),
+        reason=reason,
+    )
+
+
+def workload_plan_with_units(target: Target, cfg: RunnerConfig, base_plan: WorkloadPlan, selected_units: int, duration_sec: float, reason: str) -> WorkloadPlan:
+    return WorkloadPlan(
+        binary=target.binary,
+        scenario=target.scenario,
+        network=target.network,
+        path_profile=target.path_profile,
+        tier=base_plan.tier,
+        publication_eligible=base_plan.publication_eligible,
+        calibrated=base_plan.calibrated,
+        workload_kind=base_plan.workload_kind,
+        selected_work_units=selected_units,
+        probe_work_units=base_plan.probe_work_units,
+        target_duration_sec=base_plan.target_duration_sec,
+        calibration_duration_sec=duration_sec,
+        timeout_sec=timeout_for_duration(max(duration_sec, 0.001), cfg),
+        env_overrides=workload_env_for_scenario(target.scenario, selected_units),
+        reason=reason,
+    )
+
+
+def write_workload_plans(path: Path, plans: dict[tuple[str, str, str, str], WorkloadPlan]) -> None:
+    fields = [
+        "binary",
+        "scenario",
+        "network",
+        "path_profile",
+        "tier",
+        "publication_eligible",
+        "calibrated",
+        "workload_kind",
+        "selected_work_units",
+        "probe_work_units",
+        "target_duration_sec",
+        "calibration_duration_sec",
+        "timeout_sec",
+        "env_overrides",
+        "reason",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fields)
+        writer.writeheader()
+        for group in sorted(plans):
+            plan = plans[group]
+            writer.writerow({
+                "binary": plan.binary,
+                "scenario": plan.scenario,
+                "network": plan.network,
+                "path_profile": plan.path_profile,
+                "tier": plan.tier,
+                "publication_eligible": "1" if plan.publication_eligible else "0",
+                "calibrated": "1" if plan.calibrated else "0",
+                "workload_kind": plan.workload_kind,
+                "selected_work_units": plan.selected_work_units,
+                "probe_work_units": plan.probe_work_units,
+                "target_duration_sec": format_float(plan.target_duration_sec),
+                "calibration_duration_sec": format_float(plan.calibration_duration_sec),
+                "timeout_sec": plan.timeout_sec,
+                "env_overrides": "|".join(f"{key}={value}" for key, value in sorted(plan.env_overrides.items())),
+                "reason": plan.reason,
+            })
+
+
+def write_calibration_decisions(
+    path: Path,
+    targets: list[Target],
+    plans: dict[tuple[str, str, str, str], WorkloadPlan],
+    row_state: dict[Target, str],
+    row_reason: dict[Target, str],
+    cfg: RunnerConfig,
+) -> None:
+    fields = [
+        "binary",
+        "scenario",
+        "network",
+        "path_profile",
+        "tier",
+        "publication_eligible",
+        "status",
+        "reason",
+        "calibrated",
+        "workload_kind",
+        "selected_work_units",
+        "probe_work_units",
+        "target_duration_sec",
+        "calibration_duration_sec",
+        "timeout_sec",
+        "env_overrides",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fields)
+        writer.writeheader()
+        for target in sorted(targets, key=lambda item: (item.binary, item.scenario, item.network, item.path_profile, item.threads)):
+            plan = plans.get(target.group, fixed_workload_plan(target, cfg, "missing_workload_plan"))
+            status = row_state.get(target, "active")
+            if status == "active" and target.group in plans:
+                status = "ok"
+            writer.writerow({
+                "binary": target.binary,
+                "scenario": target.scenario,
+                "network": target.network,
+                "path_profile": target.path_profile,
+                "tier": plan.tier,
+                "publication_eligible": "1" if plan.publication_eligible else "0",
+                "status": status,
+                "reason": row_reason.get(target, plan.reason),
+                "calibrated": "1" if plan.calibrated else "0",
+                "workload_kind": plan.workload_kind,
+                "selected_work_units": plan.selected_work_units,
+                "probe_work_units": plan.probe_work_units,
+                "target_duration_sec": format_float(plan.target_duration_sec),
+                "calibration_duration_sec": format_float(plan.calibration_duration_sec),
+                "timeout_sec": plan.timeout_sec,
+                "env_overrides": "|".join(f"{key}={value}" for key, value in sorted(plan.env_overrides.items())),
+            })
+
+
+def load_workload_plans(path: Path) -> dict[tuple[str, str, str, str], WorkloadPlan]:
+    if not path.exists():
+        return {}
+    plans: dict[tuple[str, str, str, str], WorkloadPlan] = {}
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle, delimiter="\t"):
+            env_overrides = {}
+            for item in row.get("env_overrides", "").split("|"):
+                if "=" not in item:
+                    continue
+                key, value = item.split("=", 1)
+                env_overrides[key] = value
+            plan = WorkloadPlan(
+                binary=row["binary"],
+                scenario=row["scenario"],
+                network=row["network"],
+                path_profile=row["path_profile"],
+                tier=row.get("tier", "publication"),
+                publication_eligible=row.get("publication_eligible", "1") == "1",
+                calibrated=row.get("calibrated", "0") == "1",
+                workload_kind=row.get("workload_kind", "fixed"),
+                selected_work_units=int(row.get("selected_work_units", "0") or "0"),
+                probe_work_units=int(row.get("probe_work_units", "0") or "0"),
+                target_duration_sec=float(row.get("target_duration_sec", "0") or "0"),
+                calibration_duration_sec=float(row.get("calibration_duration_sec", "0") or "0"),
+                timeout_sec=int(row.get("timeout_sec", "0") or "0"),
+                env_overrides=env_overrides,
+                reason=row.get("reason", ""),
+            )
+            plans[plan.group] = plan
+    return plans
+
+
+def smoke_decision_for_target(target: Target, samples: list[Sample], cfg: RunnerConfig) -> SaturationDecision:
+    row_samples = samples_for_target(samples, target, "discovery")
+    measured_values = [sample.value or 0.0 for sample in row_samples if sample.measured]
+    selected = median(measured_values) if measured_values else 0.0
+    return SaturationDecision(
+        selected_threads=target.threads,
+        best_threads=target.threads,
+        boundary_threads=target.threads,
+        selection_probability_within_tolerance=1.0 if measured_values else 0.0,
+        best_p50=selected,
+        selected_p50=selected,
+        selected_vs_best_ratio=1.0 if measured_values else 0.0,
+        selected_vs_best_ci95_low=1.0 if measured_values else 0.0,
+        selected_vs_best_ci95_high=1.0 if measured_values else 0.0,
+        plateau_sentinel_count=0,
+        edge_status="tier_smoke",
+        decision_status="converged" if measured_values else "failed",
+        reason=f"{scenario_tier(target.scenario, cfg.promoted_scenarios)}_tier_smoke_only",
+    )
+
+
+def validate_scaled_workload(
+    *,
+    root: Path,
+    out_root: Path,
+    samples_path: Path,
+    target: Target,
+    plan: WorkloadPlan,
+    cfg: RunnerConfig,
+    publication_id: str,
+    commit: str,
+    env_sig: str,
+    machine_sig: str,
+    round_index: int,
+    block_ordinal: int,
+) -> tuple[WorkloadPlan, int]:
+    if not plan.calibrated or plan.selected_work_units <= plan.probe_work_units:
+        return plan, block_ordinal
+    if plan.workload_kind not in {"bytes", "operations"}:
+        return plan, block_ordinal
+
+    candidate = plan.selected_work_units
+    floor = max(1, plan.probe_work_units)
+    validation_reason = plan.reason
+    saw_validation_failure = False
+    guard_step_taken = False
+    while candidate >= floor:
+        block_ordinal += 1
+        before_count = len(load_samples(samples_path))
+        result = run_block(
+            root,
+            out_root,
+            samples_path,
+            target,
+            phase=CALIBRATION_VALIDATION_PHASE,
+            round_index=round_index,
+            block_ordinal=block_ordinal,
+            cfg=cfg,
+            publication_id=publication_id,
+            commit=commit,
+            env_sig=env_sig,
+            machine_sig=machine_sig,
+            warmup=cfg.warmup,
+            repeat=min(cfg.block_size, 2),
+            env_overrides=workload_env_for_scenario(target.scenario, candidate),
+            timeout_sec=plan.timeout_sec,
+        )
+        all_samples = load_samples(samples_path)
+        new_samples = all_samples[before_count:]
+        measured_durations = [
+            sample.duration_sec for sample in new_samples
+            if sample.measured and sample.duration_sec > 0.0
+        ]
+        if result.status == "ok" and measured_durations:
+            if saw_validation_failure and not guard_step_taken and candidate > floor:
+                validation_reason = f"{validation_reason};validated_boundary_at_{candidate};guard_step_down_after_validation_failure"
+                candidate = max(floor, candidate // 2)
+                guard_step_taken = True
+                continue
+            duration = median(measured_durations)
+            reason = f"{validation_reason};validated_scale"
+            if candidate != plan.selected_work_units:
+                reason += ";fallback_after_validation_failure"
+            return workload_plan_with_units(target, cfg, plan, candidate, duration, reason), block_ordinal
+        if candidate == floor:
+            break
+        next_candidate = max(floor, candidate // 2)
+        validation_reason = f"{validation_reason};validation_failed_at_{candidate}"
+        saw_validation_failure = True
+        candidate = next_candidate
+    return workload_plan_with_units(
+        target,
+        cfg,
+        plan,
+        floor,
+        plan.calibration_duration_sec,
+        f"{validation_reason};fallback_to_probe",
+    ), block_ordinal
+
+
 def run_block(
     root: Path,
     out_root: Path,
@@ -290,9 +793,19 @@ def run_block(
     env_sig: str,
     machine_sig: str,
     warmup: int,
+    repeat: int | None = None,
+    env_overrides: dict[str, str] | None = None,
+    timeout_sec: int | None = None,
 ) -> BlockResult:
     block_id = f"r{round_index:03d}b{block_ordinal:05d}t{target.threads}"
     out_dir = out_root / "blocks" / f"{block_id}-{target.binary}-{target.scenario}-{target.network}-{target.path_profile}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "adaptive-block-request.tsv").write_text(
+        "block_id\tphase\tbinary\tscenario\tnetwork\tpath_profile\tclient_threads\n"
+        f"{block_id}\t{phase}\t{target.binary}\t{target.scenario}\t{target.network}\t"
+        f"{target.path_profile}\t{target.threads}\n",
+        encoding="utf-8",
+    )
     env = os.environ.copy()
     env.update(
         {
@@ -302,7 +815,7 @@ def run_block(
             "QUICPERF_PATH_PROFILES": target.path_profile,
             "QUICPERF_CLIENT_THREADS": str(target.threads),
             "QUICPERF_SERVER_CONNECTIONS": str(server_connections_for_target(target)),
-            "QUICPERF_REPEAT": str(cfg.block_size),
+            "QUICPERF_REPEAT": str(repeat if repeat is not None else cfg.block_size),
             "QUICPERF_WARMUP": str(warmup),
             "QUICPERF_RANDOMIZE_ORDER": "0",
             "QUICPERF_RANDOM_SEED": str(cfg.random_seed + block_ordinal),
@@ -319,6 +832,10 @@ def run_block(
             "QUICPERF_OUTLIER_GATE_MODE": "off",
         }
     )
+    if timeout_sec is not None and timeout_sec > 0:
+        env["QUICPERF_TIMEOUT"] = f"{timeout_sec}s"
+    if env_overrides:
+        env.update(env_overrides)
     env[f"QUICPERF_{target.scenario.upper()}_CLIENT_THREADS"] = str(target.threads)
     completed = subprocess.run(
         [str(root / "tools" / "run-benchmarks.sh")],
@@ -329,7 +846,6 @@ def run_block(
         stderr=subprocess.STDOUT,
         check=False,
     )
-    out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "adaptive-block.stdout").write_text(completed.stdout, encoding="utf-8")
     reason = unsupported_reason(completed.stdout)
     if reason:
@@ -429,12 +945,40 @@ def block_terminal_status(stdout: str) -> tuple[str, str]:
         return "unsupported", reason
     reason = failure_reason(stdout, 0)
     if reason:
-        return reason, reason
-    if reason:
         return "failed", reason
     if "Segmentation fault" in stdout:
-        return "server_failed", "exit_139"
+        return "failed", "exit_139"
     return "", ""
+
+
+def block_measured_phases(block_dir: Path) -> set[str]:
+    meta_path = block_dir / "run-meta.tsv"
+    if not meta_path.exists():
+        return set()
+    phases: set[str] = set()
+    with meta_path.open("r", encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle, delimiter="\t"):
+            phase = row.get("phase", "")
+            if phase and phase != "warmup":
+                phases.add(phase)
+    return phases
+
+
+def block_requested_phase(block_dir: Path) -> str:
+    request_path = block_dir / "adaptive-block-request.tsv"
+    if not request_path.exists():
+        return ""
+    with request_path.open("r", encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle, delimiter="\t"):
+            return row.get("phase", "")
+    return ""
+
+
+def is_calibration_validation_block(block_dir: Path) -> bool:
+    if block_requested_phase(block_dir) == CALIBRATION_VALIDATION_PHASE:
+        return True
+    phases = block_measured_phases(block_dir)
+    return bool(phases) and phases <= {CALIBRATION_VALIDATION_PHASE}
 
 
 def load_block_failures(out_root: Path, networks: list[str], path_profiles: list[str]) -> dict[Target, str]:
@@ -447,6 +991,8 @@ def load_block_failures(out_root: Path, networks: list[str], path_profiles: list
             continue
         parsed = parse_block_target(block_dir, networks, path_profiles)
         if not parsed:
+            continue
+        if is_calibration_validation_block(block_dir):
             continue
         _block_id, target = parsed
         stdout_path = block_dir / "adaptive-block.stdout"
@@ -513,7 +1059,7 @@ def initialize_resume_state(
                         continue
                     if terminal_samples:
                         target = Target(binary, scenario, network, path_profile, terminal_samples[0].client_threads or 1)
-                        row_state[target] = terminal_samples[0].status or "failed"
+                        row_state[target] = "failed"
                         row_reason[target] = terminal_samples[0].reason or terminal_samples[0].status or "failed"
                         group_state[group] = "failed"
                         continue
@@ -673,10 +1219,24 @@ def write_row_stats(path: Path, samples: list[Sample], cfg: RunnerConfig) -> dic
 def confirm_status(discovery: RowStats | None, confirm: RowStats | None, combined: RowStats | None, scenario: str, cfg: RunnerConfig) -> tuple[str, str]:
     if discovery is None:
         return "not_ready", "missing_discovery_stats"
-    if confirm is None:
-        return "not_ready", "missing_confirm_stats"
     if combined is None:
         return "not_ready", "missing_combined_stats"
+    if cfg.confirm_blocks <= 0 or cfg.confirm_min_samples <= 0:
+        if discovery.status == "failed" or combined.status == "failed":
+            return "failed", ";".join(
+                f"{label}_{stats.status}"
+                for label, stats in (("discovery", discovery), ("combined", combined))
+                if stats.status == "failed"
+            )
+        if discovery.status == "converged" and combined.status == "converged":
+            return "converged", "confirm_disabled"
+        return "not_ready", ";".join(
+            f"{label}_{stats.status}"
+            for label, stats in (("discovery", discovery), ("combined", combined))
+            if stats.status != "converged"
+        )
+    if confirm is None:
+        return "not_ready", "missing_confirm_stats"
     reasons = []
     if discovery.status == "failed" or confirm.status == "failed" or combined.status == "failed":
         return "failed", ";".join(
@@ -735,6 +1295,24 @@ def publication_result_status(decision: SaturationDecision, incomplete: list[str
     if decision.decision_status == "converged" and not incomplete and selected_combined is not None:
         return "converged"
     return "not_ready"
+
+
+def terminal_group_decision(state: str, reason: str) -> SaturationDecision:
+    return SaturationDecision(
+        selected_threads=0,
+        best_threads=0,
+        boundary_threads=0,
+        selection_probability_within_tolerance=0.0,
+        best_p50=0.0,
+        selected_p50=0.0,
+        selected_vs_best_ratio=0.0,
+        selected_vs_best_ci95_low=0.0,
+        selected_vs_best_ci95_high=0.0,
+        plateau_sentinel_count=0,
+        edge_status=state,
+        decision_status=state,
+        reason=reason or state,
+    )
 
 
 def write_saturation_decisions(path: Path, decisions: dict[tuple[str, str, str, str], SaturationDecision], samples: list[Sample]) -> None:
@@ -803,6 +1381,107 @@ def curve_role(threads: int, decision: SaturationDecision) -> str:
     return "+".join(roles) if roles else "curve"
 
 
+def publication_support_threads(decision: SaturationDecision) -> set[int]:
+    threads = {
+        decision.selected_threads,
+        decision.best_threads,
+        decision.boundary_threads,
+    }
+    threads.discard(0)
+    return threads
+
+
+def required_confirm_blocks(cfg: RunnerConfig) -> int:
+    if cfg.confirm_blocks <= 0 or cfg.confirm_min_samples <= 0:
+        return 0
+    return max(cfg.confirm_blocks, (cfg.confirm_min_samples + cfg.block_size - 1) // cfg.block_size)
+
+
+def confirm_target_finished(samples: list[Sample], target: Target, cfg: RunnerConfig) -> bool:
+    if cfg.confirm_blocks <= 0 or cfg.confirm_min_samples <= 0:
+        return True
+    target_samples = samples_for_target(samples, target, "confirm")
+    if any(sample.status not in ("", "ok") for sample in target_samples):
+        return True
+    return sum(1 for sample in target_samples if sample.measured) >= cfg.confirm_min_samples
+
+
+def pending_confirm_targets(confirm_targets: set[Target], samples: list[Sample], cfg: RunnerConfig) -> list[Target]:
+    return sorted(
+        (target for target in confirm_targets if not confirm_target_finished(samples, target, cfg)),
+        key=lambda target: (target.binary, target.scenario, target.network, target.path_profile, target.threads),
+    )
+
+
+def finalize_inactive_discovery_groups(
+    samples: list[Sample],
+    row_state: dict[Target, str],
+    row_reason: dict[Target, str],
+    group_state: dict[tuple[str, str, str, str], str],
+    decisions: dict[tuple[str, str, str, str], SaturationDecision],
+    cfg: RunnerConfig,
+) -> None:
+    for group in list(group_state):
+        if group_state[group] in {"converged", "unsupported", "failed", "not_ready"}:
+            continue
+        group_active = any(target.group == group and row_state.get(target) == "active" for target in row_state)
+        if group_active:
+            continue
+        terminal = [
+            target
+            for target in row_state
+            if target.group == group and (row_state.get(target) == "unsupported" or is_failed_status(row_state.get(target)))
+        ]
+        if terminal:
+            group_state[group] = "unsupported" if row_state[terminal[0]] == "unsupported" else "failed"
+            continue
+        decision = compute_group_decision(samples, group, row_state, cfg)
+        decisions[group] = decision
+        if decision.decision_status == "converged":
+            group_state[group] = "converged"
+        else:
+            group_state[group] = "not_ready"
+            for target in row_state:
+                if target.group == group and row_state.get(target) == "not_ready":
+                    row_reason[target] = row_reason.get(target, decision.reason or "not_ready")
+
+
+def finalize_group_decisions(
+    samples: list[Sample],
+    row_state: dict[Target, str],
+    row_reason: dict[Target, str],
+    group_state: dict[tuple[str, str, str, str], str],
+    decisions: dict[tuple[str, str, str, str], SaturationDecision],
+    cfg: RunnerConfig,
+) -> None:
+    finalize_inactive_discovery_groups(samples, row_state, row_reason, group_state, decisions, cfg)
+    for group in list(group_state):
+        if group_state[group] in {"unsupported", "failed"}:
+            decisions[group] = terminal_group_decision(
+                group_state[group],
+                next((row_reason[target] for target in row_reason if target.group == group), group_state[group]),
+            )
+        elif group not in decisions:
+            decisions[group] = compute_group_decision(samples, group, row_state, cfg)
+
+
+def measured_sample_summary(samples: list[Sample]) -> tuple[int, int, float]:
+    measured = [sample for sample in samples if sample.measured and sample.phase in ("discovery", "confirm")]
+    rows = {
+        (sample.binary, sample.scenario, sample.network, sample.path_profile, sample.client_threads)
+        for sample in measured
+    }
+    avg = (len(measured) / len(rows)) if rows else 0.0
+    return len(measured), len(rows), avg
+
+
+def group_state_counts(group_state: dict[tuple[str, str, str, str], str]) -> tuple[int, int, int]:
+    converged = sum(1 for state in group_state.values() if state == "converged")
+    failed = sum(1 for state in group_state.values() if state == "failed")
+    not_converged = sum(1 for state in group_state.values() if state not in {"converged", "failed", "unsupported"})
+    return converged, not_converged, failed
+
+
 def write_publication_tables(
     out_root: Path,
     samples: list[Sample],
@@ -818,6 +1497,8 @@ def write_publication_tables(
         "scenario",
         "network",
         "path_profile",
+        "tier",
+        "publication_eligible",
         "adapter_features",
         "congestion_controller",
         "metric",
@@ -849,6 +1530,8 @@ def write_publication_tables(
             decision = decisions.get((key.binary, key.scenario, key.network, key.path_profile), SaturationDecision(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, "", "not_ready", "missing_decision"))
             adapter_features = group_adapter_features(samples, (key.binary, key.scenario, key.network, key.path_profile))
             congestion_controller = adapter_feature_value(adapter_features, "cc")
+            tier = scenario_tier(key.scenario, cfg.promoted_scenarios)
+            eligible = "1" if tier == "publication" else "0"
             for phase in ("discovery", "confirm", "combined"):
                 stats = row_stats_map.get((key, phase))
                 if not stats:
@@ -858,6 +1541,8 @@ def write_publication_tables(
                     "scenario": key.scenario,
                     "network": key.network,
                     "path_profile": key.path_profile,
+                    "tier": tier,
+                    "publication_eligible": eligible,
                     "adapter_features": adapter_features,
                     "congestion_controller": congestion_controller,
                     "metric": key.metric,
@@ -885,6 +1570,8 @@ def write_publication_tables(
         "scenario",
         "network",
         "path_profile",
+        "tier",
+        "publication_eligible",
         "adapter_features",
         "congestion_controller",
         "metric",
@@ -907,6 +1594,8 @@ def write_publication_tables(
         "scenario",
         "network",
         "path_profile",
+        "tier",
+        "publication_eligible",
         "adapter_features",
         "congestion_controller",
         "publication_status",
@@ -933,12 +1622,11 @@ def write_publication_tables(
         metric = group_metric(samples, group)
         adapter_features = group_adapter_features(samples, group)
         congestion_controller = adapter_feature_value(adapter_features, "cc")
+        tier = scenario_tier(scenario, cfg.promoted_scenarios)
+        eligible = tier == "publication"
         publication_threads = set()
         if decision.selected_threads:
-            publication_threads.update(range(1, decision.selected_threads + 1))
-            publication_threads.add(decision.best_threads)
-            publication_threads.add(decision.boundary_threads)
-        publication_threads.discard(0)
+            publication_threads = publication_support_threads(decision)
         incomplete = []
         selected_discovery = selected_confirm = selected_combined = None
         for threads in sorted(publication_threads):
@@ -949,6 +1637,10 @@ def write_publication_tables(
             confirm_result = confirm_status(discovery, confirm, combined, scenario, cfg)
             c_status, c_reason = confirm_result
             pub_status = publication_row_status(discovery, confirm_result, combined)
+            if not eligible and combined is not None and combined.n > 0:
+                pub_status = "converged" if combined.status != "failed" else "failed"
+                c_status = "converged"
+                c_reason = f"{tier}_tier_smoke_only"
             reason = ";".join(item for item in [discovery.reason if discovery else "missing_discovery", c_reason, combined.reason if combined else "missing_combined"] if item)
             if pub_status != "converged":
                 incomplete.append(f"t{threads}:{pub_status}:{reason}")
@@ -961,6 +1653,8 @@ def write_publication_tables(
                 "scenario": scenario,
                 "network": network,
                 "path_profile": path_profile,
+                "tier": tier,
+                "publication_eligible": "1" if eligible else "0",
                 "adapter_features": adapter_features,
                 "congestion_controller": congestion_controller,
                 "metric": metric,
@@ -979,11 +1673,15 @@ def write_publication_tables(
                 "reason": reason,
             })
         publication_status = publication_result_status(decision, incomplete, selected_combined)
+        if not eligible and selected_combined is not None and selected_combined.n > 0 and publication_status != "failed":
+            publication_status = "converged"
         result_rows.append({
             "binary": binary,
             "scenario": scenario,
             "network": network,
             "path_profile": path_profile,
+            "tier": tier,
+            "publication_eligible": "1" if eligible else "0",
             "adapter_features": adapter_features,
             "congestion_controller": congestion_controller,
             "publication_status": publication_status,
@@ -1018,7 +1716,12 @@ def write_publication_tables(
 
 
 def write_pairwise(path: Path, samples: list[Sample], results: list[dict[str, str]], cfg: RunnerConfig) -> None:
-    selected = [row for row in results if row.get("publication_status") == "converged" and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES]
+    selected = [
+        row for row in results
+        if row.get("publication_status") == "converged"
+        and row.get("publication_eligible") == "1"
+        and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES
+    ]
     by_group: dict[tuple[str, str, str, str], list[dict[str, str]]] = defaultdict(list)
     for row in selected:
         by_group[(row["scenario"], row["network"], row["path_profile"], row["metric"])].append(row)
@@ -1051,7 +1754,12 @@ def write_pairwise(path: Path, samples: list[Sample], results: list[dict[str, st
 
 
 def write_rankings(out_root: Path, samples: list[Sample], results: list[dict[str, str]], decisions: dict[tuple[str, str, str, str], SaturationDecision], cfg: RunnerConfig) -> None:
-    ranking_rows = [row for row in results if row.get("publication_status") == "converged" and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES]
+    ranking_rows = [
+        row for row in results
+        if row.get("publication_status") == "converged"
+        and row.get("publication_eligible") == "1"
+        and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES
+    ]
     by_comparator: dict[tuple[str, str, str, str], list[dict[str, str]]] = defaultdict(list)
     for row in ranking_rows:
         by_comparator[(row["scenario"], row["network"], row["path_profile"], row["metric"])].append(row)
@@ -1152,7 +1860,12 @@ def bootstrap_scores(
     cfg: RunnerConfig,
     weights: tuple[float, float, float],
 ) -> list[dict[str, float]]:
-    ranking_rows = [row for row in results if row.get("publication_status") == "converged" and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES]
+    ranking_rows = [
+        row for row in results
+        if row.get("publication_status") == "converged"
+        and row.get("publication_eligible") == "1"
+        and row.get("binary") not in SIDECAR_EXCLUDED_BINARIES
+    ]
     if not ranking_rows:
         return []
     iters = max(1, min(cfg.bootstrap_iters, 2000))
@@ -1227,6 +1940,8 @@ def write_summary(path: Path, publication_id: str, cfg: RunnerConfig, results: l
         handle.write(f"- Discovery minimum: {cfg.min_blocks} blocks / {cfg.min_samples} samples\n")
         handle.write(f"- Discovery maximum: {cfg.max_samples} samples\n")
         handle.write(f"- Confirmatory holdout: {cfg.confirm_blocks} blocks / {cfg.confirm_min_samples} samples\n")
+        handle.write(f"- Calibration: {'enabled' if cfg.calibration_enabled else 'disabled'} ({cfg.calibration_samples} samples, target {cfg.calibration_target_duration_sec:.3f}s)\n")
+        handle.write(f"- Tier smoke samples: {cfg.tier_smoke_samples}\n")
         handle.write(f"- Bootstrap iterations: {cfg.bootstrap_iters}\n")
         handle.write(f"- Converged result rows: {len(converged_results)}\n")
         handle.write(f"- Failed result rows: {len(failed_results)}\n")
@@ -1297,6 +2012,92 @@ def main() -> int:
                         active.add(target)
                         row_state[target] = "active"
 
+    workload_plan_path = out_root / "workload-plan.tsv"
+    calibration_samples_path = out_root / "calibration-samples.tsv"
+    calibration_validation_samples_path = out_root / "calibration-validation-samples.tsv"
+    workload_plans = load_workload_plans(workload_plan_path) if resume else {}
+    if not resume:
+        calibration_targets = sorted(active, key=lambda item: (item.binary, item.scenario, item.network, item.path_profile, item.threads))
+        if cfg.calibration_enabled:
+            write_samples(calibration_samples_path, [], append=False)
+            write_samples(calibration_validation_samples_path, [], append=False)
+            print(
+                "quicperf_adaptive_calibration_start "
+                f"rows={len(calibration_targets)} samples={cfg.calibration_samples} "
+                f"target_sec={cfg.calibration_target_duration_sec:.3f} timeout_sec={cfg.calibration_timeout_sec}"
+            )
+            for calibration_index, target in enumerate(calibration_targets, start=1):
+                tier = scenario_tier(target.scenario, cfg.promoted_scenarios)
+                if tier != "publication":
+                    workload_plans[target.group] = fixed_workload_plan(target, cfg, "tier_smoke_no_calibration")
+                    print(
+                        "quicperf_adaptive_calibration "
+                        f"row={calibration_index}/{len(calibration_targets)} target={target} status=skipped "
+                        f"tier={tier} eligible=0 reason=tier_smoke_no_calibration"
+                    )
+                    continue
+                probe_units = calibration_probe_work_units(target.scenario, cfg)
+                block_ordinal += 1
+                result = run_block(
+                    root,
+                    out_root,
+                    calibration_samples_path,
+                    target,
+                    phase="calibration",
+                    round_index=0,
+                    block_ordinal=block_ordinal,
+                    cfg=cfg,
+                    publication_id=publication_id,
+                    commit=commit,
+                    env_sig=env_sig,
+                    machine_sig=machine_sig,
+                    warmup=cfg.calibration_warmup,
+                    repeat=max(1, cfg.calibration_samples),
+                    env_overrides=workload_env_for_scenario(target.scenario, probe_units),
+                    timeout_sec=cfg.calibration_timeout_sec,
+                )
+                if result.status != "ok":
+                    row_state[target] = "unsupported" if result.status == "unsupported" else "failed"
+                    row_reason[target] = result.reason
+                    active.discard(target)
+                    group_state[target.group] = row_state[target]
+                    print(
+                        "quicperf_adaptive_calibration "
+                        f"row={calibration_index}/{len(calibration_targets)} target={target} "
+                        f"status={result.status} reason={result.reason}"
+                    )
+                    continue
+                calibration_samples = samples_for_target(load_samples(calibration_samples_path), target, "calibration")
+                workload_plans[target.group] = build_workload_plan(target, cfg, calibration_samples)
+                plan, block_ordinal = validate_scaled_workload(
+                    root=root,
+                    out_root=out_root,
+                    samples_path=calibration_validation_samples_path,
+                    target=target,
+                    plan=workload_plans[target.group],
+                    cfg=cfg,
+                    publication_id=publication_id,
+                    commit=commit,
+                    env_sig=env_sig,
+                    machine_sig=machine_sig,
+                    round_index=0,
+                    block_ordinal=block_ordinal,
+                )
+                workload_plans[target.group] = plan
+                print(
+                    "quicperf_adaptive_calibration "
+                    f"row={calibration_index}/{len(calibration_targets)} target={target} status=ok "
+                    f"tier={plan.tier} eligible={int(plan.publication_eligible)} "
+                    f"kind={plan.workload_kind} units={plan.selected_work_units} "
+                    f"duration_sec={plan.calibration_duration_sec:.6f} timeout_sec={plan.timeout_sec} "
+                    f"reason={plan.reason}"
+                )
+            print("quicperf_adaptive_calibration_complete")
+        for target in sorted(active, key=lambda item: (item.binary, item.scenario, item.network, item.path_profile, item.threads)):
+            workload_plans.setdefault(target.group, fixed_workload_plan(target, cfg, "calibration_disabled_or_missing"))
+        write_workload_plans(workload_plan_path, workload_plans)
+        write_calibration_decisions(out_root / "calibration-decisions.tsv", calibration_targets, workload_plans, row_state, row_reason, cfg)
+
     environment_path = out_root / "adaptive-environment.txt"
     with environment_path.open("w", encoding="utf-8") as handle:
         handle.write(f"quicperf_adaptive_environment date_utc={utc_iso()}\n")
@@ -1313,6 +2114,8 @@ def main() -> int:
         f"out_dir={out_root} binaries=\"{' '.join(binaries)}\" scenarios=\"{' '.join(scenarios)}\" "
         f"networks=\"{' '.join(networks)}\" path_profiles=\"{' '.join(path_profiles)}\" block_size={cfg.block_size} min_samples={cfg.min_samples} "
         f"max_samples={cfg.max_samples} confirm_blocks={cfg.confirm_blocks} random_seed={cfg.random_seed} "
+        f"calibration_enabled={int(cfg.calibration_enabled)} calibration_samples={cfg.calibration_samples} "
+        f"calibration_target_sec={cfg.calibration_target_duration_sec:.3f} tier_smoke_samples={cfg.tier_smoke_samples} "
         f"saturation_min_incremental_improvement={cfg.saturation_min_incremental_improvement:.3f} "
         f"high_variance_min_blocks={cfg.high_variance_min_blocks} "
         f"high_variance_min_samples={cfg.high_variance_min_samples} "
@@ -1335,6 +2138,7 @@ def main() -> int:
             if row_state.get(target) != "active":
                 continue
             block_ordinal += 1
+            plan = workload_plans.get(target.group, fixed_workload_plan(target, cfg, "missing_workload_plan"))
             target_samples = samples_for_target(load_samples(samples_path), target, "discovery")
             warmup = cfg.warmup if not target_samples else 0
             result = run_block(
@@ -1351,18 +2155,28 @@ def main() -> int:
                 env_sig=env_sig,
                 machine_sig=machine_sig,
                 warmup=warmup,
+                repeat=cfg.block_size if plan.publication_eligible else max(1, cfg.tier_smoke_samples),
+                env_overrides=plan.env_overrides,
+                timeout_sec=plan.timeout_sec,
             )
             if result.status != "ok":
-                row_state[target] = result.status
+                row_state[target] = "unsupported" if result.status == "unsupported" else "failed"
                 row_reason[target] = result.reason
                 active.discard(target)
-                group_state[target.group] = result.status
+                group_state[target.group] = row_state[target]
                 print(f"quicperf_adaptive_block target={target} status={result.status} reason={result.reason}")
         samples = load_samples(samples_path)
         discovery_stats = recompute_discovery_stats(samples, cfg)
         for target in list(active):
             stats = discovery_stats.get(target)
             if not stats:
+                continue
+            plan = workload_plans.get(target.group, fixed_workload_plan(target, cfg, "missing_workload_plan"))
+            if not plan.publication_eligible and stats.n >= max(1, cfg.tier_smoke_samples):
+                row_state[target] = "converged"
+                decisions[target.group] = smoke_decision_for_target(target, samples, cfg)
+                active.discard(target)
+                group_state[target.group] = "converged"
                 continue
             if stats.status == "converged":
                 row_state[target] = "converged"
@@ -1383,9 +2197,13 @@ def main() -> int:
             group_active = any(target.group == group and row_state.get(target) == "active" for target in row_state)
             if group_active:
                 continue
-            terminal = [target for target in row_state if target.group == group and row_state.get(target) in {"unsupported", "failed"}]
+            terminal = [
+                target
+                for target in row_state
+                if target.group == group and (row_state.get(target) == "unsupported" or is_failed_status(row_state.get(target)))
+            ]
             if terminal:
-                group_state[group] = row_state[terminal[0]]
+                group_state[group] = "unsupported" if row_state[terminal[0]] == "unsupported" else "failed"
                 continue
             bounded_not_ready = [
                 target for target in row_state
@@ -1415,45 +2233,48 @@ def main() -> int:
                     active.add(next_target)
                     continue
             group_state[group] = "not_ready"
-        print(f"quicperf_adaptive_round round={round_index} active_rows={len(active)} samples={sum(1 for sample in samples if sample.measured)}")
+        measured_count, sampled_rows, avg_samples_per_row = measured_sample_summary(samples)
+        converged_groups, not_converged_groups, failed_groups = group_state_counts(group_state)
+        print(
+            "quicperf_adaptive_round "
+            f"round={round_index} active_rows={len(active)} samples={measured_count} sampled_rows={sampled_rows} "
+            f"avg_samples_per_row={avg_samples_per_row:.2f} converged_groups={converged_groups} "
+            f"not_converged_groups={not_converged_groups} failed_groups={failed_groups}"
+        )
 
     samples = load_samples(samples_path)
-    for group in list(group_state):
-        if group not in decisions and group_state[group] not in {"unsupported", "failed"}:
-            decisions[group] = compute_group_decision(samples, group, row_state, cfg)
-        elif group not in decisions:
-            decisions[group] = SaturationDecision(
-                selected_threads=0,
-                best_threads=0,
-                boundary_threads=0,
-                selection_probability_within_tolerance=0.0,
-                best_p50=0.0,
-                selected_p50=0.0,
-                selected_vs_best_ratio=0.0,
-                selected_vs_best_ci95_low=0.0,
-                selected_vs_best_ci95_high=0.0,
-                plateau_sentinel_count=0,
-                edge_status=group_state[group],
-                decision_status=group_state[group],
-                reason=next((row_reason[target] for target in row_reason if target.group == group), group_state[group]),
-            )
+    finalize_group_decisions(samples, row_state, row_reason, group_state, decisions, cfg)
 
     confirm_targets = set()
     for group, decision in decisions.items():
+        if scenario_tier(group[1], cfg.promoted_scenarios) != "publication":
+            continue
         if decision.selected_threads <= 0:
             continue
-        for threads in range(1, decision.selected_threads + 1):
+        for threads in publication_support_threads(decision):
             confirm_targets.add(Target(group[0], group[1], group[2], group[3], threads))
-        for threads in (decision.best_threads, decision.boundary_threads):
-            if threads > 0:
-                confirm_targets.add(Target(group[0], group[1], group[2], group[3], threads))
     confirm_targets = {target for target in confirm_targets if group_state.get(target.group) == "converged"}
+    pending_confirm = pending_confirm_targets(confirm_targets, samples, cfg)
+    measured_count, sampled_rows, avg_samples_per_row = measured_sample_summary(samples)
+    print(
+        "quicperf_adaptive_discovery_complete "
+        f"active_rows={len(active)} samples={measured_count} sampled_rows={sampled_rows} avg_samples_per_row={avg_samples_per_row:.2f} "
+        f"converged_groups={sum(1 for state in group_state.values() if state == 'converged')} "
+        f"failed_groups={sum(1 for state in group_state.values() if state == 'failed')} "
+        f"confirm_blocks={required_confirm_blocks(cfg)} confirm_targets={len(confirm_targets)} "
+        f"pending_confirm_rows={len(pending_confirm)}"
+    )
 
-    for confirm_round in range(1, cfg.confirm_blocks + 1):
-        targets = list(confirm_targets)
+    for confirm_round in range(1, required_confirm_blocks(cfg) + 1):
+        samples = load_samples(samples_path)
+        targets = pending_confirm_targets(confirm_targets, samples, cfg)
+        if not targets:
+            break
         randomizer.shuffle(targets)
+        print(f"quicperf_adaptive_confirm_start round={confirm_round} rows={len(targets)}")
         for target in targets:
             block_ordinal += 1
+            plan = workload_plans.get(target.group, fixed_workload_plan(target, cfg, "missing_workload_plan"))
             run_block(
                 root,
                 out_root,
@@ -1468,9 +2289,22 @@ def main() -> int:
                 env_sig=env_sig,
                 machine_sig=machine_sig,
                 warmup=0,
+                env_overrides=plan.env_overrides,
+                timeout_sec=plan.timeout_sec,
             )
-        if targets:
-            print(f"quicperf_adaptive_confirm round={confirm_round} rows={len(targets)}")
+        samples = load_samples(samples_path)
+        remaining = pending_confirm_targets(confirm_targets, samples, cfg)
+        print(f"quicperf_adaptive_confirm round={confirm_round} rows={len(targets)} pending_confirm_rows={len(remaining)}")
+
+    samples = load_samples(samples_path)
+    remaining_confirm = pending_confirm_targets(confirm_targets, samples, cfg)
+    if remaining_confirm:
+        print(
+            "quicperf_adaptive_confirm_incomplete "
+            f"pending_confirm_rows={len(remaining_confirm)} confirm_blocks={required_confirm_blocks(cfg)}"
+        )
+    else:
+        print("quicperf_adaptive_confirm_complete pending_confirm_rows=0")
 
     samples = load_samples(samples_path)
     row_stats_map = write_row_stats(out_root / "row-stats.tsv", samples, cfg)
