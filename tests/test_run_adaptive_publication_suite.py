@@ -262,12 +262,14 @@ class RunAdaptivePublicationSuiteTests(unittest.TestCase):
             cfg = module.load_config()
 
         target = module.Target("lsperf", "download", "iouring", "loopback", 1)
+        probe_bytes = module.calibration_probe_work_units(target.scenario, cfg)
+        slow_gbps = ((probe_bytes * 8.0) / 1_000_000_000.0) / 20.0
         samples = [
-            self.make_sample(module, target, index, phase="calibration", value=1.0)
+            self.make_sample(module, target, index, phase="calibration", value=slow_gbps)
             for index in range(2)
         ]
         for sample in samples:
-            sample.duration_sec = 20.0
+            sample.duration_sec = 1.0
 
         plan = module.build_workload_plan(target, cfg, samples)
 
@@ -276,6 +278,21 @@ class RunAdaptivePublicationSuiteTests(unittest.TestCase):
         self.assertLess(plan.selected_work_units, module.DEFAULT_SMALL_TEST_BYTES)
         self.assertIn("QUICPERF_TEST_BYTES", plan.env_overrides)
         self.assertGreaterEqual(plan.timeout_sec, cfg.calibrated_timeout_min_sec)
+
+    def test_byte_calibration_uses_measured_workload_time_not_process_time(self):
+        module = load_adaptive_module()
+
+        with mock.patch.dict(os.environ, {"QUICPERF_ADAPTIVE_CALIBRATION_TARGET_SEC": "5"}, clear=True):
+            cfg = module.load_config()
+
+        target = module.Target("picoperf", "download", "iouring", "loopback", 1)
+        samples = [self.make_sample(module, target, 0, phase="calibration", value=8.0)]
+        samples[0].duration_sec = 1.2
+
+        plan = module.build_workload_plan(target, cfg, samples)
+
+        self.assertEqual(plan.selected_work_units, 5_000_000_000)
+        self.assertNotIn("max_scale", plan.reason)
 
     def test_lifecycle_rows_are_smoke_not_calibrated(self):
         module = load_adaptive_module()
@@ -297,12 +314,12 @@ class RunAdaptivePublicationSuiteTests(unittest.TestCase):
     def test_operation_calibration_does_not_jump_past_scale_cap(self):
         module = load_adaptive_module()
 
-        with mock.patch.dict(os.environ, {}, clear=True):
+        with mock.patch.dict(os.environ, {"QUICPERF_ADAPTIVE_CALIBRATION_MAX_SCALE": "4"}, clear=True):
             cfg = module.load_config()
 
         target = module.Target("mvfstperf", "small_payload_pps", "iouring", "loopback", 1)
-        samples = [self.make_sample(module, target, 0, phase="calibration")]
-        samples[0].duration_sec = 0.25
+        samples = [self.make_sample(module, target, 0, phase="calibration", value=4096.0)]
+        samples[0].duration_sec = 1.0
 
         plan = module.build_workload_plan(target, cfg, samples)
 
@@ -341,7 +358,7 @@ class RunAdaptivePublicationSuiteTests(unittest.TestCase):
             calls.append(int(kwargs["env_overrides"]["QUICPERF_TEST_BYTES"]))
             self.assertEqual(kwargs["phase"], module.CALIBRATION_VALIDATION_PHASE)
             self.assertEqual(kwargs["warmup"], cfg.warmup)
-            self.assertEqual(kwargs["repeat"], min(cfg.block_size, 2))
+            self.assertEqual(kwargs["repeat"], min(cfg.block_size, max(3, cfg.calibration_samples)))
             status = "failed" if calls[-1] == 64 * 1024 * 1024 else "ok"
             return module.BlockResult(target, "calibration", "b", status, "exit_124" if status == "failed" else "", Path("/tmp"), 0)
 

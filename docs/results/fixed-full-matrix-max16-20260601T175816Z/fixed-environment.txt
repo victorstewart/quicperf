@@ -1,0 +1,39 @@
+quicperf_fixed_environment date_utc=2026-06-01T17:58:16Z
+quicperf_fixed_environment run_id=fixed-full-matrix-max16-20260601T175816Z
+quicperf_fixed_environment git_commit=3eda036a66524d9375befb5e80fa61aa39a19d06
+quicperf_fixed_environment env_hash=5d7b3c75cb3e2cd8 machine_hash=491974e93d70d673
+quicperf_fixed_environment variables
+QUICPERF_CONGESTION_PROFILE=cubic
+QUICPERF_FIXED_OUT_DIR=.run/fixed-full-matrix-max16-20260601T175816Z/publication
+QUICPERF_PUBLICATION_ID=fixed-full-matrix-max16-20260601T175816Z
+quicperf_fixed_environment command=git status --short
+ M AGENTS.md
+ M README.md
+ M docs/latest-results.md
+ M docs/methodology.md
+ M perf.benchmark.h
+ M perf.cpp
+ M perf.lsquic.h
+ M perf.mvfst.h
+ M perf.networking.h
+ M perf.ngtcp2.h
+ M perf.packet_engine.h
+ M perf.picoquic.h
+ M perf.quiche.h
+ M perf.services.h
+ M perf.tquic.h
+ M perf.xquic.h
+ M rust-packet-ffi/src/lib.rs
+ M tests/test_run_adaptive_config.py
+ M tests/test_run_adaptive_publication_suite.py
+ M tools/quicperf_stats.py
+ M tools/render-latest-results.py
+ M tools/run-adaptive-publication-suite.py
+ M tools/run-benchmarks.sh
+?? profiles/fixed-design/
+?? tests/test_fixed_design.py
+?? tools/quicperf_fixed_design.py
+?? tools/run-fixed-publication-suite.py
+?? tools/run-saturation-scout.py
+quicperf_fixed_environment command=git rev-parse HEAD
+3eda036a66524d9375befb5e80fa61aa39a19d06

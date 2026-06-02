@@ -53,8 +53,10 @@ FIXED_WORKLOAD_SCENARIOS = {"connect", "resumed_connect", "idle_footprint"}
 DEFAULT_TEST_BYTES = 1024 * 1024 * 1024
 DEFAULT_SMALL_TEST_BYTES = 64 * 1024 * 1024
 DEFAULT_FLOW_CONTROL_BYTES = 16 * 1024 * 1024
+DEFAULT_MAX_CALIBRATED_BYTES = 16 * 1024 * 1024 * 1024
 DEFAULT_OPERATION_SCENARIO_OPERATIONS = 1024
 DEFAULT_DATAGRAM_OPERATIONS = 8_388_608
+DEFAULT_MAX_CLIENT_THREADS = 16
 MAX_CALIBRATED_OPERATION_SCENARIO_OPERATIONS = 100_000
 MIN_CALIBRATED_BYTES = 16 * 1024 * 1024
 MIN_CALIBRATED_OPERATIONS = 1024
@@ -115,6 +117,7 @@ class RunnerConfig:
     calibration_max_duration_sec: float
     calibration_probe_bytes: int
     calibration_probe_operations: int
+    calibration_max_bytes: int
     calibration_max_scale_factor: float
     calibrated_timeout_multiplier: float
     calibrated_timeout_startup_sec: float
@@ -324,7 +327,10 @@ def load_config() -> RunnerConfig:
         max_samples=env_int("QUICPERF_ADAPTIVE_MAX_SAMPLES", 120),
         bootstrap_iters=env_int("QUICPERF_ADAPTIVE_BOOTSTRAP_ITERS", 5000),
         warmup=env_int("QUICPERF_ADAPTIVE_WARMUP", 1),
-        max_threads=env_int("QUICPERF_SATURATION_MAX_THREADS", 32),
+        max_threads=min(
+            env_int("QUICPERF_SATURATION_MAX_THREADS", DEFAULT_MAX_CLIENT_THREADS),
+            DEFAULT_MAX_CLIENT_THREADS,
+        ),
         max_rounds=env_int("QUICPERF_ADAPTIVE_MAX_ROUNDS", 10000),
         random_seed=env_int_any(("QUICPERF_ADAPTIVE_RANDOM_SEED", "QUICPERF_RANDOM_SEED"), os.getpid()),
         saturation_tolerance=env_float("QUICPERF_SATURATION_TOLERANCE", 0.01),
@@ -341,7 +347,7 @@ def load_config() -> RunnerConfig:
         severe_drift_rel_max=env_float("QUICPERF_ADAPTIVE_SEVERE_DRIFT_REL_MAX", 0.08),
         severe_outlier_blocks_min=env_int("QUICPERF_ADAPTIVE_SEVERE_OUTLIER_BLOCKS_MIN", 2),
         calibration_enabled=env_bool("QUICPERF_ADAPTIVE_CALIBRATION", True),
-        calibration_samples=env_int("QUICPERF_ADAPTIVE_CALIBRATION_SAMPLES", 2),
+        calibration_samples=env_int("QUICPERF_ADAPTIVE_CALIBRATION_SAMPLES", 3),
         calibration_warmup=env_int("QUICPERF_ADAPTIVE_CALIBRATION_WARMUP", 1),
         calibration_timeout_sec=env_int("QUICPERF_ADAPTIVE_CALIBRATION_TIMEOUT_SEC", 45),
         calibration_target_duration_sec=env_float("QUICPERF_ADAPTIVE_CALIBRATION_TARGET_SEC", 5.0),
@@ -349,7 +355,8 @@ def load_config() -> RunnerConfig:
         calibration_max_duration_sec=env_float("QUICPERF_ADAPTIVE_CALIBRATION_MAX_SEC", 10.0),
         calibration_probe_bytes=env_int("QUICPERF_ADAPTIVE_CALIBRATION_PROBE_BYTES", 16 * 1024 * 1024),
         calibration_probe_operations=env_int("QUICPERF_ADAPTIVE_CALIBRATION_PROBE_OPERATIONS", DEFAULT_OPERATION_SCENARIO_OPERATIONS),
-        calibration_max_scale_factor=env_float("QUICPERF_ADAPTIVE_CALIBRATION_MAX_SCALE", 4.0),
+        calibration_max_bytes=env_int("QUICPERF_ADAPTIVE_CALIBRATION_MAX_BYTES", DEFAULT_MAX_CALIBRATED_BYTES),
+        calibration_max_scale_factor=env_float("QUICPERF_ADAPTIVE_CALIBRATION_MAX_SCALE", 1024.0),
         calibrated_timeout_multiplier=env_float("QUICPERF_ADAPTIVE_TIMEOUT_MULTIPLIER", 4.0),
         calibrated_timeout_startup_sec=env_float("QUICPERF_ADAPTIVE_TIMEOUT_STARTUP_SEC", 10.0),
         calibrated_timeout_min_sec=env_int("QUICPERF_ADAPTIVE_TIMEOUT_MIN_SEC", 15),
@@ -409,7 +416,9 @@ def default_work_units_for_scenario(scenario: str) -> int:
     return DEFAULT_TEST_BYTES
 
 
-def max_work_units_for_scenario(scenario: str) -> int:
+def max_work_units_for_scenario(scenario: str, cfg: RunnerConfig | None = None) -> int:
+    if scenario in BYTE_WORKLOAD_SCENARIOS:
+        return cfg.calibration_max_bytes if cfg is not None else DEFAULT_MAX_CALIBRATED_BYTES
     if scenario == "datagram":
         return DEFAULT_DATAGRAM_OPERATIONS
     if scenario in OPERATION_WORKLOAD_SCENARIOS:
@@ -431,7 +440,7 @@ def calibration_probe_work_units(scenario: str, cfg: RunnerConfig) -> int:
     if kind == "bytes":
         return max(MIN_CALIBRATED_BYTES, min(default_units, cfg.calibration_probe_bytes))
     if kind == "operations":
-        return max(MIN_CALIBRATED_OPERATIONS, min(max_work_units_for_scenario(scenario), cfg.calibration_probe_operations))
+        return max(MIN_CALIBRATED_OPERATIONS, min(max_work_units_for_scenario(scenario, cfg), cfg.calibration_probe_operations))
     return default_units
 
 
@@ -442,6 +451,31 @@ def workload_env_for_scenario(scenario: str, work_units: int) -> dict[str, str]:
     if kind not in {"bytes", "operations"}:
         return {}
     return {workload_env_name_for_scenario(scenario): str(max(1, work_units))}
+
+
+def calibration_sample_duration_sec(sample: Sample, work_units: int) -> float | None:
+    if not sample.measured or sample.value is None or sample.value <= 0.0:
+        return None
+    if sample.metric == "throughput_gbps":
+        return ((float(work_units) * 8.0) / 1_000_000_000.0) / sample.value
+    if sample.metric in {
+        "connections_per_second",
+        "requests_per_second",
+        "streams_per_second",
+        "messages_per_second",
+        "datagrams_per_second",
+    }:
+        return float(work_units) / sample.value
+    return sample.duration_sec if sample.duration_sec > 0.0 else None
+
+
+def calibration_sample_durations(samples: list[Sample], work_units: int) -> list[float]:
+    durations = []
+    for sample in samples:
+        duration = calibration_sample_duration_sec(sample, work_units)
+        if duration is not None and duration > 0.0:
+            durations.append(duration)
+    return durations
 
 
 def timeout_for_duration(duration_sec: float, cfg: RunnerConfig) -> int:
@@ -479,9 +513,9 @@ def build_workload_plan(target: Target, cfg: RunnerConfig, calibration_samples: 
         return fixed_workload_plan(target, cfg, "tier_smoke_no_calibration")
     if not cfg.calibration_enabled or kind == "fixed" or target.scenario in FIXED_WORKLOAD_SCENARIOS:
         return fixed_workload_plan(target, cfg)
-    durations = [sample.duration_sec for sample in calibration_samples if sample.measured and sample.duration_sec > 0.0]
     probe_units = calibration_probe_work_units(target.scenario, cfg)
-    max_units = max_work_units_for_scenario(target.scenario)
+    durations = calibration_sample_durations(calibration_samples, probe_units)
+    max_units = max_work_units_for_scenario(target.scenario, cfg)
     if not durations:
         return fixed_workload_plan(target, cfg, "missing_calibration_duration")
     observed_duration = median(durations)
@@ -741,16 +775,13 @@ def validate_scaled_workload(
             env_sig=env_sig,
             machine_sig=machine_sig,
             warmup=cfg.warmup,
-            repeat=min(cfg.block_size, 2),
+            repeat=min(cfg.block_size, max(3, cfg.calibration_samples)),
             env_overrides=workload_env_for_scenario(target.scenario, candidate),
             timeout_sec=plan.timeout_sec,
         )
         all_samples = load_samples(samples_path)
         new_samples = all_samples[before_count:]
-        measured_durations = [
-            sample.duration_sec for sample in new_samples
-            if sample.measured and sample.duration_sec > 0.0
-        ]
+        measured_durations = calibration_sample_durations(new_samples, candidate)
         if result.status == "ok" and measured_durations:
             if saw_validation_failure and not guard_step_taken and candidate > floor:
                 validation_reason = f"{validation_reason};validated_boundary_at_{candidate};guard_step_down_after_validation_failure"

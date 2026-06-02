@@ -314,6 +314,8 @@ private:
   bool importedResumption = false;
   bool importedZeroRtt = false;
   uint64_t outgoingZeroRttPackets = 0;
+  uint64_t durationCompletedUnits = 0;
+  double durationMeasuredSeconds = 0.0;
 
   enum class ServerPhase : uint8_t {
     acceptStream,
@@ -370,7 +372,11 @@ private:
     uint8_t done = 0;
     size_t doneRead = 0;
     uint8_t ack = 0;
+    std::array<uint8_t, sizeof(uint64_t)> durationAck = {};
     size_t ackSent = 0;
+    uint64_t durationDeadlineUs = 0;
+    uint64_t durationReceived = 0;
+    bool durationMode = false;
   };
 
   struct GenericServerStream {
@@ -390,6 +396,7 @@ private:
     size_t ackRead = 0;
     bool peerFinReceived = false;
     bool finSent = false;
+    bool durationDoneSignal = false;
   };
 
   struct GenericClientStream {
@@ -437,6 +444,12 @@ private:
     return error != nullptr && strstr(error, "InvalidStreamId") != nullptr;
   }
 
+  bool lastErrorIsStreamLimit(void) const
+  {
+    const char *error = Abi::lastError();
+    return error != nullptr && strstr(error, "StreamLimit") != nullptr;
+  }
+
   static void encodeU64(uint64_t value, uint8_t out[8])
   {
     for (int i = 7; i >= 0; --i)
@@ -477,6 +490,38 @@ private:
   uint64_t nowUs(void) const
   {
     return timeNowUs();
+  }
+
+  constexpr static uint64_t durationTransferRequest(void)
+  {
+    return UINT64_MAX;
+  }
+
+  bool durationModeActive(void) const
+  {
+    return benchmarkDurationModeActive() &&
+           benchmarkTargetDurationMs > 0 &&
+           supportsDurationMode(benchmarkScenario);
+  }
+
+  uint64_t durationDeadlineUs(uint64_t startUs) const
+  {
+    return startUs + benchmarkTargetDurationMs * 1000ULL;
+  }
+
+  void recordDurationResult(uint64_t completedUnits, uint64_t startUs, uint64_t endUs)
+  {
+    durationCompletedUnits = completedUnits;
+    durationMeasuredSeconds = std::max(0.000001, static_cast<double>(endUs - startUs) / 1'000'000.0);
+  }
+
+  uint64_t durationGenericTransferBytesPerStream(uint64_t bytes, uint64_t streamCount) const
+  {
+    const uint64_t finiteBytesPerStream = std::max<uint64_t>(1, bytes / std::max<uint64_t>(1, streamCount));
+    constexpr uint64_t maxDurationStreamBytes = uint64_t {benchmarkAppChunkSize} * 4U;
+    return std::max<uint64_t>(
+        1,
+        std::min<uint64_t>(finiteBytesPerStream, maxDurationStreamBytes));
   }
 
   static bool decodeQuicVarInt(const uint8_t *data, size_t length, size_t& offset, uint64_t& value)
@@ -835,6 +880,53 @@ private:
     }
   }
 
+  bool tryOpenClientBidiStreamUntil(uint64_t deadlineUs, uint64_t& opened)
+  {
+    opened = UINT64_MAX;
+    while (nowUs() < deadlineUs)
+    {
+      int result = Abi::openBidi(engine, connection, &opened, nowUs());
+      if (result < 0)
+      {
+        if (!lastErrorIsStreamLimit())
+        {
+          check(result);
+        }
+      }
+      if (result == 1)
+      {
+        return true;
+      }
+      const uint64_t currentUs = nowUs();
+      if (currentUs >= deadlineUs)
+      {
+        break;
+      }
+      pumpOnce(std::min<uint64_t>(1000, deadlineUs - currentUs));
+    }
+    return false;
+  }
+
+  bool tryOpenClientBidiStreamBestEffortUntil(uint64_t deadlineUs, uint64_t& opened)
+  {
+    opened = UINT64_MAX;
+    while (nowUs() < deadlineUs)
+    {
+      int result = Abi::openBidi(engine, connection, &opened, nowUs());
+      if (result == 1)
+      {
+        return true;
+      }
+      const uint64_t currentUs = nowUs();
+      if (currentUs >= deadlineUs)
+      {
+        break;
+      }
+      pumpOnce(std::min<uint64_t>(1000, deadlineUs - currentUs));
+    }
+    return false;
+  }
+
   void finishStream(uint64_t activeStream)
   {
     check(Abi::streamFinish(engine, connection, activeStream, nowUs()));
@@ -907,6 +999,48 @@ private:
     }
   }
 
+  bool recvDurationUploadCount(uint64_t deadlineUs, uint64_t& delivered)
+  {
+    std::array<uint8_t, sizeof(uint64_t)> ack = {};
+    size_t offset = 0;
+    while (offset < ack.size())
+    {
+      const uint64_t currentUs = nowUs();
+      if (currentUs >= deadlineUs)
+      {
+        return false;
+      }
+      size_t read = 0;
+      bool fin = false;
+      bool streamValid = recvSomeAllowInvalidStream(stream, ack.data() + offset, ack.size() - offset, read, fin);
+      if (!streamValid)
+      {
+        pumpOnce(std::min<uint64_t>(1000, deadlineUs - currentUs));
+        continue;
+      }
+      if (read > 0)
+      {
+        offset += read;
+        if (offset == ack.size())
+        {
+          break;
+        }
+        if (fin)
+        {
+          return false;
+        }
+        continue;
+      }
+      if (fin)
+      {
+        return false;
+      }
+      pumpOnce(std::min<uint64_t>(1000, deadlineUs - currentUs));
+    }
+    delivered = decodeU64(ack.data());
+    return true;
+  }
+
   void sendBytes(uint64_t bytes)
   {
     while (bytes > 0)
@@ -950,27 +1084,76 @@ private:
           if (active.requestRead == active.request.size())
           {
             active.bytesRemaining = decodeU64(active.request.data());
+            active.durationMode = benchmarkDurationModeActive() &&
+                                  active.bytesRemaining == durationTransferRequest();
+            if (active.durationMode)
+            {
+              active.durationDeadlineUs = durationDeadlineUs(nowUs());
+            }
             active.phase = ServerPhase::transfer;
           }
           return read > 0;
         }
       case ServerPhase::transfer:
         {
-          if (active.bytesRemaining == 0)
+          if (!active.durationMode && active.bytesRemaining == 0)
           {
             active.phase = ServerPhase::readDone;
             return true;
           }
-          size_t chunk = static_cast<size_t>(std::min<uint64_t>(active.bytesRemaining, buffer.size()));
           if (benchmarkIsUpload())
           {
+            if (active.durationMode && active.durationDeadlineUs != 0 &&
+                nowUs() >= active.durationDeadlineUs)
+            {
+              encodeU64(active.durationReceived, active.durationAck.data());
+              active.phase = ServerPhase::sendAck;
+              return true;
+            }
+            size_t chunk = active.durationMode
+                               ? buffer.size()
+                               : static_cast<size_t>(std::min<uint64_t>(active.bytesRemaining, buffer.size()));
             auto [read, fin] = recvSome(active, buffer.data(), chunk);
-            (void)fin;
-            active.bytesRemaining -= read;
+            if (active.durationMode)
+            {
+              active.durationReceived += read;
+              if (fin)
+              {
+                encodeU64(active.durationReceived, active.durationAck.data());
+                active.phase = ServerPhase::sendAck;
+                return true;
+              }
+            }
+            else
+            {
+              active.bytesRemaining -= read;
+            }
             return read > 0;
           }
+          if (active.durationMode && active.doneRead < sizeof(active.done))
+          {
+            auto [read, fin] = recvSome(active, &active.done + active.doneRead, sizeof(active.done) - active.doneRead);
+            active.doneRead += read;
+            if (active.doneRead == sizeof(active.done) || fin)
+            {
+              active.phase = ServerPhase::finish;
+              return true;
+            }
+            if (active.durationDeadlineUs != 0 &&
+                nowUs() >= active.durationDeadlineUs + benchmarkDurationCompletionDrainUs)
+            {
+              active.phase = ServerPhase::finish;
+              return true;
+            }
+          }
+          size_t chunk = active.durationMode
+                             ? buffer.size()
+                             : static_cast<size_t>(std::min<uint64_t>(active.bytesRemaining, buffer.size()));
           size_t written = sendSome(active, buffer.data(), chunk);
-          active.bytesRemaining -= written;
+          if (!active.durationMode)
+          {
+            active.bytesRemaining -= written;
+          }
           return written > 0;
         }
       case ServerPhase::readDone:
@@ -986,9 +1169,11 @@ private:
         }
       case ServerPhase::sendAck:
         {
-          size_t written = sendSome(active, &active.ack + active.ackSent, sizeof(active.ack) - active.ackSent);
+          const uint8_t *ackData = active.durationMode ? active.durationAck.data() : &active.ack;
+          const size_t ackSize = active.durationMode ? active.durationAck.size() : sizeof(active.ack);
+          size_t written = sendSome(active, ackData + active.ackSent, ackSize - active.ackSent);
           active.ackSent += written;
-          if (active.ackSent == sizeof(active.ack))
+          if (active.ackSent == ackSize)
           {
             active.phase = ServerPhase::finish;
           }
@@ -1065,6 +1250,43 @@ private:
     flushPackets();
   }
 
+  void runClientDownloadDuration(void)
+  {
+    uint8_t request[8];
+    encodeU64(durationTransferRequest(), request);
+    sendAll(request, sizeof(request));
+
+    uint64_t received = 0;
+    const uint64_t startUs = nowUs();
+    const uint64_t deadlineUs = durationDeadlineUs(startUs);
+    while (nowUs() < deadlineUs)
+    {
+      auto [read, fin] = recvSome(stream, buffer.data(), buffer.size());
+      if (read > 0)
+      {
+        received += read;
+        continue;
+      }
+      if (fin)
+      {
+        break;
+      }
+      const uint64_t currentUs = nowUs();
+      if (currentUs >= deadlineUs)
+      {
+        break;
+      }
+      pumpOnce(std::min<uint64_t>(1000, deadlineUs - currentUs));
+    }
+    const uint64_t measuredEndUs = std::min<uint64_t>(nowUs(), deadlineUs);
+    recordDurationResult(received, startUs, measuredEndUs);
+
+    uint8_t done = 0;
+    sendAll(&done, sizeof(done));
+    finishStream(stream);
+    drainTerminalPackets(1000, 50);
+  }
+
   void runClientUpload(uint64_t bytes)
   {
     uint8_t request[8];
@@ -1077,6 +1299,43 @@ private:
     recvExact(&ack, sizeof(ack));
     check(Abi::streamFinish(engine, connection, stream, nowUs()));
     flushPackets();
+  }
+
+  void runClientUploadDuration(void)
+  {
+    uint8_t request[8];
+    encodeU64(durationTransferRequest(), request);
+    sendAll(request, sizeof(request));
+
+    uint64_t sent = 0;
+    const uint64_t startUs = nowUs();
+    const uint64_t deadlineUs = durationDeadlineUs(startUs);
+    while (nowUs() < deadlineUs)
+    {
+      const uint64_t currentUs = nowUs();
+      if (currentUs >= deadlineUs)
+      {
+        break;
+      }
+      const size_t chunk = buffer.size();
+      const size_t written = sendSome(stream, buffer.data(), chunk);
+      if (written > 0)
+      {
+        sent += written;
+        continue;
+      }
+      pumpOnce(std::min<uint64_t>(1000, deadlineUs - currentUs));
+    }
+    const uint64_t measuredEndUs = std::min<uint64_t>(nowUs(), deadlineUs);
+
+    uint64_t delivered = 0;
+    if (!recvDurationUploadCount(nowUs() + benchmarkDurationCompletionDrainUs, delivered))
+    {
+      delivered = 0;
+    }
+    recordDurationResult(delivered, startUs, measuredEndUs);
+    (void)sent;
+    drainTerminalPackets(1000, 50);
   }
 
   uint64_t reqRespRequestSize(void) const
@@ -1165,6 +1424,23 @@ private:
     }
   }
 
+  void addClientReqRespStream(std::vector<GenericClientStream>& active,
+                              uint64_t streamId,
+                              uint64_t requestBytes,
+                              uint64_t responseBytes)
+  {
+    active.push_back(GenericClientStream {
+        .stream = streamId,
+        .phase = GenericPhase::readRequest,
+        .requestBytesExpected = requestBytes,
+        .responseRemaining = responseBytes,
+    });
+    if (benchmarkScenario == BenchmarkScenario::zero_rtt_reqresp)
+    {
+      (void)runClientReqRespStream(active.back());
+    }
+  }
+
   void runClientReqRespLike(uint64_t operations)
   {
     std::vector<GenericClientStream> active;
@@ -1178,12 +1454,11 @@ private:
     {
       while (opened < operations && active.size() < benchmarkScenarioStreamsInFlight)
       {
-        active.push_back(GenericClientStream {
-            .stream = openClientBidiStream(),
-            .phase = GenericPhase::readRequest,
-            .requestBytesExpected = requestBytes,
-            .responseRemaining = responseBytes,
-        });
+        addClientReqRespStream(
+            active,
+            openClientBidiStream(),
+            requestBytes,
+            responseBytes);
         ++opened;
       }
 
@@ -1212,6 +1487,99 @@ private:
         pumpOnce();
       }
     }
+  }
+
+  void runClientReqRespLikeDuration(void)
+  {
+    std::vector<GenericClientStream> active;
+    active.reserve(benchmarkScenarioStreamsInFlight);
+    uint64_t opened = 0;
+    uint64_t measuredCompleted = 0;
+    const uint64_t requestBytes = reqRespRequestSize();
+    const uint64_t responseBytes = reqRespResponseSize();
+    const uint64_t startUs = nowUs();
+    const uint64_t deadlineUs = durationDeadlineUs(startUs);
+
+    while (nowUs() < deadlineUs)
+    {
+      while (nowUs() < deadlineUs && opened < benchmarkScenarioOperations && active.size() < benchmarkScenarioStreamsInFlight)
+      {
+        uint64_t streamId = UINT64_MAX;
+        if (!tryOpenClientBidiStreamUntil(deadlineUs, streamId))
+        {
+          break;
+        }
+        addClientReqRespStream(active, streamId, requestBytes, responseBytes);
+        ++opened;
+      }
+
+      bool progressed = false;
+      for (auto& streamState : active)
+      {
+        if (streamState.phase == GenericPhase::complete)
+        {
+          continue;
+        }
+        progressed = runClientReqRespStream(streamState) || progressed;
+      }
+
+      active.erase(std::remove_if(active.begin(), active.end(), [&](const GenericClientStream& streamState) {
+                     if (streamState.phase == GenericPhase::complete)
+                     {
+                       if (nowUs() <= deadlineUs)
+                       {
+                         ++measuredCompleted;
+                       }
+                       return true;
+                     }
+                     return false;
+                   }),
+                   active.end());
+
+      if (!progressed)
+      {
+        const uint64_t currentUs = nowUs();
+        if (currentUs >= deadlineUs)
+        {
+          break;
+        }
+        pumpOnce(std::min<uint64_t>(1000, deadlineUs - currentUs));
+      }
+    }
+
+    const uint64_t measuredEndUs = std::min<uint64_t>(nowUs(), deadlineUs);
+    const uint64_t drainDeadlineUs = nowUs() + benchmarkDurationCompletionDrainUs;
+    while (!active.empty() && nowUs() < drainDeadlineUs)
+    {
+      bool progressed = false;
+      for (auto& streamState : active)
+      {
+        if (streamState.phase == GenericPhase::complete)
+        {
+          continue;
+        }
+        progressed = runClientReqRespStream(streamState) || progressed;
+      }
+
+      active.erase(std::remove_if(active.begin(), active.end(), [](const GenericClientStream& streamState) {
+                     return streamState.phase == GenericPhase::complete;
+                   }),
+                   active.end());
+
+      if (!progressed)
+      {
+        pumpOnce(1000);
+      }
+    }
+
+    uint64_t doneStream = UINT64_MAX;
+    if (tryOpenClientBidiStreamBestEffortUntil(nowUs() + benchmarkDurationCompletionDrainUs, doneStream))
+    {
+      finishStream(doneStream);
+    }
+    drainTerminalPackets(1000, 50);
+    (void)opened;
+    recordDurationResult(measuredCompleted, startUs, measuredEndUs);
   }
 
   bool processClientTransferStream(GenericClientStream& active)
@@ -1422,6 +1790,160 @@ private:
     }
   }
 
+  bool processClientMultistreamDurationStream(GenericClientStream& active, uint64_t deadlineUs)
+  {
+    switch (active.phase)
+    {
+      case GenericPhase::readRequest:
+        {
+          uint8_t request[8];
+          encodeU64(active.requestValue, request);
+          while (active.requestBytesSent < sizeof(request))
+          {
+            size_t written = sendSome(active.stream, request + active.requestBytesSent, sizeof(request) - active.requestBytesSent);
+            if (written == 0)
+            {
+              return false;
+            }
+            active.requestBytesSent += written;
+          }
+          active.phase = benchmarkScenario == BenchmarkScenario::multistream_upload
+                             ? GenericPhase::transfer
+                             : GenericPhase::sendResponse;
+          return true;
+        }
+      case GenericPhase::transfer:
+        {
+          if (active.payloadRemaining == 0)
+          {
+            if (!active.finSent)
+            {
+              finishStream(active.stream);
+              active.finSent = true;
+            }
+            active.phase = GenericPhase::sendResponse;
+            return true;
+          }
+          size_t chunk = static_cast<size_t>(std::min<uint64_t>(active.payloadRemaining, buffer.size()));
+          size_t written = sendSome(active.stream, buffer.data(), chunk);
+          active.payloadRemaining -= written;
+          if (written > 0 && nowUs() <= deadlineUs)
+          {
+            durationCompletedUnits += written;
+          }
+          return written > 0;
+        }
+      case GenericPhase::sendResponse:
+        {
+          if (active.responseRemaining == 0)
+          {
+            active.phase = GenericPhase::complete;
+            return true;
+          }
+          size_t chunk = static_cast<size_t>(std::min<uint64_t>(active.responseRemaining, buffer.size()));
+          size_t read = 0;
+          bool fin = false;
+          bool streamValid = recvSomeAllowInvalidStream(active.stream, buffer.data(), chunk, read, fin);
+          if (!streamValid && benchmarkScenario == BenchmarkScenario::multistream_upload)
+          {
+            active.responseRemaining = 0;
+            active.phase = GenericPhase::complete;
+            return true;
+          }
+          active.responseRemaining -= read;
+          if (read > 0 &&
+              benchmarkScenario == BenchmarkScenario::multistream_download &&
+              nowUs() <= deadlineUs)
+          {
+            durationCompletedUnits += read;
+          }
+          if (active.responseRemaining == 0 || (fin && benchmarkScenario == BenchmarkScenario::multistream_upload))
+          {
+            active.responseRemaining = 0;
+            if (benchmarkScenario == BenchmarkScenario::multistream_download && !active.finSent)
+            {
+              finishStream(active.stream);
+              active.finSent = true;
+            }
+            active.phase = GenericPhase::complete;
+          }
+          return read > 0 || fin;
+        }
+      case GenericPhase::complete:
+        return false;
+      default:
+        return processClientTransferStream(active);
+    }
+  }
+
+  void runClientMultistreamDuration(uint64_t bytes)
+  {
+    const uint64_t streamCount = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
+    const uint64_t streamBytes = durationGenericTransferBytesPerStream(bytes, streamCount);
+    std::vector<GenericClientStream> active;
+    active.reserve(streamCount);
+    uint64_t doneStream = openClientBidiStream();
+    durationCompletedUnits = 0;
+    durationMeasuredSeconds = 0.0;
+    const uint64_t startUs = nowUs();
+    const uint64_t deadlineUs = durationDeadlineUs(startUs);
+
+    while (nowUs() < deadlineUs)
+    {
+      while (active.size() < streamCount && nowUs() < deadlineUs)
+      {
+        uint64_t openedStream = UINT64_MAX;
+        if (!tryOpenClientBidiStreamUntil(deadlineUs, openedStream))
+        {
+          break;
+        }
+        active.push_back(GenericClientStream {
+            .stream = openedStream,
+            .phase = GenericPhase::readRequest,
+            .requestValue = streamBytes,
+            .payloadRemaining = benchmarkScenario == BenchmarkScenario::multistream_upload ? streamBytes : 0,
+            .responseRemaining = benchmarkScenario == BenchmarkScenario::multistream_upload ? 1 : streamBytes,
+        });
+      }
+
+      bool progressed = false;
+      for (auto& streamState : active)
+      {
+        if (streamState.phase != GenericPhase::complete)
+        {
+          progressed = processClientMultistreamDurationStream(streamState, deadlineUs) || progressed;
+        }
+      }
+      active.erase(std::remove_if(active.begin(), active.end(), [](const GenericClientStream& streamState) {
+                     return streamState.phase == GenericPhase::complete;
+                   }),
+                   active.end());
+
+      if (!progressed)
+      {
+        const uint64_t currentUs = nowUs();
+        if (currentUs >= deadlineUs)
+        {
+          break;
+        }
+        pumpOnce(std::min<uint64_t>(1000, deadlineUs - currentUs));
+      }
+    }
+
+    const uint64_t measuredEndUs = std::min<uint64_t>(nowUs(), deadlineUs);
+    recordDurationResult(durationCompletedUnits, startUs, measuredEndUs);
+    for (auto& streamState : active)
+    {
+      if (!streamState.finSent)
+      {
+        finishStream(streamState.stream);
+        streamState.finSent = true;
+      }
+    }
+    finishStream(doneStream);
+    drainTerminalPackets(1000, 100);
+  }
+
   bool processClientBidiStream(GenericClientStream& active)
   {
     if (active.phase == GenericPhase::readDone)
@@ -1601,6 +2123,123 @@ private:
     }
   }
 
+  bool processClientBidiDurationStream(GenericClientStream& active, uint64_t deadlineUs)
+  {
+    bool progressed = false;
+    if (active.requestBytesSent < sizeof(uint64_t))
+    {
+      uint8_t request[8];
+      encodeU64(active.requestValue, request);
+      size_t written = sendSome(active.stream, request + active.requestBytesSent, sizeof(request) - active.requestBytesSent);
+      active.requestBytesSent += written;
+      progressed = written > 0 || progressed;
+      if (active.requestBytesSent < sizeof(request))
+      {
+        return progressed;
+      }
+    }
+    if (active.payloadRemaining > 0)
+    {
+      size_t chunk = static_cast<size_t>(std::min<uint64_t>(active.payloadRemaining, buffer.size()));
+      size_t written = sendSome(active.stream, buffer.data(), chunk);
+      active.payloadRemaining -= written;
+      if (written > 0 && nowUs() <= deadlineUs)
+      {
+        durationCompletedUnits += written;
+      }
+      progressed = written > 0 || progressed;
+    }
+    if (active.responseRemaining > 0)
+    {
+      size_t chunk = static_cast<size_t>(std::min<uint64_t>(active.responseRemaining, buffer.size()));
+      auto [read, fin] = recvSome(active.stream, buffer.data(), chunk);
+      (void)fin;
+      active.responseRemaining -= read;
+      if (read > 0 && nowUs() <= deadlineUs)
+      {
+        durationCompletedUnits += read;
+      }
+      progressed = read > 0 || progressed;
+    }
+    if (active.payloadRemaining == 0 && active.responseRemaining == 0)
+    {
+      if (!active.finSent)
+      {
+        finishStream(active.stream);
+        active.finSent = true;
+      }
+      active.phase = GenericPhase::complete;
+      progressed = true;
+    }
+    return progressed;
+  }
+
+  void runClientBidiDuration(uint64_t bytes)
+  {
+    constexpr uint64_t streamCount = 1;
+    const uint64_t streamBytes = durationGenericTransferBytesPerStream(bytes, streamCount);
+    std::vector<GenericClientStream> active;
+    active.reserve(streamCount);
+    uint64_t doneStream = openClientBidiStream();
+    durationCompletedUnits = 0;
+    durationMeasuredSeconds = 0.0;
+    const uint64_t startUs = nowUs();
+    const uint64_t deadlineUs = durationDeadlineUs(startUs);
+
+    while (nowUs() < deadlineUs)
+    {
+      while (active.size() < streamCount && nowUs() < deadlineUs)
+      {
+        uint64_t openedStream = UINT64_MAX;
+        if (!tryOpenClientBidiStreamUntil(deadlineUs, openedStream))
+        {
+          break;
+        }
+        active.push_back(GenericClientStream {
+            .stream = openedStream,
+            .requestValue = streamBytes,
+            .payloadRemaining = streamBytes,
+            .responseRemaining = streamBytes,
+        });
+      }
+
+      bool progressed = false;
+      for (auto& streamState : active)
+      {
+        if (streamState.phase != GenericPhase::complete)
+        {
+          progressed = processClientBidiDurationStream(streamState, deadlineUs) || progressed;
+        }
+      }
+      active.erase(std::remove_if(active.begin(), active.end(), [](const GenericClientStream& streamState) {
+                     return streamState.phase == GenericPhase::complete;
+                   }),
+                   active.end());
+      if (!progressed)
+      {
+        const uint64_t currentUs = nowUs();
+        if (currentUs >= deadlineUs)
+        {
+          break;
+        }
+        pumpOnce(std::min<uint64_t>(1000, deadlineUs - currentUs));
+      }
+    }
+
+    const uint64_t measuredEndUs = std::min<uint64_t>(nowUs(), deadlineUs);
+    recordDurationResult(durationCompletedUnits, startUs, measuredEndUs);
+    for (auto& streamState : active)
+    {
+      if (!streamState.finSent)
+      {
+        finishStream(streamState.stream);
+        streamState.finSent = true;
+      }
+    }
+    finishStream(doneStream);
+    drainTerminalPackets(1000, 100);
+  }
+
   void runClientDatagrams(uint64_t operations)
   {
     const size_t payloadSize = benchmarkDatagramPayloadBytesForNoMssApiLimit(
@@ -1684,12 +2323,137 @@ private:
     benchmarkRecordDatagramClientCounters(sent, received);
   }
 
+  void runClientDatagramsDuration(void)
+  {
+    const size_t payloadSize = benchmarkDatagramPayloadBytesForNoMssApiLimit(
+        buffer.size(),
+        benchmarkUdpPayloadSize);
+    if (payloadSize == 0 || payloadSize > buffer.size())
+    {
+      fprintf(stderr, "%s invalid DATAGRAM payload size %zu\n", Abi::label, payloadSize);
+      abort();
+    }
+
+    uint64_t sent = 0;
+    uint64_t received = 0;
+    const uint64_t burstLimit = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
+    const bool finiteOperationCap = benchmarkScenarioOperations > 0;
+    const uint64_t operationCap = finiteOperationCap
+                                      ? benchmarkScenarioOperations
+                                      : std::numeric_limits<uint64_t>::max();
+    std::vector<uint8_t> seen(finiteOperationCap ? benchmarkDatagramSeenBytes(operationCap) : 0, 0);
+    const uint64_t startUs = nowUs();
+    const uint64_t deadlineUs = durationDeadlineUs(startUs);
+    while (nowUs() < deadlineUs && sent < operationCap)
+    {
+      bool progressed = false;
+      uint64_t sentThisLoop = 0;
+      while (nowUs() < deadlineUs &&
+             sent < operationCap &&
+             sentThisLoop < burstLimit &&
+             sent - received < burstLimit)
+      {
+        benchmarkFillDatagramPayload(buffer.data(), payloadSize, networkHub->junk, sent);
+        if (!queueDatagram(connection, buffer.data(), payloadSize))
+        {
+          break;
+        }
+        ++sent;
+        ++sentThisLoop;
+        progressed = true;
+      }
+      flushOutgoingPackets();
+
+      size_t read = 0;
+      drainReadyIncomingPackets();
+      while (popDatagram(connection, buffer.data(), buffer.size(), read))
+      {
+        const uint64_t sequence = benchmarkDecodeDatagramSequence(buffer.data(), read);
+        if (benchmarkMarkDatagramSeen(seen, sequence, finiteOperationCap ? operationCap : 0))
+        {
+          ++received;
+          progressed = true;
+        }
+      }
+
+      if (!progressed)
+      {
+        const uint64_t currentUs = nowUs();
+        if (currentUs >= deadlineUs)
+        {
+          break;
+        }
+        pumpOnce(std::min<uint64_t>(1000, deadlineUs - currentUs));
+      }
+    }
+    const uint64_t measuredEndUs = std::min<uint64_t>(nowUs(), deadlineUs);
+
+    uint64_t doneStream = openClientBidiStream();
+    uint8_t done = 0;
+    size_t doneWritten = 0;
+    while (doneWritten < sizeof(done))
+    {
+      size_t written = sendSome(doneStream, &done + doneWritten, sizeof(done) - doneWritten);
+      if (written == 0)
+      {
+        pumpOnce();
+      }
+      else
+      {
+        doneWritten += written;
+      }
+    }
+    finishStream(doneStream);
+
+    uint64_t drainDeadlineUs = received >= sent ? nowUs() : nowUs() + benchmarkDatagramDrainUs;
+    while (nowUs() < drainDeadlineUs)
+    {
+      bool progressed = false;
+      size_t read = 0;
+      drainReadyIncomingPackets();
+      while (popDatagram(connection, buffer.data(), buffer.size(), read))
+      {
+        const uint64_t sequence = benchmarkDecodeDatagramSequence(buffer.data(), read);
+        if (benchmarkMarkDatagramSeen(seen, sequence, finiteOperationCap ? operationCap : 0))
+        {
+          ++received;
+          progressed = true;
+        }
+      }
+      if (received >= sent)
+      {
+        drainDeadlineUs = nowUs();
+      }
+      else if (!progressed)
+      {
+        pumpOnce(1000);
+      }
+    }
+
+    benchmarkRecordDatagramClientCounters(sent, received);
+    recordDurationResult(received, startUs, measuredEndUs);
+  }
+
   bool processGenericServerStream(GenericServerStream& active)
   {
     switch (active.phase)
     {
       case GenericPhase::readRequest:
         {
+          if (benchmarkDurationModeActive())
+          {
+            auto [read, fin] = recvSome(active, buffer.data(), 1);
+            if (read == 0 && fin)
+            {
+              active.durationDoneSignal = true;
+              active.phase = GenericPhase::complete;
+              return true;
+            }
+            if (read > 0)
+            {
+              active.request[active.requestBytesRead++] = buffer[0];
+            }
+          }
           if (benchmarkScenario == BenchmarkScenario::reqresp ||
               benchmarkScenario == BenchmarkScenario::zero_rtt_reqresp ||
               benchmarkScenario == BenchmarkScenario::stream_churn ||
@@ -1703,6 +2467,13 @@ private:
             size_t chunk = static_cast<size_t>(std::min<uint64_t>(
                 active.requestBytesExpected - active.requestBytesRead, buffer.size()));
             auto [read, fin] = recvSome(active, buffer.data(), chunk);
+            if (benchmarkDurationModeActive() &&
+                read == 0 && fin && active.requestBytesRead == 0)
+            {
+              active.durationDoneSignal = true;
+              active.phase = GenericPhase::complete;
+              return true;
+            }
             (void)fin;
             active.requestBytesRead += read;
             if (active.requestBytesRead == active.requestBytesExpected)
@@ -1712,7 +2483,6 @@ private:
             }
             return read > 0;
           }
-
           auto [read, fin] = recvSome(active, active.request.data() + active.requestBytesRead, active.request.size() - active.requestBytesRead);
           (void)fin;
           active.requestBytesRead += read;
@@ -1855,10 +2625,17 @@ private:
     std::vector<uint64_t> conns;
     std::vector<GenericServerStream> streams;
     conns.reserve(benchmarkServerTargetConnections);
+    const bool durationMode = benchmarkDurationModeActive() &&
+                              supportsDurationMode(benchmarkScenario);
     const uint64_t streamsPerConn = benchmarkGenericStreamsPerConnection();
-    const uint64_t targetStreams = static_cast<uint64_t>(benchmarkServerTargetConnections) * streamsPerConn;
+    const uint64_t targetStreams = durationMode
+                                       ? UINT64_MAX
+                                       : static_cast<uint64_t>(benchmarkServerTargetConnections) * streamsPerConn;
     uint64_t idleLoops = 0;
     uint64_t lastStallDumpUs = nowUs();
+    uint64_t durationDoneSignalsSeen = 0;
+    uint64_t durationDrainDeadlineUs = 0;
+    uint64_t durationServerDeadlineUs = 0;
 
     while (true)
     {
@@ -1892,15 +2669,70 @@ private:
       }
 
       uint64_t completed = 0;
+      uint64_t durationDoneSignals = 0;
+      uint64_t durationActiveStreams = 0;
       for (auto& streamState : streams)
       {
         if (streamState.phase != GenericPhase::complete)
         {
           progressed = processGenericServerStream(streamState) || progressed;
         }
-        if (streamState.phase == GenericPhase::complete)
+        if (streamState.durationDoneSignal)
+        {
+          ++durationDoneSignals;
+        }
+        else if (streamState.phase == GenericPhase::complete)
         {
           ++completed;
+        }
+        else
+        {
+          ++durationActiveStreams;
+        }
+      }
+      if (durationMode)
+      {
+        if (conns.size() >= benchmarkServerTargetConnections && durationServerDeadlineUs == 0)
+        {
+          durationServerDeadlineUs =
+              nowUs() + benchmarkTargetDurationMs * 1000ULL + benchmarkDatagramDrainUs;
+        }
+        durationDoneSignalsSeen += durationDoneSignals;
+        streams.erase(std::remove_if(streams.begin(), streams.end(), [](const GenericServerStream& streamState) {
+                        return streamState.phase == GenericPhase::complete;
+                      }),
+                      streams.end());
+      }
+      const bool durationServerDeadlineElapsed =
+          durationServerDeadlineUs != 0 && nowUs() >= durationServerDeadlineUs;
+      if (durationMode &&
+          conns.size() >= benchmarkServerTargetConnections &&
+          (durationDoneSignalsSeen >= benchmarkServerTargetConnections ||
+           durationServerDeadlineElapsed))
+      {
+        if (durationServerDeadlineElapsed)
+        {
+          drainTerminalPackets(1000, 100);
+          break;
+        }
+        if (streams.empty() && durationActiveStreams == 0)
+        {
+          if (Abi::hasPendingAppData(engine))
+          {
+            pumpOnce(1000);
+            continue;
+          }
+          drainTerminalPackets(1000, 100);
+          break;
+        }
+        if (durationDrainDeadlineUs == 0 || progressed)
+        {
+          durationDrainDeadlineUs = nowUs() + benchmarkDatagramDrainUs;
+        }
+        if (nowUs() >= durationDrainDeadlineUs)
+        {
+          drainTerminalPackets(1000, 100);
+          break;
         }
       }
       if (completed >= targetStreams)
@@ -2083,13 +2915,28 @@ private:
       case BenchmarkScenario::stream_churn:
       case BenchmarkScenario::small_payload_pps:
       case BenchmarkScenario::close_reset_cleanup:
-        runClientReqRespLike(benchmarkScenarioOperations);
+        if (durationModeActive())
+        {
+          runClientReqRespLikeDuration();
+          return;
+        }
+        runClientReqRespLike(benchmarkScenarioOperationsForCurrentMode());
         return;
       case BenchmarkScenario::multistream_download:
       case BenchmarkScenario::multistream_upload:
+        if (durationModeActive())
+        {
+          runClientMultistreamDuration(bytes);
+          return;
+        }
         runClientMultistream(bytes);
         return;
       case BenchmarkScenario::bidi:
+        if (durationModeActive())
+        {
+          runClientBidiDuration(bytes);
+          return;
+        }
         runClientBidi(bytes);
         return;
       default:
@@ -2236,6 +3083,39 @@ public:
     return packetEngineSupportsZeroRtt();
   }
 
+  bool supportsDurationMode(BenchmarkScenario scenario) const override
+  {
+    switch (scenario)
+    {
+      case BenchmarkScenario::download:
+      case BenchmarkScenario::upload:
+      case BenchmarkScenario::loss_recovery:
+      case BenchmarkScenario::flow_control:
+      case BenchmarkScenario::datagram:
+      case BenchmarkScenario::reqresp:
+      case BenchmarkScenario::stream_churn:
+      case BenchmarkScenario::small_payload_pps:
+      case BenchmarkScenario::close_reset_cleanup:
+      case BenchmarkScenario::zero_rtt_reqresp:
+      case BenchmarkScenario::multistream_download:
+      case BenchmarkScenario::multistream_upload:
+      case BenchmarkScenario::bidi:
+        return benchmarkTargetDurationMs > 0;
+      default:
+        return false;
+    }
+  }
+
+  uint64_t completedUnitsForReport(uint64_t fallback) const override
+  {
+    return durationModeActive() ? durationCompletedUnits : fallback;
+  }
+
+  double measuredSecondsForReport(double fallback) const override
+  {
+    return durationModeActive() ? durationMeasuredSeconds : fallback;
+  }
+
   bool exportResumptionState(BenchmarkResumptionState& state) override
   {
     if constexpr (mode & Mode::client)
@@ -2306,6 +3186,14 @@ public:
       {
         if (libraryKind == QPF_LIBRARY_S2N)
         {
+          if (result != 1 || outgoingZeroRttPackets == 0)
+          {
+            fprintf(stderr,
+                    "%s zero_rtt_attempted_debug abi_attempted=%d outgoing_zero_rtt_packets=%" PRIu64 "\n",
+                    Abi::label,
+                    result == 1 ? 1 : 0,
+                    outgoingZeroRttPackets);
+          }
           return result == 1 && outgoingZeroRttPackets > 0;
         }
       }
@@ -2391,7 +3279,14 @@ public:
     {
       if (benchmarkScenario == BenchmarkScenario::datagram)
       {
-        runClientDatagrams(benchmarkScenarioOperations);
+        if (durationModeActive())
+        {
+          runClientDatagramsDuration();
+        }
+        else
+        {
+          runClientDatagrams(benchmarkScenarioOperations);
+        }
       }
       else if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
       {
@@ -2399,11 +3294,25 @@ public:
       }
       else if (benchmarkIsUpload())
       {
-        runClientUpload(nBytes);
+        if (durationModeActive())
+        {
+          runClientUploadDuration();
+        }
+        else
+        {
+          runClientUpload(nBytes);
+        }
       }
       else
       {
-        runClientDownload(nBytes);
+        if (durationModeActive())
+        {
+          runClientDownloadDuration();
+        }
+        else
+        {
+          runClientDownload(nBytes);
+        }
       }
     }
   }

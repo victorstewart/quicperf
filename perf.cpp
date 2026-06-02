@@ -13,6 +13,7 @@
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <dirent.h>
+#include <functional>
 #include <string_view>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
@@ -27,6 +28,21 @@ static struct in6_addr serverAddress = {};
 static struct in6_addr localAddress = {};
 
 #include "perf.services.h"
+
+struct BenchmarkForceWorkModeScope {
+  bool previous = false;
+
+  BenchmarkForceWorkModeScope()
+      : previous(benchmarkForceWorkMode)
+  {
+    benchmarkForceWorkMode = true;
+  }
+
+  ~BenchmarkForceWorkModeScope()
+  {
+    benchmarkForceWorkMode = previous;
+  }
+};
 
 constexpr static uint64_t defaultTestBytes = _1GB;
 
@@ -219,6 +235,25 @@ static uint16_t envPort(const char *name, uint16_t fallback)
   return static_cast<uint16_t>(parsed);
 }
 
+static uint16_t envPortAllowZero(const char *name, uint16_t fallback)
+{
+  const char *value = getenv(name);
+  if (value == nullptr || value[0] == '\0')
+  {
+    return fallback;
+  }
+
+  errno = 0;
+  char *end = nullptr;
+  uint64_t parsed = strtoull(value, &end, 10);
+  if (errno != 0 || end == value || *end != '\0' || parsed > 65'535)
+  {
+    fprintf(stderr, "%s must be an integer in [0, 65535]\n", name);
+    exit(2);
+  }
+  return static_cast<uint16_t>(parsed);
+}
+
 static bool parseBenchmarkScenario(std::string_view value, BenchmarkScenario& scenario)
 {
   if (value == "download")
@@ -326,6 +361,16 @@ static const char *envString(const char *name, const char *fallback)
   return (value == nullptr || value[0] == '\0') ? fallback : value;
 }
 
+static BenchmarkMeasureMode benchmarkMeasureModeFromEnv(void)
+{
+  const char *mode = envString("QUICPERF_MEASURE_MODE", "work");
+  if (strcmp(mode, "duration") == 0)
+  {
+    return BenchmarkMeasureMode::duration;
+  }
+  return BenchmarkMeasureMode::work;
+}
+
 static uint64_t steadyNowUs(void)
 {
   return std::chrono::duration_cast<std::chrono::microseconds>(
@@ -424,11 +469,33 @@ static void configureBenchmarkProfiles(std::string_view requestedNetwork)
 
 static void configureBenchmarkScenarioProfile(void)
 {
+  benchmarkMeasureMode = benchmarkMeasureModeFromEnv();
+  benchmarkTargetDurationMs = envU64("QUICPERF_TARGET_DURATION_MS", 0);
+  benchmarkTargetWarmupMs = envU64("QUICPERF_TARGET_WARMUP_MS", 0);
+  benchmarkTargetBytes = envU64("QUICPERF_TARGET_BYTES", 0);
+  benchmarkTargetOperations = envU64("QUICPERF_TARGET_OPERATIONS", 0);
+  benchmarkTargetConnections = envU64("QUICPERF_TARGET_CONNECTIONS", 0);
   benchmarkScenarioProfile = "default";
   benchmarkLossDropEveryPackets = 0;
   benchmarkLossWarmupPackets = envU64("QUICPERF_LOSS_WARMUP_PACKETS", 128);
   const uint64_t defaultScenarioOperations = benchmarkScenario == BenchmarkScenario::datagram ? 8'388'608 : 1024;
-  benchmarkScenarioOperations = envU64("QUICPERF_SCENARIO_OPERATIONS", defaultScenarioOperations);
+  benchmarkScenarioOperations = benchmarkTargetOperations > 0
+                                    ? benchmarkTargetOperations
+                                    : envU64("QUICPERF_SCENARIO_OPERATIONS", defaultScenarioOperations);
+  if (benchmarkMeasureMode == BenchmarkMeasureMode::duration &&
+      benchmarkTargetOperations == 0 &&
+      getenv("QUICPERF_SCENARIO_OPERATIONS") == nullptr &&
+      benchmarkScenarioIsSmallGenericStreamWorkload(benchmarkScenario))
+  {
+    benchmarkScenarioOperations = 1'048'576;
+  }
+  if (benchmarkMeasureMode == BenchmarkMeasureMode::duration &&
+      benchmarkTargetOperations == 0 &&
+      getenv("QUICPERF_SCENARIO_OPERATIONS") == nullptr &&
+      benchmarkScenario == BenchmarkScenario::datagram)
+  {
+    benchmarkScenarioOperations = 0;
+  }
   const uint64_t defaultStreamsInFlight = benchmarkScenario == BenchmarkScenario::datagram ? 1024 : 8;
   benchmarkScenarioStreamsInFlight = static_cast<uint32_t>(envU64("QUICPERF_STREAMS_IN_FLIGHT", defaultStreamsInFlight));
   benchmarkScenarioRequestBytes = static_cast<uint32_t>(envU64("QUICPERF_REQUEST_BYTES", 64));
@@ -463,8 +530,12 @@ static void configureBenchmarkScenarioProfile(void)
     benchmarkScenarioProfile = benchmarkScenario == BenchmarkScenario::close_reset_cleanup
                                    ? envString("QUICPERF_CLOSE_PROFILE", "graceful_fin_cleanup")
                                    : envString("QUICPERF_SCENARIO_PROFILE", "generic_stream");
-    benchmarkMaxBidiStreams = std::max<uint64_t>(benchmarkMaxBidiStreams,
-                                                 benchmarkGenericStreamsPerConnection() + 16ULL);
+    const uint64_t requestedBidiStreams =
+        benchmarkMeasureMode == BenchmarkMeasureMode::duration &&
+                benchmarkScenarioIsSmallGenericStreamWorkload(benchmarkScenario)
+            ? benchmarkDurationMaxBidiStreams
+            : benchmarkGenericStreamsPerConnection() + 16ULL;
+    benchmarkMaxBidiStreams = std::max<uint64_t>(benchmarkMaxBidiStreams, requestedBidiStreams);
   }
   else if (benchmarkScenario == BenchmarkScenario::datagram)
   {
@@ -473,6 +544,15 @@ static void configureBenchmarkScenarioProfile(void)
   else if (benchmarkIsIdleFootprint())
   {
     benchmarkScenarioProfile = envString("QUICPERF_SCENARIO_PROFILE", "idle_established_no_app_data");
+  }
+
+  if (benchmarkMeasureMode == BenchmarkMeasureMode::duration &&
+      benchmarkTargetDurationMs > 0 &&
+      benchmarkScenarioUsesSharedTransfer(benchmarkScenario) &&
+      !benchmarkIsUpload() &&
+      !benchmarkIsConnect())
+  {
+    benchmarkMaxBidiStreams = std::max<uint64_t>(benchmarkMaxBidiStreams, 2);
   }
 
   if (benchmarkIsResumptionScenario() && getenv("QUICPERF_SERVER_CONNECTIONS") == nullptr)
@@ -683,7 +763,10 @@ int main(int argc, char *argv[])
   }
 #endif
 
-  const uint64_t bytesForTest = envU64("QUICPERF_TEST_BYTES", defaultTestBytes);
+  const uint64_t configuredBytesForTest = envU64("QUICPERF_TEST_BYTES", defaultTestBytes);
+  const uint64_t bytesForTest = envU64("QUICPERF_TARGET_BYTES", 0) > 0
+                                    ? envU64("QUICPERF_TARGET_BYTES", configuredBytesForTest)
+                                    : configuredBytesForTest;
   BenchmarkScenario selectedScenario = BenchmarkScenario::download;
   if (!parseBenchmarkScenario(envString("QUICPERF_SCENARIO", "download"), selectedScenario))
   {
@@ -746,6 +829,14 @@ int main(int argc, char *argv[])
       {
         printf("quicperf_run_result library=%s scenario=%s status=unsupported reason=%s\n",
                benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkScenarioUnsupportedReason(benchmarkScenario));
+        delete server;
+        std::exit(77);
+      }
+      if (benchmarkMeasureMode == BenchmarkMeasureMode::duration &&
+          !server->supportsDurationMode(benchmarkScenario))
+      {
+        printf("quicperf_run_result library=%s scenario=%s status=unsupported reason=requires_duration_mode_adapter_api\n",
+               benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario));
         delete server;
         std::exit(77);
       }
@@ -815,7 +906,7 @@ int main(int argc, char *argv[])
     tls_chain = envString("QUICPERF_TLS_CHAIN", "tls/bench.chain.pem");
 
     const uint16_t nThreads = static_cast<uint16_t>(envU64("QUICPERF_CLIENT_THREADS", 1));
-    const uint16_t clientBasePort = envPort("QUICPERF_CLIENT_BASE_PORT", 1111);
+    const uint16_t clientBasePort = envPortAllowZero("QUICPERF_CLIENT_BASE_PORT", 0);
     if (nThreads == 0)
     {
       fprintf(stderr, "QUICPERF_CLIENT_THREADS must be at least 1\n");
@@ -830,6 +921,7 @@ int main(int argc, char *argv[])
 
     std::vector<std::jthread> threads;
     std::vector<double> seconds(nThreads, 0.0);
+    std::vector<uint64_t> completedUnits(nThreads, 0);
     std::vector<std::string> resumptionProofLabels(nThreads);
     std::atomic<uint16_t> guardWaiters = 0;
     std::atomic<bool> guardInstalled = false;
@@ -864,8 +956,33 @@ int main(int argc, char *argv[])
       }
     };
 
+    auto clientPortForOffset = [&](const char *label, uint16_t threadIndex, uint64_t connectionIndex, uint64_t offset) -> uint16_t {
+      if (clientBasePort == 0)
+      {
+        return 0;
+      }
+      const uint64_t port = static_cast<uint64_t>(clientBasePort) + offset;
+      if (port > 65'535)
+      {
+        fprintf(stderr, "%s client port exceeds 65535: base=%u threads=%u thread=%u connection=%" PRIu64 "\n",
+                label, clientBasePort, nThreads, threadIndex, connectionIndex);
+        abort();
+      }
+      return static_cast<uint16_t>(port);
+    };
+
+    std::vector<std::vector<std::function<void()>>> deferredClientDeletes(nThreads);
+    auto deferClientDelete = [&](uint16_t threadIndex, auto *deferredClient) {
+      if (deferredClient != nullptr)
+      {
+        deferredClientDeletes[threadIndex].emplace_back([deferredClient] {
+          delete deferredClient;
+        });
+      }
+    };
+
     auto runClientTest = [&]<Mode mode>(QuicLibrary<mode> *client, uint16_t threadIndex) -> void {
-      client->instanceSetup(clientBasePort + threadIndex, extraArgc, extraArgv);
+      client->instanceSetup(clientPortForOffset("client", threadIndex, 0, threadIndex), extraArgc, extraArgv);
       if (benchmarkIsResumedConnect() && !client->supportsSessionResumption())
       {
         printf("quicperf_run_result library=%s scenario=%s status=unsupported reason=%s\n",
@@ -880,35 +997,118 @@ int main(int argc, char *argv[])
         delete client;
         std::exit(77);
       }
+      if (benchmarkMeasureMode == BenchmarkMeasureMode::duration &&
+          !client->supportsDurationMode(benchmarkScenario))
+      {
+        printf("quicperf_run_result library=%s scenario=%s status=unsupported reason=requires_duration_mode_adapter_api\n",
+               benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario));
+        delete client;
+        std::exit(77);
+      }
 
       if (benchmarkIsResumptionScenario())
       {
-        BenchmarkResumptionState state;
-        client->connectToServer((struct sockaddr *)server_in6);
-        if (!benchmarkScenarioOpensOwnStreams(benchmarkScenario))
+        if (benchmarkIsResumedConnect())
         {
-          client->openStream();
+          const uint64_t targetConnections = std::max<uint64_t>(1, benchmarkTargetConnections);
+          std::vector<BenchmarkResumptionState> states;
+          states.reserve(static_cast<size_t>(targetConnections));
+
+          for (uint64_t connectionIndex = 0; connectionIndex < targetConnections; ++connectionIndex)
+          {
+            QuicLibrary<mode> *warmupClient = client;
+            if (connectionIndex > 0)
+            {
+              warmupClient = libraryForChoice<mode>();
+              const uint64_t warmupOffset =
+                  static_cast<uint64_t>(threadIndex) +
+                  connectionIndex * 2ULL * static_cast<uint64_t>(nThreads);
+              warmupClient->instanceSetup(clientPortForOffset("resumption warmup", threadIndex, connectionIndex, warmupOffset), extraArgc, extraArgv);
+            }
+
+            BenchmarkResumptionState state;
+            {
+              BenchmarkForceWorkModeScope forceWorkMode;
+              warmupClient->connectToServer((struct sockaddr *)server_in6);
+              warmupClient->openStream();
+              warmupClient->startPerfTest(benchmarkConnectCleanupBytes);
+              warmupClient->postPerfTest();
+            }
+            if (!warmupClient->exportResumptionState(state))
+            {
+              fprintf(stderr, "%s: failed to export resumption state after warmup\n", benchmarkLibrary());
+              abort();
+            }
+            states.push_back(std::move(state));
+            deferClientDelete(threadIndex, warmupClient);
+          }
+          client = nullptr;
+
+          releaseClientHarness(threadIndex);
+
+          uint64_t resumedConfirmed = 0;
+          auto start = std::chrono::steady_clock::now();
+          for (uint64_t connectionIndex = 0; connectionIndex < targetConnections; ++connectionIndex)
+          {
+            QuicLibrary<mode> *measuredClient = libraryForChoice<mode>();
+            const uint64_t measuredOffset =
+                static_cast<uint64_t>(threadIndex) +
+                static_cast<uint64_t>(nThreads) +
+                connectionIndex * 2ULL * static_cast<uint64_t>(nThreads);
+            measuredClient->instanceSetup(clientPortForOffset("resumption measured", threadIndex, connectionIndex, measuredOffset), extraArgc, extraArgv);
+            if (!measuredClient->importResumptionState(states[static_cast<size_t>(connectionIndex)], false))
+            {
+              fprintf(stderr, "%s: failed to import resumption state before measured connection\n", benchmarkLibrary());
+              abort();
+            }
+            measuredClient->connectToServer((struct sockaddr *)server_in6);
+            measuredClient->openStream();
+            const bool resumed = measuredClient->connectionWasResumed();
+            if (!resumed)
+            {
+              fprintf(stderr, "%s: measured connection did not prove resumption\n", benchmarkLibrary());
+              abort();
+            }
+            ++resumedConfirmed;
+            if (resumptionProofLabels[threadIndex].empty())
+            {
+              resumptionProofLabels[threadIndex] = measuredClient->resumptionProofLabel();
+            }
+            measuredClient->startPerfTest(benchmarkConnectCleanupBytes);
+            measuredClient->postPerfTest();
+            benchmarkRecordResumptionResult(resumed, false, false, false);
+            deferClientDelete(threadIndex, measuredClient);
+          }
+          auto end = std::chrono::steady_clock::now();
+          const double time = std::chrono::duration<double>(end - start).count();
+          const double connectionsPerSecond = static_cast<double>(targetConnections) / time;
+          const char *proofLabel = resumptionProofLabels[threadIndex].empty()
+                                       ? "adapter_api"
+                                       : resumptionProofLabels[threadIndex].c_str();
+          printf("quicperf_thread library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s path_profile=%s thread=%u connections=%" PRIu64 " seconds=%.9f resumption_attempted=%" PRIu64 " resumption_confirmed=%" PRIu64 " zero_rtt_attempted=0 zero_rtt_accepted=0 zero_rtt_rejected=0 resumption_proof=%s connections_per_second=%.6f\n",
+                 benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, benchmarkPathProfile, threadIndex,
+                 targetConnections, time, targetConnections, resumedConfirmed, proofLabel, connectionsPerSecond);
+          seconds[threadIndex] = time;
+          return;
         }
-        client->startPerfTest(benchmarkConnectCleanupBytes);
-        client->postPerfTest();
+
+        BenchmarkResumptionState state;
+        {
+          BenchmarkForceWorkModeScope forceWorkMode;
+          client->connectToServer((struct sockaddr *)server_in6);
+          client->startPerfTest(benchmarkConnectCleanupBytes);
+          client->postPerfTest();
+        }
         if (!client->exportResumptionState(state))
         {
           fprintf(stderr, "%s: failed to export resumption state after warmup\n", benchmarkLibrary());
           abort();
         }
-        delete client;
+        deferClientDelete(threadIndex, client);
 
         client = libraryForChoice<mode>();
-        const uint32_t measuredClientPort =
-            static_cast<uint32_t>(clientBasePort) + nThreads + threadIndex;
-        if (measuredClientPort > 65'535)
-        {
-          fprintf(stderr, "resumption measured client port exceeds 65535: base=%u threads=%u thread=%u\n",
-                  clientBasePort, nThreads, threadIndex);
-          abort();
-        }
-        client->instanceSetup(static_cast<uint16_t>(measuredClientPort), extraArgc, extraArgv);
-        if (!client->importResumptionState(state, benchmarkIsZeroRttReqResp()))
+        client->instanceSetup(clientPortForOffset("resumption measured", threadIndex, 0, static_cast<uint64_t>(nThreads) + threadIndex), extraArgc, extraArgv);
+        if (!client->importResumptionState(state, true))
         {
           fprintf(stderr, "%s: failed to import resumption state before measured connection\n", benchmarkLibrary());
           abort();
@@ -917,16 +1117,8 @@ int main(int argc, char *argv[])
         releaseClientHarness(threadIndex);
 
         auto start = std::chrono::steady_clock::now();
-        if (benchmarkIsZeroRttReqResp())
-        {
-          client->connectToServerForZeroRtt((struct sockaddr *)server_in6);
-          client->startPerfTest(bytesForTest);
-        }
-        else
-        {
-          client->connectToServer((struct sockaddr *)server_in6);
-          client->openStream();
-        }
+        client->connectToServerForZeroRtt((struct sockaddr *)server_in6);
+        client->startPerfTest(bytesForTest);
         auto end = std::chrono::steady_clock::now();
         double time = std::chrono::duration<double>(end - start).count();
 
@@ -940,56 +1132,66 @@ int main(int argc, char *argv[])
           fprintf(stderr, "%s: measured connection did not prove resumption\n", benchmarkLibrary());
           abort();
         }
-        if (benchmarkIsZeroRttReqResp() && !zeroAttempted)
+        if (!zeroAttempted)
         {
           fprintf(stderr, "%s: measured connection did not attempt 0-RTT\n", benchmarkLibrary());
           abort();
         }
 
-        if (benchmarkIsResumedConnect())
-        {
-          const double connectionsPerSecond = 1.0 / time;
-          client->startPerfTest(benchmarkConnectCleanupBytes);
-          client->postPerfTest();
-          printf("quicperf_thread library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s path_profile=%s thread=%u connections=1 seconds=%.9f resumption_attempted=1 resumption_confirmed=%u zero_rtt_attempted=0 zero_rtt_accepted=0 zero_rtt_rejected=0 resumption_proof=%s connections_per_second=%.6f\n",
-                 benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, benchmarkPathProfile, threadIndex,
-                 time, resumed ? 1 : 0, resumptionProofLabels[threadIndex].c_str(), connectionsPerSecond);
-        }
-        else
-        {
-          client->postPerfTest();
-          const uint64_t unitsForTest = benchmarkScenarioUnitsPerThread(bytesForTest);
-          const double requestsPerSecond = ((double)unitsForTest) / time;
-          printf("quicperf_thread library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s path_profile=%s thread=%u units=%" PRIu64 " seconds=%.9f resumption_attempted=1 resumption_confirmed=%u zero_rtt_attempted=%u zero_rtt_accepted=%u zero_rtt_rejected=%u resumption_proof=%s requests_per_second=%.6f\n",
-                 benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, benchmarkPathProfile, threadIndex,
-                 unitsForTest, time, resumed ? 1 : 0, zeroAttempted ? 1 : 0, zeroAccepted ? 1 : 0, zeroRejected ? 1 : 0,
-                 resumptionProofLabels[threadIndex].c_str(), requestsPerSecond);
-        }
+        client->postPerfTest();
+        const uint64_t fallbackUnitsForTest = benchmarkScenarioUnitsPerThread(bytesForTest);
+        const uint64_t unitsForTest = benchmarkMeasureMode == BenchmarkMeasureMode::duration
+                                          ? client->completedUnitsForReport(fallbackUnitsForTest)
+                                          : fallbackUnitsForTest;
+        time = benchmarkMeasureMode == BenchmarkMeasureMode::duration
+                   ? client->measuredSecondsForReport(time)
+                   : time;
+        const double requestsPerSecond = ((double)unitsForTest) / time;
+        printf("quicperf_thread library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s path_profile=%s thread=%u units=%" PRIu64 " seconds=%.9f resumption_attempted=1 resumption_confirmed=%u zero_rtt_attempted=%u zero_rtt_accepted=%u zero_rtt_rejected=%u resumption_proof=%s requests_per_second=%.6f\n",
+               benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, benchmarkPathProfile, threadIndex,
+               unitsForTest, time, resumed ? 1 : 0, zeroAttempted ? 1 : 0, zeroAccepted ? 1 : 0, zeroRejected ? 1 : 0,
+               resumptionProofLabels[threadIndex].c_str(), requestsPerSecond);
         benchmarkRecordResumptionResult(resumed, zeroAttempted, zeroAccepted, zeroRejected);
-        delete client;
+        deferClientDelete(threadIndex, client);
+        client = nullptr;
+        completedUnits[threadIndex] = unitsForTest;
         seconds[threadIndex] = time;
         return;
       }
 
       if (benchmarkIsConnect())
       {
+        const uint64_t targetConnections = std::max<uint64_t>(1, benchmarkTargetConnections);
         releaseClientHarness(threadIndex);
 
         auto start = std::chrono::steady_clock::now();
 
-        client->connectToServer((struct sockaddr *)server_in6);
-        client->openStream();
+        for (uint64_t connectionIndex = 0; connectionIndex < targetConnections; ++connectionIndex)
+        {
+          QuicLibrary<mode> *activeClient = client;
+          if (connectionIndex > 0)
+          {
+            activeClient = libraryForChoice<mode>();
+            const uint64_t localOffset =
+                static_cast<uint64_t>(threadIndex) +
+                connectionIndex * static_cast<uint64_t>(nThreads);
+            activeClient->instanceSetup(clientPortForOffset("connect", threadIndex, connectionIndex, localOffset), extraArgc, extraArgv);
+          }
+
+          activeClient->connectToServer((struct sockaddr *)server_in6);
+          activeClient->openStream();
+          activeClient->startPerfTest(benchmarkConnectCleanupBytes);
+          activeClient->postPerfTest();
+          deferClientDelete(threadIndex, activeClient);
+        }
+        client = nullptr;
 
         auto end = std::chrono::steady_clock::now();
         double time = std::chrono::duration<double>(end - start).count();
-        const double connectionsPerSecond = 1.0 / time;
+        const double connectionsPerSecond = static_cast<double>(targetConnections) / time;
 
-        client->startPerfTest(benchmarkConnectCleanupBytes);
-        client->postPerfTest();
-        delete client;
-
-        printf("quicperf_thread library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s path_profile=%s thread=%u connections=1 seconds=%.9f connections_per_second=%.6f\n",
-               benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, benchmarkPathProfile, threadIndex, time, connectionsPerSecond);
+        printf("quicperf_thread library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s path_profile=%s thread=%u connections=%" PRIu64 " seconds=%.9f connections_per_second=%.6f\n",
+               benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, benchmarkPathProfile, threadIndex, targetConnections, time, connectionsPerSecond);
 
         seconds[threadIndex] = time;
         return;
@@ -1029,7 +1231,13 @@ int main(int argc, char *argv[])
       auto end = std::chrono::steady_clock::now();
       client->postPerfTest();
       double time = std::chrono::duration<double>(end - start).count();
-      const uint64_t unitsForTest = benchmarkScenarioUnitsPerThread(bytesForTest);
+      const uint64_t fallbackUnitsForTest = benchmarkScenarioUnitsPerThread(bytesForTest);
+      const uint64_t unitsForTest = benchmarkMeasureMode == BenchmarkMeasureMode::duration
+                                        ? client->completedUnitsForReport(fallbackUnitsForTest)
+                                        : fallbackUnitsForTest;
+      time = benchmarkMeasureMode == BenchmarkMeasureMode::duration
+                 ? client->measuredSecondsForReport(time)
+                 : time;
       const bool reportsThroughput = strcmp(benchmarkScenarioMetricName(benchmarkScenario), "throughput_gbps") == 0;
       const double metricValue = reportsThroughput
                                      ? ((double)unitsForTest * 8.0) / time / 1'000'000'000.0
@@ -1039,6 +1247,7 @@ int main(int argc, char *argv[])
       printf("quicperf_thread library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s path_profile=%s thread=%u units=%" PRIu64 " seconds=%.9f %s=%.6f\n",
              benchmarkLibrary(), benchmarkScenarioName(benchmarkScenario), benchmarkNetworkLabel(network), argv[3], localAddressText, remoteAddressText, benchmarkPathProfile, threadIndex,
              unitsForTest, time, benchmarkScenarioMetricName(benchmarkScenario), metricValue);
+      completedUnits[threadIndex] = unitsForTest;
       seconds[threadIndex] = time;
     };
 
@@ -1090,6 +1299,14 @@ int main(int argc, char *argv[])
     {
       thread.join();
     }
+    for (auto& threadDeletes : deferredClientDeletes)
+    {
+      for (auto& deleteClient : threadDeletes)
+      {
+        deleteClient();
+      }
+    }
+    deferredClientDeletes.clear();
 
     double maxSeconds = 0;
     for (uint16_t threadIndex = 0; threadIndex < nThreads; ++threadIndex)
@@ -1100,7 +1317,9 @@ int main(int argc, char *argv[])
 
     if (benchmarkIsConnect())
     {
-      const double connectionsPerSecond = ((double)nThreads) / maxSeconds;
+      const uint64_t targetConnections = std::max<uint64_t>(1, benchmarkTargetConnections);
+      const uint64_t totalConnections = static_cast<uint64_t>(nThreads) * targetConnections;
+      const double connectionsPerSecond = static_cast<double>(totalConnections) / maxSeconds;
       printf("quicperf_result library=%s scenario=%s role=client network=%s address=%s local_address=%s remote_address=%s threads=%u "
              "build_profile=%s window_profile=%s congestion_profile=%s network_profile=%s path_profile=%s "
              "app_chunk=%u server_connections=%u tls_verify_mode=%s tls_cert_profile=%s "
@@ -1116,7 +1335,7 @@ int main(int argc, char *argv[])
              benchmarkConnectionWindow, benchmarkSocketSndbufEffective.load(std::memory_order_relaxed),
              benchmarkConnectionWindow, benchmarkSocketRcvbufEffective.load(std::memory_order_relaxed),
              benchmarkScenarioProfile, benchmarkLossDropEveryPackets, benchmarkLossWarmupPackets,
-             nThreads, maxSeconds, connectionsPerSecond);
+             static_cast<uint32_t>(totalConnections), maxSeconds, connectionsPerSecond);
       return 0;
     }
 
@@ -1142,8 +1361,18 @@ int main(int argc, char *argv[])
       return 0;
     }
 
-    const uint64_t unitsPerThread = benchmarkScenarioUnitsPerThread(bytesForTest);
-    const uint64_t totalUnits = unitsPerThread * nThreads;
+    const uint64_t fallbackUnitsPerThread = benchmarkScenarioUnitsPerThread(bytesForTest);
+    uint64_t totalUnits = fallbackUnitsPerThread * nThreads;
+    uint64_t unitsPerThread = fallbackUnitsPerThread;
+    if (benchmarkMeasureMode == BenchmarkMeasureMode::duration)
+    {
+      totalUnits = 0;
+      for (uint16_t threadIndex = 0; threadIndex < nThreads; ++threadIndex)
+      {
+        totalUnits += completedUnits[threadIndex];
+      }
+      unitsPerThread = nThreads == 0 ? 0 : totalUnits / nThreads;
+    }
     const bool reportsThroughput = strcmp(benchmarkScenarioMetricName(benchmarkScenario), "throughput_gbps") == 0;
     const double metricValue = reportsThroughput
                                    ? ((double)totalUnits * 8.0) / maxSeconds / 1'000'000'000.0

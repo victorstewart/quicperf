@@ -31,7 +31,14 @@ enum class BenchmarkScenario : uint8_t {
   close_reset_cleanup
 };
 
+enum class BenchmarkMeasureMode : uint8_t {
+  work,
+  duration
+};
+
 static inline BenchmarkScenario benchmarkScenario = BenchmarkScenario::download;
+static inline BenchmarkMeasureMode benchmarkMeasureMode = BenchmarkMeasureMode::work;
+static inline thread_local bool benchmarkForceWorkMode = false;
 static inline const char *benchmarkScenarioProfile = "default";
 
 constexpr static const char *benchmarkScenarioName(BenchmarkScenario scenario)
@@ -289,6 +296,7 @@ constexpr static uint64_t benchmarkFlowControlStreamWindow = 64ULL * 1024ULL;
 constexpr static uint64_t benchmarkLargeStreamWindow = 256ULL * 1024ULL * 1024ULL;
 static inline uint64_t benchmarkStreamWindow = benchmarkDefaultStreamWindow;
 constexpr static uint64_t benchmarkDefaultMaxBidiStreams = 1;
+constexpr static uint64_t benchmarkDurationMaxBidiStreams = 65'536;
 static inline uint64_t benchmarkMaxBidiStreams = benchmarkDefaultMaxBidiStreams;
 constexpr static uint64_t benchmarkMaxUniStreams = 0;
 constexpr static uint64_t benchmarkIdleTimeoutMs = 300'000;
@@ -302,6 +310,7 @@ constexpr static uint32_t benchmarkDatagramQueueSlots = 2048;
 constexpr static uint32_t benchmarkDatagramQueueBytes = 1024 * 1024;
 constexpr static uint32_t benchmarkDatagramNoMssApiPayloadBytes = 1150;
 constexpr static uint64_t benchmarkDatagramDrainUs = 100'000;
+constexpr static uint64_t benchmarkDurationCompletionDrainUs = 1'000'000;
 constexpr static size_t benchmarkDatagramSequenceBytes = sizeof(uint64_t);
 constexpr static uint32_t benchmarkAppChunkSize = 256 * 1024;
 constexpr static uint32_t benchmarkTcpTlsBufferSize = benchmarkAppChunkSize;
@@ -324,6 +333,11 @@ static inline uint32_t benchmarkPicoquicBdpSeedImmediateMode = 0;
 static inline uint64_t benchmarkLossDropEveryPackets = 0;
 static inline uint64_t benchmarkLossWarmupPackets = 128;
 static inline uint64_t benchmarkScenarioOperations = 0;
+static inline uint64_t benchmarkTargetDurationMs = 0;
+static inline uint64_t benchmarkTargetWarmupMs = 0;
+static inline uint64_t benchmarkTargetBytes = 0;
+static inline uint64_t benchmarkTargetOperations = 0;
+static inline uint64_t benchmarkTargetConnections = 0;
 static inline uint32_t benchmarkScenarioStreamsInFlight = 8;
 static inline uint32_t benchmarkScenarioRequestBytes = 64;
 static inline uint32_t benchmarkScenarioResponseBytes = 1024;
@@ -335,6 +349,11 @@ static inline std::atomic<uint64_t> benchmarkUdpPacketsSentTotal {0};
 static inline std::atomic<uint64_t> benchmarkUdpPacketsReceivedTotal {0};
 static inline std::atomic<uint64_t> benchmarkUdpSendSyscallsTotal {0};
 static inline std::atomic<uint64_t> benchmarkUdpRecvPollsTotal {0};
+
+static inline bool benchmarkDurationModeActive(void)
+{
+  return benchmarkMeasureMode == BenchmarkMeasureMode::duration && !benchmarkForceWorkMode;
+}
 static inline std::atomic<uint64_t> benchmarkResumptionAttemptedTotal {0};
 static inline std::atomic<uint64_t> benchmarkResumptionConfirmedTotal {0};
 static inline std::atomic<uint64_t> benchmarkZeroRttAttemptedTotal {0};
@@ -546,6 +565,16 @@ static inline void benchmarkFillDatagramPayload(uint8_t *payload, size_t payload
 
 static inline bool benchmarkMarkDatagramSeen(std::vector<uint8_t>& seen, uint64_t sequence, uint64_t operations = benchmarkScenarioOperations)
 {
+  if (sequence == std::numeric_limits<uint64_t>::max())
+  {
+    return false;
+  }
+  if (benchmarkMeasureMode == BenchmarkMeasureMode::duration &&
+      benchmarkScenario == BenchmarkScenario::datagram &&
+      sequence >= operations)
+  {
+    operations = sequence + 1;
+  }
   if (sequence >= operations)
   {
     return false;
@@ -674,6 +703,10 @@ static inline uint64_t benchmarkGenericReqRespResponseBytes(void)
 
 static inline uint64_t benchmarkGenericStreamsPerConnection(void)
 {
+  if (benchmarkForceWorkMode && benchmarkIsResumptionScenario())
+  {
+    return 1;
+  }
   switch (benchmarkScenario)
   {
     case BenchmarkScenario::reqresp:
@@ -690,24 +723,34 @@ static inline uint64_t benchmarkGenericStreamsPerConnection(void)
   }
 }
 
+static inline uint64_t benchmarkScenarioOperationsForCurrentMode(void)
+{
+  if (benchmarkForceWorkMode && benchmarkIsResumptionScenario())
+  {
+    return 1;
+  }
+  return benchmarkScenarioOperations;
+}
+
 static inline uint64_t benchmarkScenarioUnitsPerThread(uint64_t testBytes)
 {
   switch (benchmarkScenario)
   {
     case BenchmarkScenario::connect:
+      return std::max<uint64_t>(1, benchmarkTargetConnections);
     case BenchmarkScenario::resumed_connect:
-      return 1;
+      return std::max<uint64_t>(1, benchmarkTargetConnections);
     case BenchmarkScenario::reqresp:
     case BenchmarkScenario::zero_rtt_reqresp:
-      return benchmarkScenarioOperations;
+      return benchmarkScenarioOperationsForCurrentMode();
     case BenchmarkScenario::stream_churn:
-      return benchmarkScenarioOperations;
+      return benchmarkScenarioOperationsForCurrentMode();
     case BenchmarkScenario::small_payload_pps:
-      return benchmarkScenarioOperations;
+      return benchmarkScenarioOperationsForCurrentMode();
     case BenchmarkScenario::datagram:
-      return benchmarkScenarioOperations;
+      return benchmarkScenarioOperationsForCurrentMode();
     case BenchmarkScenario::close_reset_cleanup:
-      return benchmarkScenarioOperations;
+      return benchmarkScenarioOperationsForCurrentMode();
     case BenchmarkScenario::idle_footprint:
       return 1;
     case BenchmarkScenario::bidi:

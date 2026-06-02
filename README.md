@@ -28,8 +28,8 @@ measurements without each stack bringing its own benchmark loop.
 | `idle_footprint` | `server_rss_delta_bytes_per_connection` | Server RSS delta per held idle connection. |
 | `close_reset_cleanup` | `streams_per_second` | Graceful fresh-stream cleanup cost. |
 | `datagram` | `datagrams_per_second` | Delivered app DATAGRAM echo rate. |
-| `resumed_connect` | `connections_per_second` | Session-ticket resumption connection capability smoke. |
-| `zero_rtt_reqresp` | `requests_per_second` | 0-RTT request/response capability smoke. |
+| `resumed_connect` | `connections_per_second` | Session-ticket resumption connection setup. |
+| `zero_rtt_reqresp` | `requests_per_second` | 0-RTT request/response exchange. |
 
 Unsupported capability rows, when present, exit cleanly as `unsupported` instead
 of running a different workload under the requested label.
@@ -160,7 +160,7 @@ tools/quicperf_network_validate.py --samples 10 --ping-count 100 --require-idle-
 ```
 
 The validator writes qdisc snapshots, expected BDP/queue metadata, ping
-RTT/loss/jitter checks, and raw TCP/UDP baselines under
+RTT/loss/jitter checks, and qdisc/interface audit data under
 `.run/network-profile-validation-<utc>/`. See
 `docs/network-profile-validation.md` for the profile audit, acceptance criteria,
 and source basis.
@@ -208,48 +208,43 @@ audit verifies the shared Ed25519 chain and wrong-chain negative controls.
 ```sh
 QUICPERF_PATH_PROFILES=loopback \
 QUICPERF_NETWORKS="syscall iouring" \
-QUICPERF_TEST_BYTES=1073741824 \
-tools/run-adaptive-publication-suite.py
+tools/run-saturation-scout.py
+
+tools/run-fixed-publication-suite.py \
+  --plan .run/<scout-run>/benchmark-plan.tsv
 ```
 
-The adaptive runner uses a non-public calibration pass, 10-sample randomized
-discovery blocks, bounded convergence, statistical saturation selection, and an
-optional confirmatory holdout when configured. It stops a client-count curve at
-the first converged adjacent step that does not materially improve p50, so a row
-that peaks at 1 client will stop after checking 2 clients instead of continuing
-up the curve. `not_ready` rows are inspectable but not clean publication rows.
+The scout is bounded, cheap, and excluded from publication statistics. It
+chooses client threads on the fixed `1,2,4,8,16` grid and writes
+`benchmark-plan.tsv`. The publication runner then executes that fixed plan in
+randomized blocks with no adaptive extension. Completed noisy rows are published
+with an inconclusive/noisy status; infrastructure failures remain failed.
+
+A successful scout is cached under `profiles/fixed-design/default-scout/` with a
+benchmark-relevant fingerprint. Later runs reuse that plan by default and rerun
+scout only when dependency pins, benchmark-touching harness code, or the scout
+scope changes. Force a refresh with `QUICPERF_SCOUT_CACHE_MODE=refresh`.
 
 Important artifacts:
 
 | File | Purpose |
 |---|---|
 | `adaptive-samples.tsv` | Raw sample source of truth |
-| `row-stats.tsv` | Discovery, confirm, and combined row stats |
+| `saturation-scout.tsv` | Non-publication scout measurements |
+| `benchmark-plan.tsv` | Predeclared publication plan |
+| `row-stats.tsv` | Fixed publication row stats |
 | `publication-results.tsv` | Selected result rows |
-| `publication-curve.tsv` | Client-count curves |
 | `publication-row-audit.tsv` | Gate audit for publication rows |
-| `saturation-decisions.tsv` | Saturation decisions |
+| `pairwise-comparisons.tsv` | Pairwise comparisons for publishable rows |
 
-## Scoring
+## Result Interpretation
 
-The primary ranking is normalized within each like-for-like scenario, network
-backend, path profile, and metric group.
-
-```text
-score = 100 * (0.60 * capacity_index
-             + 0.25 * curve_efficiency
-             + 0.15 * client_count_efficiency)
-```
-
-- `capacity_index`: selected row p50 versus the best comparable p50
-- `curve_efficiency`: normalized p50 across the client-count curve through saturation
-- `client_count_efficiency`: reward for saturating with fewer load-generator clients
-
-The composite score is a summary, not a replacement for raw `p50`, bad-tail
-`p90`/`p99`, confidence interval, spread, and saturation data. Adaptive
-rankings also publish pairwise ties and rank bands; point ranks should not be
-read as decisive when the intervals overlap. `p99` is visibility-only unless the
-row has at least 300 measured samples.
+The public page shows every completed selected row with its
+`publication_status`. `publishable` rows passed the fixed audit gates.
+`inconclusive` rows completed the declared sample plan but tripped a CI, spread,
+drift, or outlier gate; they are visible data with caveats, not hidden failures.
+Pairwise comparisons are generated for the publishable subset only. `p99` is
+visibility-only unless the row has at least 300 measured samples.
 
 ## Controls
 
@@ -263,7 +258,7 @@ row selection details.
 
 ## Results
 
-Latest committed results were collected on May 25, 2026.
+Latest committed results were collected on June 1, 2026.
 Current artifacts and caveats are in [docs/latest-results.md](docs/latest-results.md).
 The README intentionally does not duplicate the result table.
 

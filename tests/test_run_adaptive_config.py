@@ -40,8 +40,20 @@ class RunAdaptiveConfigTests(unittest.TestCase):
         self.assertEqual(cfg.block_size, 10)
         self.assertEqual(cfg.min_samples, 20)
         self.assertEqual(cfg.min_blocks, 2)
+        self.assertEqual(cfg.calibration_samples, 3)
         self.assertEqual(cfg.calibration_probe_operations, 1024)
         self.assertEqual(cfg.calibration_probe_bytes, 16 * 1024 * 1024)
+        self.assertEqual(cfg.calibration_max_bytes, runner.DEFAULT_MAX_CALIBRATED_BYTES)
+        self.assertEqual(cfg.calibration_max_scale_factor, 1024.0)
+        self.assertEqual(cfg.max_threads, 16)
+
+    def test_saturation_max_threads_is_capped_at_sixteen(self):
+        runner = load_runner_module()
+
+        with mock.patch.dict(os.environ, {"QUICPERF_SATURATION_MAX_THREADS": "32"}, clear=True):
+            cfg = runner.load_config()
+
+        self.assertEqual(cfg.max_threads, 16)
 
     def test_adaptive_random_seed_alias_takes_precedence(self):
         runner = load_runner_module()

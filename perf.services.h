@@ -58,6 +58,18 @@ public:
   virtual void connectToServer(struct sockaddr *address) = 0;
   virtual void openStream(void) = 0;
   virtual void startPerfTest(uint64_t nBytes = 0) = 0;
+  virtual bool supportsDurationMode(BenchmarkScenario) const
+  {
+    return false;
+  }
+  virtual uint64_t completedUnitsForReport(uint64_t fallback) const
+  {
+    return fallback;
+  }
+  virtual double measuredSecondsForReport(double fallback) const
+  {
+    return fallback;
+  }
   virtual void idleHold(uint64_t holdMs)
   {
     std::this_thread::sleep_for(std::chrono::milliseconds(holdMs));

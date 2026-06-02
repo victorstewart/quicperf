@@ -1,4 +1,7 @@
-# Loopback Core Publication Subset 2026-05-25T21:39Z
+# Archived Loopback Core Publication Subset 2026-05-25T21:39Z
+
+This is an archived adaptive core subset. Current results are published from the
+fixed-design full matrix in `docs/latest-results.md`.
 
 Run ID: `adaptive-20260525T213948Z-3320776`
 Source run directory: `.run/full-matrix-20260525T213948Z`
@@ -25,7 +28,7 @@ This is the core publication subset (`download`, `upload`, `connect`), not the f
 
 ## Files
 
-- `publication-results.tsv`: selected publication rows used by `docs/latest-results.md`
+- `publication-results.tsv`: selected publication rows for this archived run
 - `publication-curve.tsv`: measured client-thread curve through the selected saturation boundary
 - `publication-row-audit.tsv`: gate decisions and diagnostic reasons for audited rows
 - `adaptive-samples.tsv`: measured discovery samples only; calibration is excluded

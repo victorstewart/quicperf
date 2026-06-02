@@ -49,6 +49,14 @@ public:
     available.reserve(count);
   }
 
+  Pool(const Pool&) = delete;
+  Pool& operator=(const Pool&) = delete;
+
+  ~Pool()
+  {
+    delete[] base;
+  }
+
   uint32_t howManyLeft(void)
   {
     return (capacity - watermark) + available.size();
@@ -127,6 +135,20 @@ public:
               static_cast<unsigned>(port), errno, strerror(errno));
       abort();
     }
+    if (getsockname(fd, (struct sockaddr *)address6, &addressLen) != 0)
+    {
+      fprintf(stderr, "quicperf_socket_error action=getsockname port=%u errno=%d message=%s\n",
+              static_cast<unsigned>(port), errno, strerror(errno));
+      abort();
+    }
+  }
+
+  UDPSocket(const UDPSocket&) = delete;
+  UDPSocket& operator=(const UDPSocket&) = delete;
+
+  ~UDPSocket()
+  {
+    free(address6);
   }
 };
 
@@ -141,6 +163,7 @@ struct UDPContext {
   struct msghdr msg_hdr;
   unsigned int msg_len;
   size_t iov_capacity;
+  void *iov_storage;
   uint16_t udp_segment_size;
   alignas(struct cmsghdr) char control[CMSG_SPACE(sizeof(uint16_t))];
 
@@ -152,7 +175,8 @@ struct UDPContext {
 
     msg_hdr.msg_iov = (struct iovec *)malloc(sizeof(struct iovec));
     msg_hdr.msg_iov[0].iov_len = MAX_IPV6_UDP_PACKET_SIZE;
-    msg_hdr.msg_iov[0].iov_base = malloc(MAX_IPV6_UDP_PACKET_SIZE);
+    iov_storage = malloc(MAX_IPV6_UDP_PACKET_SIZE);
+    msg_hdr.msg_iov[0].iov_base = iov_storage;
     msg_hdr.msg_iovlen = 1;
     iov_capacity = MAX_IPV6_UDP_PACKET_SIZE;
     udp_segment_size = 0;
@@ -173,6 +197,16 @@ struct UDPContext {
     // }
     // }
     // }
+  }
+
+  UDPContext(const UDPContext&) = delete;
+  UDPContext& operator=(const UDPContext&) = delete;
+
+  ~UDPContext()
+  {
+    free(iov_storage);
+    free(msg_hdr.msg_iov);
+    free(msg_hdr.msg_name);
   }
 
   template <typename T = struct sockaddr>
@@ -201,15 +235,16 @@ struct UDPContext {
   {
     if (capacity > iov_capacity)
     {
-      void *resized = realloc(msg_hdr.msg_iov[0].iov_base, capacity);
+      void *resized = realloc(iov_storage, capacity);
       if (resized == nullptr)
       {
         fprintf(stderr, "quicperf_udp_buffer_realloc_failed requested=%zu\n", capacity);
         abort();
       }
-      msg_hdr.msg_iov[0].iov_base = resized;
+      iov_storage = resized;
       iov_capacity = capacity;
     }
+    msg_hdr.msg_iov[0].iov_base = iov_storage;
   }
 
   void setLength(size_t length)
@@ -229,6 +264,7 @@ struct UDPContext {
   {
     msg_len = 0;
     msg_hdr.msg_namelen = sizeof(struct sockaddr_storage);
+    msg_hdr.msg_iov[0].iov_base = iov_storage;
     clearUdpSegmentSize();
     setLength(MAX_IPV6_UDP_PACKET_SIZE);
   }
@@ -524,9 +560,16 @@ private:
       false;
 #endif
   constexpr static uint16_t iouringBufferGroup = 7;
-  constexpr static uint32_t iouringRecvBufferCount = 1024;
+  constexpr static uint32_t defaultIouringRecvBufferCount = 1024;
+  constexpr static uint32_t lifecycleIouringRecvBufferCount = 64;
+  constexpr static uint32_t defaultIouringSqEntries = 16'000;
+  constexpr static uint32_t defaultIouringCqEntries = 32'768;
+  constexpr static uint32_t lifecycleIouringSqEntries = 1024;
+  constexpr static uint32_t lifecycleIouringCqEntries = 2048;
   constexpr static uint32_t iouringMaxPendingRecvPackets = 1024;
   constexpr static uint32_t iouringCompletionBatchLimit = 2048;
+  constexpr static uint32_t iouringPendingRecvDeliveryLimit = 64;
+  constexpr static uint32_t iouringRecvCqeDeliveryLimit = 64;
   constexpr static size_t iouringRecvControlSize = CMSG_SPACE(sizeof(uint16_t));
   constexpr static size_t iouringRecvBufferSize = sizeof(struct io_uring_recvmsg_out) + sizeof(struct sockaddr_storage) + iouringRecvControlSize + MAX_IPV6_UDP_GSO_BUFFER_SIZE;
 
@@ -562,6 +605,42 @@ private:
 
   std::deque<PendingIouringRecvPacket> pendingIouringRecvPackets;
 
+  uint32_t iouringRecvBufferCountForInstance(void) const
+  {
+    if constexpr (mode & Mode::client)
+    {
+      if (benchmarkIsConnect() || benchmarkIsResumedConnect() || benchmarkIsIdleFootprint())
+      {
+        return lifecycleIouringRecvBufferCount;
+      }
+    }
+    return defaultIouringRecvBufferCount;
+  }
+
+  uint32_t iouringSqEntriesForInstance(void) const
+  {
+    if constexpr (mode & Mode::client)
+    {
+      if (benchmarkIsConnect() || benchmarkIsResumedConnect() || benchmarkIsIdleFootprint())
+      {
+        return lifecycleIouringSqEntries;
+      }
+    }
+    return defaultIouringSqEntries;
+  }
+
+  uint32_t iouringCqEntriesForInstance(void) const
+  {
+    if constexpr (mode & Mode::client)
+    {
+      if (benchmarkIsConnect() || benchmarkIsResumedConnect() || benchmarkIsIdleFootprint())
+      {
+        return lifecycleIouringCqEntries;
+      }
+    }
+    return defaultIouringCqEntries;
+  }
+
   [[noreturn]] void failIouringSetup(const char *step, int result)
   {
     fprintf(stderr, "quicperf_iouring_setup_failed network_profile=%s step=%s result=%d errno=%d\n",
@@ -572,15 +651,16 @@ private:
   void setupIouringRecvRing(void)
   {
     int err = 0;
-    iouringRecvRing = io_uring_setup_buf_ring(&ring, iouringRecvBufferCount, iouringBufferGroup, 0, &err);
+    const uint32_t recvBufferCount = iouringRecvBufferCountForInstance();
+    iouringRecvRing = io_uring_setup_buf_ring(&ring, recvBufferCount, iouringBufferGroup, 0, &err);
     if (iouringRecvRing == nullptr)
     {
       failIouringSetup("setup_buf_ring", err);
     }
 
-    iouringRecvRingMask = io_uring_buf_ring_mask(iouringRecvBufferCount);
-    iouringRecvBuffers.resize(iouringRecvBufferCount, nullptr);
-    for (uint32_t i = 0; i < iouringRecvBufferCount; ++i)
+    iouringRecvRingMask = io_uring_buf_ring_mask(recvBufferCount);
+    iouringRecvBuffers.resize(recvBufferCount, nullptr);
+    for (uint32_t i = 0; i < recvBufferCount; ++i)
     {
       void *buffer = nullptr;
       if (posix_memalign(&buffer, 64, iouringRecvBufferSize) != 0)
@@ -591,7 +671,7 @@ private:
       io_uring_buf_ring_add(iouringRecvRing, buffer, iouringRecvBufferSize,
                             static_cast<unsigned short>(i), iouringRecvRingMask, static_cast<int>(i));
     }
-    io_uring_buf_ring_advance(iouringRecvRing, static_cast<int>(iouringRecvBufferCount));
+    io_uring_buf_ring_advance(iouringRecvRing, static_cast<int>(recvBufferCount));
 
     memset(&iouringRecvMsg, 0, sizeof(iouringRecvMsg));
     iouringRecvMsg.msg_namelen = sizeof(struct sockaddr_storage);
@@ -752,7 +832,9 @@ private:
   bool deliverPendingIouringRecvPackets(Consumer& msgConsumer)
   {
     bool delivered = false;
-    while (!pendingIouringRecvPackets.empty())
+    uint32_t deliveredCount = 0;
+    while (!pendingIouringRecvPackets.empty() &&
+           deliveredCount < iouringPendingRecvDeliveryLimit)
     {
       PendingIouringRecvPacket packet = std::move(pendingIouringRecvPackets.front());
       pendingIouringRecvPackets.pop_front();
@@ -764,6 +846,7 @@ private:
                             packet.groSegmentSize,
                             msgConsumer);
       delivered = true;
+      ++deliveredCount;
     }
     return delivered;
   }
@@ -877,9 +960,9 @@ public:
 
       struct io_uring_params params = {};
       params.flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_COOP_TASKRUN | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_CQSIZE;
-      params.cq_entries = 32'768;
+      params.cq_entries = iouringCqEntriesForInstance();
 
-      int result = io_uring_queue_init_params(16'000, &ring, &params);
+      int result = io_uring_queue_init_params(iouringSqEntriesForInstance(), &ring, &params);
       if (result < 0)
       {
         failIouringSetup("queue_init", result);
@@ -908,7 +991,7 @@ public:
     {
       if (iouringRecvRing != nullptr)
       {
-        io_uring_free_buf_ring(&ring, iouringRecvRing, iouringRecvBufferCount, iouringBufferGroup);
+        io_uring_free_buf_ring(&ring, iouringRecvRing, static_cast<unsigned int>(iouringRecvBuffers.size()), iouringBufferGroup);
       }
       for (void *buffer : iouringRecvBuffers)
       {
@@ -1222,6 +1305,7 @@ public:
 
         uint32_t head = 0;
         uint32_t count = 0;
+        uint32_t deliveredRecvCqes = 0;
         bool deliveredPacket = false;
         iouringProcessingCqes = true;
         io_uring_for_each_cqe(&ring, head, cqe)
@@ -1240,7 +1324,12 @@ public:
           {
             case IORING_OP_RECVMSG:
               {
-                deliveredPacket = handleIouringRecvCqe(cqe, msgConsumer) || deliveredPacket;
+                const bool recvDelivered = handleIouringRecvCqe(cqe, msgConsumer);
+                if (recvDelivered)
+                {
+                  ++deliveredRecvCqes;
+                }
+                deliveredPacket = recvDelivered || deliveredPacket;
                 break;
               }
             case IORING_OP_SENDMSG:
@@ -1261,6 +1350,10 @@ public:
                 // printf("sqe space left = %ld\n", *(ring.sq.kring_entries) - io_uring_sq_ready(&ring));
               }
               break;
+          }
+          if (deliveredRecvCqes >= iouringRecvCqeDeliveryLimit)
+          {
+            break;
           }
         }
         iouringProcessingCqes = false;

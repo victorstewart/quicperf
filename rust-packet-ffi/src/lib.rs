@@ -412,7 +412,10 @@ struct ClientTlsConfigKey {
 
 #[derive(Debug)]
 struct ObservedClientSessionStore {
-    inner: Arc<dyn ClientSessionStore>,
+    capacity: usize,
+    kx_hints: Mutex<HashMap<ServerName<'static>, NamedGroup>>,
+    tls12_sessions: Mutex<HashMap<ServerName<'static>, Tls12ClientSessionValue>>,
+    tls13_tickets: Mutex<HashMap<ServerName<'static>, VecDeque<Tls13ClientSessionValue>>>,
     tls13_inserted: AtomicU64,
     tls13_early_inserted: AtomicU64,
     tls13_taken: AtomicU64,
@@ -422,7 +425,10 @@ struct ObservedClientSessionStore {
 impl ObservedClientSessionStore {
     fn new(capacity: usize) -> Self {
         Self {
-            inner: Arc::new(rustls::client::ClientSessionMemoryCache::new(capacity)),
+            capacity,
+            kx_hints: Mutex::new(HashMap::new()),
+            tls12_sessions: Mutex::new(HashMap::new()),
+            tls13_tickets: Mutex::new(HashMap::new()),
             tls13_inserted: AtomicU64::new(0),
             tls13_early_inserted: AtomicU64::new(0),
             tls13_taken: AtomicU64::new(0),
@@ -445,27 +451,71 @@ impl ObservedClientSessionStore {
     fn early_taken(&self) -> u64 {
         self.tls13_early_taken.load(Ordering::Relaxed)
     }
+
+    fn ticket_count_for(&self, server_name: &str) -> usize {
+        let Ok(server_name) = ServerName::try_from(server_name.to_owned()) else {
+            return 0;
+        };
+        self.tls13_tickets
+            .lock()
+            .expect("rustls ticket cache poisoned")
+            .get(&server_name)
+            .map_or(0, VecDeque::len)
+    }
+
+    fn early_ticket_count_for(&self, server_name: &str) -> usize {
+        let Ok(server_name) = ServerName::try_from(server_name.to_owned()) else {
+            return 0;
+        };
+        self.tls13_tickets
+            .lock()
+            .expect("rustls ticket cache poisoned")
+            .get(&server_name)
+            .map_or(0, |tickets| {
+                tickets
+                    .iter()
+                    .filter(|ticket| ticket.max_early_data_size() > 0)
+                    .count()
+            })
+    }
 }
 
 impl ClientSessionStore for ObservedClientSessionStore {
     fn set_kx_hint(&self, server_name: ServerName<'static>, group: NamedGroup) {
-        self.inner.set_kx_hint(server_name, group);
+        self.kx_hints
+            .lock()
+            .expect("rustls kx hint cache poisoned")
+            .insert(server_name, group);
     }
 
     fn kx_hint(&self, server_name: &ServerName<'_>) -> Option<NamedGroup> {
-        self.inner.kx_hint(server_name)
+        self.kx_hints
+            .lock()
+            .expect("rustls kx hint cache poisoned")
+            .get(server_name)
+            .cloned()
     }
 
     fn set_tls12_session(&self, server_name: ServerName<'static>, value: Tls12ClientSessionValue) {
-        self.inner.set_tls12_session(server_name, value);
+        self.tls12_sessions
+            .lock()
+            .expect("rustls tls12 cache poisoned")
+            .insert(server_name, value);
     }
 
     fn tls12_session(&self, server_name: &ServerName<'_>) -> Option<Tls12ClientSessionValue> {
-        self.inner.tls12_session(server_name)
+        self.tls12_sessions
+            .lock()
+            .expect("rustls tls12 cache poisoned")
+            .get(server_name)
+            .cloned()
     }
 
     fn remove_tls12_session(&self, server_name: &ServerName<'static>) {
-        self.inner.remove_tls12_session(server_name);
+        self.tls12_sessions
+            .lock()
+            .expect("rustls tls12 cache poisoned")
+            .remove(server_name);
     }
 
     fn insert_tls13_ticket(
@@ -477,14 +527,27 @@ impl ClientSessionStore for ObservedClientSessionStore {
         if value.max_early_data_size() > 0 {
             self.tls13_early_inserted.fetch_add(1, Ordering::Relaxed);
         }
-        self.inner.insert_tls13_ticket(server_name, value);
+        let mut tickets = self
+            .tls13_tickets
+            .lock()
+            .expect("rustls ticket cache poisoned");
+        let queue = tickets.entry(server_name).or_default();
+        if queue.len() == self.capacity {
+            queue.pop_front();
+        }
+        queue.push_back(value);
     }
 
     fn take_tls13_ticket(
         &self,
         server_name: &ServerName<'static>,
     ) -> Option<Tls13ClientSessionValue> {
-        let ticket = self.inner.take_tls13_ticket(server_name);
+        let ticket = self
+            .tls13_tickets
+            .lock()
+            .expect("rustls ticket cache poisoned")
+            .get_mut(server_name)
+            .and_then(VecDeque::pop_back);
         if let Some(value) = ticket.as_ref() {
             self.tls13_taken.fetch_add(1, Ordering::Relaxed);
             if value.max_early_data_size() > 0 {
@@ -533,6 +596,14 @@ fn shared_session_store_taken(verify: bool) -> u64 {
 
 fn shared_session_store_early_taken(verify: bool) -> u64 {
     shared_session_store(verify).early_taken()
+}
+
+fn shared_session_store_ticket_count(verify: bool, server_name: &str) -> usize {
+    shared_session_store(verify).ticket_count_for(server_name)
+}
+
+fn shared_session_store_early_ticket_count(verify: bool, server_name: &str) -> usize {
+    shared_session_store(verify).early_ticket_count_for(server_name)
 }
 
 fn store_error(message: impl Into<String>) -> i32 {
@@ -2382,6 +2453,7 @@ mod s2n_engine {
         zero_rtt_packet_sent_baseline: u64,
         server_zero_rtt_packet_baseline: u64,
         event_state: Arc<S2nResumptionEventState>,
+        server_name: String,
     }
 
     impl S2nEngine {
@@ -2390,6 +2462,11 @@ mod s2n_engine {
             let key_path = unsafe { cstr(config.key_path)? };
             let chain_path = unsafe { cstr(config.chain_path)? };
             let local_addr: S2nSocketAddress = socket_from_qpf(&config.local_addr).into();
+            let server_name = if config.tls_verify_peer {
+                "localhost".to_string()
+            } else {
+                format!("quicperf-{}.localhost", config.local_addr.port)
+            };
             let driver = Arc::new(Mutex::new(None));
             let io = ManualIo {
                 driver: Arc::clone(&driver),
@@ -2518,6 +2595,7 @@ mod s2n_engine {
                 zero_rtt_packet_sent_baseline: 0,
                 server_zero_rtt_packet_baseline: 0,
                 event_state,
+                server_name,
             })
         }
 
@@ -2610,7 +2688,7 @@ mod s2n_engine {
                 .client
                 .as_ref()
                 .ok_or_else(|| "s2n client not initialized".to_string())?;
-            let connect = Connect::new(remote).with_server_name("localhost");
+            let connect = Connect::new(remote).with_server_name(self.server_name.as_str());
             self.pending_connect = Some(Box::pin(client.connect(connect)));
             self.drive_all(now_us)?;
             Ok(0)
@@ -2665,10 +2743,11 @@ mod s2n_engine {
             out: &mut Vec<u8>,
         ) -> Result<bool, String> {
             self.drive_all(now_us)?;
-            if shared_session_store_inserted(self.tls_verify_peer) == 0 {
+            if shared_session_store_ticket_count(self.tls_verify_peer, &self.server_name) == 0 {
                 return Ok(false);
             }
-            out.extend_from_slice(b"S2NRTT01");
+            out.extend_from_slice(b"S2NRTT02");
+            out.extend_from_slice(self.server_name.as_bytes());
             Ok(true)
         }
 
@@ -2678,9 +2757,19 @@ mod s2n_engine {
             use_zero_rtt: bool,
             _now_us: u64,
         ) -> Result<bool, String> {
-            if data != b"S2NRTT01" || shared_session_store_inserted(self.tls_verify_peer) == 0 {
+            let Some(encoded_server_name) = data.strip_prefix(b"S2NRTT02") else {
+                return Ok(false);
+            };
+            let server_name = std::str::from_utf8(encoded_server_name)
+                .map_err(|e| format!("s2n resumption state server name: {e}"))?;
+            let available_tickets =
+                shared_session_store_ticket_count(self.tls_verify_peer, server_name);
+            let available_early_tickets =
+                shared_session_store_early_ticket_count(self.tls_verify_peer, server_name);
+            if available_tickets == 0 || (use_zero_rtt && available_early_tickets == 0) {
                 return Ok(false);
             }
+            self.server_name = server_name.to_string();
             self.imported_zero_rtt = use_zero_rtt;
             self.resumption_take_baseline = shared_session_store_taken(self.tls_verify_peer);
             self.resumption_early_take_baseline =
@@ -2713,19 +2802,27 @@ mod s2n_engine {
 
         fn zero_rtt_attempted(&mut self, _conn_id: u64, now_us: u64) -> Result<bool, String> {
             self.drive_all(now_us)?;
+            let zero_rtt_keys = self
+                .event_state
+                .client_zero_rtt_keys
+                .load(Ordering::Relaxed);
+            let zero_rtt_packets = self
+                .event_state
+                .client_zero_rtt_packets_sent
+                .load(Ordering::Relaxed);
+            if std::env::var_os("QUICPERF_PACKET_RESUMPTION_DEBUG").is_some() {
+                eprintln!(
+                    "s2n zero_rtt_attempted_debug imported={} keys={} key_baseline={} packets={} packet_baseline={}",
+                    self.imported_zero_rtt,
+                    zero_rtt_keys,
+                    self.zero_rtt_key_baseline,
+                    zero_rtt_packets,
+                    self.zero_rtt_packet_sent_baseline
+                );
+            }
             Ok(self.imported_zero_rtt
-                && (shared_session_store_early_taken(self.tls_verify_peer)
-                    > self.resumption_early_take_baseline
-                    || self
-                        .event_state
-                        .client_zero_rtt_keys
-                        .load(Ordering::Relaxed)
-                        > self.zero_rtt_key_baseline
-                    || self
-                        .event_state
-                        .client_zero_rtt_packets_sent
-                        .load(Ordering::Relaxed)
-                        > self.zero_rtt_packet_sent_baseline))
+                && (zero_rtt_keys > self.zero_rtt_key_baseline
+                    || zero_rtt_packets > self.zero_rtt_packet_sent_baseline))
         }
 
         fn zero_rtt_accepted(&mut self, conn_id: u64, now_us: u64) -> Result<bool, String> {
@@ -2747,7 +2844,11 @@ mod s2n_engine {
         }
 
         fn open_bidi(&mut self, conn_id: u64, now_us: u64) -> Result<Option<u64>, String> {
-            self.drive_all(now_us)?;
+            let zero_rtt_connection_ready =
+                self.imported_zero_rtt && self.connections.contains_key(&conn_id);
+            if !zero_rtt_connection_ready {
+                self.drive_all(now_us)?;
+            }
             let Some(conn) = self.connections.get_mut(&conn_id) else {
                 if self.pending_connect.is_some() {
                     return Ok(None);
@@ -2764,7 +2865,9 @@ mod s2n_engine {
                             pending_rx: VecDeque::new(),
                         },
                     );
-                    self.drive_all(now_us)?;
+                    if !self.imported_zero_rtt {
+                        self.drive_all(now_us)?;
+                    }
                     Ok(Some(stream_id))
                 }
                 Poll::Ready(Err(error)) => Err(format!("s2n open stream: {error:?}")),
@@ -2804,22 +2907,29 @@ mod s2n_engine {
             data: &[u8],
             now_us: u64,
         ) -> Result<usize, String> {
-            self.drive_all(now_us)?;
-            let stream = self.stream_mut(conn_id, stream_id)?;
-            let ready = with_context(|cx| stream.stream.poll_send_ready(cx));
-            let capacity = match ready {
-                Poll::Ready(Ok(capacity)) => capacity,
-                Poll::Ready(Err(error)) => return Err(format!("s2n stream send ready: {error:?}")),
-                Poll::Pending => return Ok(0),
-            };
-            let len = capacity.min(data.len());
-            if len == 0 {
-                return Ok(0);
+            if !(self.imported_zero_rtt && self.connections.contains_key(&conn_id)) {
+                self.drive_all(now_us)?;
             }
-            stream
-                .stream
-                .send_data(Bytes::copy_from_slice(&data[..len]))
-                .map_err(|e| format!("s2n stream send: {e:?}"))?;
+            let len = {
+                let stream = self.stream_mut(conn_id, stream_id)?;
+                let ready = with_context(|cx| stream.stream.poll_send_ready(cx));
+                let capacity = match ready {
+                    Poll::Ready(Ok(capacity)) => capacity,
+                    Poll::Ready(Err(error)) => {
+                        return Err(format!("s2n stream send ready: {error:?}"));
+                    }
+                    Poll::Pending => return Ok(0),
+                };
+                let len = capacity.min(data.len());
+                if len == 0 {
+                    return Ok(0);
+                }
+                stream
+                    .stream
+                    .send_data(Bytes::copy_from_slice(&data[..len]))
+                    .map_err(|e| format!("s2n stream send: {e:?}"))?;
+                len
+            };
             self.drive_all(now_us)?;
             Ok(len)
         }

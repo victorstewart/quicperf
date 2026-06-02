@@ -34,6 +34,7 @@ run_label_prefix="${QUICPERF_RUN_LABEL_PREFIX:-}"
 network_path_helper="$root/tools/quicperf_network_path.py"
 path_variation="${QUICPERF_PATH_VARIATION:-1}"
 path_time_scale="${QUICPERF_PATH_TIME_SCALE:-1.0}"
+max_client_threads=16
 
 timeout_for_scenario() {
   local scenario="$1"
@@ -323,15 +324,22 @@ done
 
 port_slot_offset="${QUICPERF_PORT_SLOT_OFFSET:-}"
 port_policy="random_per_sample"
+client_port_policy="ephemeral"
 if [[ -n "${QUICPERF_SERVER_PORT:-}" ]]; then
   port_policy="fixed:${QUICPERF_SERVER_PORT}"
 elif [[ -n "$port_slot_offset" ]]; then
   port_policy="slot_offset:$port_slot_offset"
 fi
-echo "quicperf_run out_dir=$out_dir bytes=$default_bytes multistream_download_bytes=$multistream_download_bytes multistream_upload_bytes=$multistream_upload_bytes bidi_bytes=$bidi_bytes flow_control_bytes=$flow_control_bytes loss_recovery_bytes=$loss_recovery_bytes repeat=$repeat warmup=$warmup scenarios=\"$scenarios\" networks=\"$networks\" path_profiles=\"$path_profiles\" build_profile=$build_profile window_profile=$window_profile congestion_profile=$congestion_profile tls_verify_mode=$tls_verify_mode tls_cert_profile=$tls_cert_profile randomize_order=$randomize_order random_seed=$random_seed port_policy=$port_policy outlier_gate_mode=$outlier_gate_mode outlier_spread_ratio=$outlier_spread_ratio server_cpu=$server_cpu server_core=$server_core server_cpu_policy=pinned_low_noise_physical_core client_cpu_policy=unpinned server_start_delay=$server_start_delay server_ready_timeout=$server_ready_timeout server_stop_timeout=$server_stop_timeout"
+if [[ -n "${QUICPERF_CLIENT_BASE_PORT:-}" ]]; then
+  client_port_policy="fixed:${QUICPERF_CLIENT_BASE_PORT}"
+elif [[ -n "$port_slot_offset" ]]; then
+  client_port_policy="slot_offset:$port_slot_offset"
+fi
+echo "quicperf_run out_dir=$out_dir bytes=$default_bytes multistream_download_bytes=$multistream_download_bytes multistream_upload_bytes=$multistream_upload_bytes bidi_bytes=$bidi_bytes flow_control_bytes=$flow_control_bytes loss_recovery_bytes=$loss_recovery_bytes repeat=$repeat warmup=$warmup scenarios=\"$scenarios\" networks=\"$networks\" path_profiles=\"$path_profiles\" build_profile=$build_profile window_profile=$window_profile congestion_profile=$congestion_profile tls_verify_mode=$tls_verify_mode tls_cert_profile=$tls_cert_profile randomize_order=$randomize_order random_seed=$random_seed port_policy=$port_policy client_port_policy=$client_port_policy outlier_gate_mode=$outlier_gate_mode outlier_spread_ratio=$outlier_spread_ratio server_cpu=$server_cpu server_core=$server_core server_cpu_policy=pinned_low_noise_physical_core client_cpu_policy=unpinned server_start_delay=$server_start_delay server_ready_timeout=$server_ready_timeout server_stop_timeout=$server_stop_timeout"
 run_failed=0
 run_ordinal=0
 declare -A used_auto_ports=()
+declare -A live_udp_ports=()
 
 random_u32() {
   od -An -N4 -tu4 /dev/urandom | tr -d ' '
@@ -340,33 +348,34 @@ random_u32() {
 port_block_free() {
   local first="$1"
   local width="$2"
+  local last=$((first + width - 1))
   local port
-  for ((port = first; port < first + width; ++port)); do
-    if [[ -n "${used_auto_ports[$port]:-}" ]]; then
+  for port in "${!used_auto_ports[@]}"; do
+    if ((port >= first && port <= last)); then
       return 1
     fi
-    if udp_port_in_use "$port"; then
+  done
+  for port in "${!live_udp_ports[@]}"; do
+    if ((port >= first && port <= last)); then
       return 1
     fi
   done
   return 0
 }
 
-udp_port_in_use() {
-  local port="$1"
-  local port_hex local_addr local_port ignored file
-  printf -v port_hex '%04X' "$port"
+refresh_live_udp_ports() {
+  live_udp_ports=()
+  local file ignored local_addr local_port
   for file in /proc/net/udp /proc/net/udp6; do
     [[ -r "$file" ]] || continue
     while read -r ignored local_addr ignored; do
       [[ "$local_addr" == "local_address" ]] && continue
       local_port="${local_addr##*:}"
-      if [[ "${local_port^^}" == "$port_hex" ]]; then
-        return 0
+      if [[ "$local_port" =~ ^[0-9A-Fa-f]+$ ]]; then
+        live_udp_ports[$((16#$local_port))]=1
       fi
     done <"$file"
   done
-  return 1
 }
 
 reserve_port_block() {
@@ -389,6 +398,7 @@ choose_auto_port_block() {
     echo "quicperf_port_selection_failed reason=range_too_small min=$min max=$max width=$width" >&2
     exit 2
   fi
+  refresh_live_udp_ports
   for ((attempt = 0; attempt < 128; ++attempt)); do
     seed="$(random_u32)"
     candidate=$((min + seed % (span - width + 1)))
@@ -466,13 +476,29 @@ for bin in "${binaries[@]}"; do
 
   for scenario in $scenarios; do
     client_threads="$(client_threads_for_scenario "$scenario")"
+    if ! [[ "$client_threads" =~ ^[0-9]+$ ]] || (( client_threads < 1 )); then
+      echo "quicperf_run_result binary=$name scenario=$scenario client_threads=$client_threads status=invalid reason=client_threads_must_be_positive"
+      run_failed=1
+      continue
+    fi
+    if (( client_threads > max_client_threads )); then
+      echo "quicperf_run_result binary=$name scenario=$scenario client_threads=$client_threads status=invalid reason=client_threads_exceeds_max_${max_client_threads}"
+      run_failed=1
+      continue
+    fi
     bytes="$(test_bytes_for_scenario "$scenario")"
     scenario_timeout_s="$(timeout_for_scenario "$scenario")"
+    target_connections="${QUICPERF_TARGET_CONNECTIONS:-1}"
     server_connections="${QUICPERF_SERVER_CONNECTIONS:-$client_threads}"
     case "$scenario" in
+      connect)
+        if [[ -z "${QUICPERF_SERVER_CONNECTIONS:-}" ]]; then
+          server_connections=$((client_threads * target_connections))
+        fi
+        ;;
       resumed_connect|zero_rtt_reqresp)
         if [[ -z "${QUICPERF_SERVER_CONNECTIONS:-}" ]]; then
-          server_connections=$((client_threads * 2))
+          server_connections=$((client_threads * target_connections * 2))
         fi
         ;;
     esac
@@ -486,7 +512,9 @@ for bin in "${binaries[@]}"; do
     esac
 
     if (( client_threads != server_connections )); then
-      if [[ "$scenario" == "resumed_connect" || "$scenario" == "zero_rtt_reqresp" ]] && (( server_connections == client_threads * 2 )); then
+      if [[ "$scenario" == "connect" ]] && (( server_connections == client_threads * target_connections )); then
+        :
+      elif [[ "$scenario" == "resumed_connect" || "$scenario" == "zero_rtt_reqresp" ]] && (( server_connections == client_threads * target_connections * 2 )); then
         :
       else
       echo "quicperf_run_result binary=$name scenario=$scenario client_threads=$client_threads server_connections=$server_connections status=invalid reason=server_connections_must_match_client_threads"
@@ -518,6 +546,7 @@ for bin in "${binaries[@]}"; do
       sample_run=0
       total_runs=$((warmup + repeat))
       for ((attempt = 1; attempt <= total_runs; ++attempt)); do
+        used_auto_ports=()
         run_ordinal=$((run_ordinal + 1))
         if [[ -n "${QUICPERF_SERVER_PORT:-}" ]]; then
           server_port="$QUICPERF_SERVER_PORT"
@@ -527,17 +556,13 @@ for bin in "${binaries[@]}"; do
         else
           choose_auto_port_block server_port 10000 39999 1
         fi
-        client_port_count="$client_threads"
-        if [[ "$scenario" == "resumed_connect" || "$scenario" == "zero_rtt_reqresp" ]]; then
-          client_port_count=$((client_threads * 2))
-        fi
         if [[ -n "${QUICPERF_CLIENT_BASE_PORT:-}" ]]; then
           client_base_port="$QUICPERF_CLIENT_BASE_PORT"
         elif [[ -n "$port_slot_offset" ]]; then
           port_slot=$(((port_slot_offset + run_ordinal - 1) % 512))
           client_base_port=$((45000 + port_slot * 32))
         else
-          choose_auto_port_block client_base_port 45000 65535 "$client_port_count"
+          client_base_port=0
         fi
         if (( attempt <= warmup )); then
           run_label="${run_label_prefix}warmup-${attempt}"

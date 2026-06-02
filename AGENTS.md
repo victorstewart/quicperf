@@ -57,41 +57,50 @@ The C++ I/O boundary audit is part of the CMake build graph. If it fails, fix th
 
 ## Fresh Loopback Runs
 
-Use the adaptive runner for publishable or publication-candidate loopback data:
+Use the fixed-design scout plus publication runner for publishable or
+publication-candidate loopback data:
 
 ```sh
 QUICPERF_PATH_PROFILES=loopback \
 QUICPERF_NETWORKS="syscall iouring" \
-QUICPERF_TEST_BYTES=1073741824 \
-tools/run-adaptive-publication-suite.py
+tools/run-saturation-scout.py
+
+tools/run-fixed-publication-suite.py --plan .run/<scout-run>/benchmark-plan.tsv
 ```
 
-Use `tools/run-benchmarks.sh` for targeted row checks, not as a substitute for adaptive publication evidence.
+Use `tools/run-benchmarks.sh` for targeted row checks, not as a substitute for fixed publication evidence.
 
-The adaptive runner uses a non-public calibration phase by default. Calibration samples go to `calibration-samples.tsv` and must not be used in publication statistics, curves, rankings, or result tables. The workload plan must be declared before measured discovery samples and recorded in `workload-plan.tsv`.
+Scout samples go to `saturation-scout.tsv` and must not be used in publication
+statistics, curves, rankings, or result tables. The fixed publication plan must
+be declared before measured samples and recorded in `benchmark-plan.tsv`.
+Successful scout output is cached in `profiles/fixed-design/default-scout/`
+with a benchmark-relevant fingerprint. Reuse that default plan unless dependency
+pins, benchmark-touching harness code, or the scout scope changes; use
+`QUICPERF_SCOUT_CACHE_MODE=refresh` to force regeneration.
 
 Default loopback matrix policy:
 
-- publication tier rows use calibrated full adaptive convergence
-- capability/lifecycle rows use fixed smoke blocks unless explicitly promoted with `QUICPERF_ADAPTIVE_PROMOTE_SCENARIOS`
+- publication rows use fixed measured samples and fixed randomized blocks
+- capability/lifecycle rows use explicit fixed plan rows when included
 - measured loopback rows stay serial unless CPU/core isolation has been implemented and validated
-- high variance is not a separate terminal status; rows are `converged`, `not_ready`, `failed`, or `unsupported`
+- high variance is an audit label; terminal rows are `publishable`,
+  `inconclusive`, `failed`, or `unsupported`
 
 Batch output lives under `.run/`. Key files include:
 
-- `calibration-samples.tsv`
-- `calibration-validation-samples.tsv` (scale-up probe evidence; failed
-  candidates are not terminal row failures when fallback succeeds)
-- `calibration-decisions.tsv`
-- `workload-plan.tsv`
+- `saturation-scout.tsv`
+- `benchmark-plan.tsv`
 - `adaptive-samples.tsv`
 - `row-stats.tsv`
 - `publication-results.tsv`
-- `publication-curve.tsv`
 - `publication-row-audit.tsv`
-- `saturation-decisions.tsv`
+- `pairwise-comparisons.tsv`
 
-Only publication-tier rows with `publication_status=converged` are clean publishable ranking rows. `not_ready`, failed, unsupported, capability-only, lifecycle-only, or bounded rows may be shared as diagnostics only, with the status and reason visible.
+Public result pages may include every completed selected row when
+`publication_status` and audit caveats are visible. Only rows with
+`publication_status=publishable` are clean pairwise/ranking rows; inconclusive
+rows are completed noisy data, while failed or unsupported rows must remain
+clearly marked.
 
 ## Benchmark Contract
 

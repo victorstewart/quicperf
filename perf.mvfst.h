@@ -678,6 +678,11 @@ private:
   bool zeroRttAcceptedObserved = false;
   bool zeroRttRejectedObserved = false;
   bool stallTrace = false;
+  uint64_t durationCompletedUnits = 0;
+  double durationMeasuredSeconds = 0.0;
+  bool genericDurationMode = false;
+  bool genericDurationOpening = false;
+  quic::StreamId genericDurationControlStream = UINT64_MAX;
 
   enum class ServerPhase : uint8_t {
     readRequest,
@@ -701,6 +706,7 @@ private:
     size_t doneRead = 0;
     uint8_t ack = 0;
     size_t ackSent = 0;
+    bool controlStream = false;
     bool complete = false;
   };
 
@@ -720,6 +726,11 @@ private:
     uint8_t ack = 0;
     size_t ackSent = 0;
     bool complete = false;
+    bool durationMode = false;
+    uint64_t durationServerDeadlineUs = 0;
+    bool genericDurationDone = false;
+    uint64_t genericDurationDrainDeadlineUs = 0;
+    uint64_t genericDurationServerDeadlineUs = 0;
     uint64_t datagramDrainDeadlineUs = 0;
   };
 
@@ -735,6 +746,7 @@ private:
     size_t doneSent = 0;
     uint8_t ack = 0;
     size_t ackRead = 0;
+    bool durationCounted = false;
     bool finished = false;
     bool complete = false;
   };
@@ -764,6 +776,84 @@ private:
       value = (value << 8) | in[i];
     }
     return value;
+  }
+
+  static bool supportsSimpleDurationMode(BenchmarkScenario scenario)
+  {
+    switch (scenario)
+    {
+      case BenchmarkScenario::download:
+      case BenchmarkScenario::upload:
+      case BenchmarkScenario::loss_recovery:
+      case BenchmarkScenario::flow_control:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  static bool supportsSmallGenericDurationMode(BenchmarkScenario scenario)
+  {
+    switch (scenario)
+    {
+      case BenchmarkScenario::reqresp:
+      case BenchmarkScenario::zero_rtt_reqresp:
+      case BenchmarkScenario::stream_churn:
+      case BenchmarkScenario::small_payload_pps:
+      case BenchmarkScenario::close_reset_cleanup:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  static bool supportsByteGenericDurationMode(BenchmarkScenario scenario)
+  {
+    switch (scenario)
+    {
+      case BenchmarkScenario::multistream_download:
+      case BenchmarkScenario::multistream_upload:
+      case BenchmarkScenario::bidi:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  static bool supportsGenericDurationMode(BenchmarkScenario scenario)
+  {
+    return supportsSmallGenericDurationMode(scenario) ||
+           supportsByteGenericDurationMode(scenario);
+  }
+
+  bool durationModeActive(void) const
+  {
+    return benchmarkDurationModeActive() &&
+           benchmarkTargetDurationMs > 0 &&
+           (supportsSimpleDurationMode(benchmarkScenario) ||
+            supportsGenericDurationMode(benchmarkScenario) ||
+            benchmarkScenario == BenchmarkScenario::datagram);
+  }
+
+  constexpr static uint64_t durationTransferRequest(void)
+  {
+    return UINT64_MAX;
+  }
+
+  constexpr static uint8_t genericDurationDoneByte(void)
+  {
+    return 0xff;
+  }
+
+  uint64_t durationDeadlineUs(uint64_t startUs) const
+  {
+    return startUs + benchmarkTargetDurationMs * 1000ULL;
+  }
+
+  void recordDurationResult(uint64_t completedUnits, uint64_t startUs, uint64_t endUs)
+  {
+    durationCompletedUnits = completedUnits;
+    durationMeasuredSeconds = std::max(0.000001, static_cast<double>(endUs - startUs) / 1'000'000.0);
   }
 
   quic::TransportSettings transportSettings(void) const
@@ -1037,6 +1127,29 @@ private:
     return {bytes.size(), fin};
   }
 
+  std::pair<size_t, bool> readSomeIfAvailable(std::shared_ptr<quic::QuicSocket>& socket, quic::StreamId activeStream,
+                                              uint8_t *data, size_t length)
+  {
+    auto result = socket->read(activeStream, length);
+    if (result.hasError())
+    {
+      return {0, false};
+    }
+    bool fin = result->second;
+    if (!result->first)
+    {
+      return {0, fin};
+    }
+    auto bytes = result->first->coalesce();
+    if (bytes.size() > length)
+    {
+      fprintf(stderr, "mvfst read exceeded caller buffer\n");
+      abort();
+    }
+    memcpy(data, bytes.data(), bytes.size());
+    return {bytes.size(), fin};
+  }
+
   size_t writeSome(std::shared_ptr<quic::QuicSocket>& socket, quic::StreamId activeStream,
                    const uint8_t *data, size_t length)
   {
@@ -1059,6 +1172,28 @@ private:
     }
     driveEvents();
     return chunk;
+  }
+
+  std::pair<size_t, bool> writeSomeIfWritable(std::shared_ptr<quic::QuicSocket>& socket, quic::StreamId activeStream,
+                                              const uint8_t *data, size_t length)
+  {
+    auto writable = socket->getMaxWritableOnStream(activeStream);
+    if (writable.hasError())
+    {
+      return {0, false};
+    }
+    if (*writable == 0)
+    {
+      return {0, true};
+    }
+    size_t chunk = static_cast<size_t>(std::min<uint64_t>(length, *writable));
+    auto result = socket->writeChain(activeStream, folly::IOBuf::copyBuffer(data, chunk), false);
+    if (result.hasError())
+    {
+      return {0, false};
+    }
+    driveEvents();
+    return {chunk, true};
   }
 
   void finishStream(std::shared_ptr<quic::QuicSocket>& socket, quic::StreamId activeStream)
@@ -1144,6 +1279,19 @@ private:
     return std::max<uint64_t>(1, base);
   }
 
+  uint64_t durationGenericTransferBytesPerStream(uint64_t totalBytes) const
+  {
+    const uint64_t streamCount =
+        benchmarkScenario == BenchmarkScenario::bidi
+            ? 1
+            : std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
+    const uint64_t finiteBytesPerStream = std::max<uint64_t>(1, totalBytes / streamCount);
+    constexpr uint64_t maxDurationStreamBytes = uint64_t {benchmarkAppChunkSize} * 4U;
+    return std::max<uint64_t>(
+        1,
+        std::min<uint64_t>(finiteBytesPerStream, maxDurationStreamBytes));
+  }
+
   GenericClientStream makeGenericClientStream(quic::StreamId activeStream, uint64_t index, uint64_t totalBytes)
   {
     GenericClientStream state = {};
@@ -1155,7 +1303,10 @@ private:
     }
     else
     {
-      const uint64_t streamBytes = genericTransferBytesForStream(index, totalBytes);
+      const uint64_t streamBytes =
+          genericDurationMode && supportsByteGenericDurationMode(benchmarkScenario)
+              ? durationGenericTransferBytesPerStream(totalBytes)
+              : genericTransferBytesForStream(index, totalBytes);
       encodeU64(streamBytes, state.request.data());
       state.requestValue = state.request.size();
       state.payloadBytes = (benchmarkScenario == BenchmarkScenario::multistream_upload ||
@@ -1165,6 +1316,20 @@ private:
       state.responseBytes = benchmarkScenario == BenchmarkScenario::multistream_upload ? 1 : streamBytes;
     }
     return state;
+  }
+
+  void maybeCountGenericDurationUnit(GenericClientStream& streamState)
+  {
+    if (!genericDurationMode ||
+        streamState.durationCounted ||
+        streamState.responseBytes != 0 ||
+        !supportsSmallGenericDurationMode(benchmarkScenario) ||
+        !genericDurationOpening)
+    {
+      return;
+    }
+    streamState.durationCounted = true;
+    ++durationCompletedUnits;
   }
 
   GenericServerStream *serverGenericStreamFor(ServerConn& active, quic::StreamId activeStream)
@@ -1200,6 +1365,32 @@ private:
     {
       case ServerPhase::readRequest:
         {
+          if (durationModeActive() && supportsByteGenericDurationMode(benchmarkScenario) &&
+              streamState.requestRead == 0)
+          {
+            uint8_t marker = 0;
+            auto [read, fin] = readSome(socket, streamState.stream, &marker, sizeof(marker));
+            if ((read == 1 && marker == genericDurationDoneByte()) || (read == 0 && fin))
+            {
+              streamState.controlStream = true;
+              streamState.complete = true;
+              streamState.phase = ServerPhase::complete;
+              active.genericDurationDone = true;
+              if (active.genericDurationDrainDeadlineUs == 0)
+              {
+                active.genericDurationDrainDeadlineUs = timeNowUs() + benchmarkDatagramDrainUs;
+              }
+              return read > 0 || fin;
+            }
+            if (read == 1)
+            {
+              streamState.request[streamState.requestRead++] = marker;
+            }
+            if (fin)
+            {
+              return read > 0;
+            }
+          }
           if (genericUsesSizedRequest())
           {
             if (streamState.requestRemaining == 0)
@@ -1207,7 +1398,40 @@ private:
               streamState.requestRemaining = benchmarkGenericReqRespRequestBytes();
             }
             size_t chunk = static_cast<size_t>(std::min<uint64_t>(streamState.requestRemaining, buffer.size()));
-            auto [read, fin] = readSome(socket, streamState.stream, buffer.data(), chunk);
+            auto [read, fin] = durationModeActive()
+                                   ? readSomeIfAvailable(socket, streamState.stream, buffer.data(), chunk)
+                                   : readSome(socket, streamState.stream, buffer.data(), chunk);
+            const bool firstRead = streamState.requestRemaining == benchmarkGenericReqRespRequestBytes();
+            if (durationModeActive() &&
+                supportsGenericDurationMode(benchmarkScenario) &&
+                firstRead &&
+                ((read == 1 && buffer[0] == genericDurationDoneByte()) ||
+                 (read == 0 && fin)))
+            {
+              streamState.controlStream = true;
+              streamState.complete = true;
+              streamState.phase = ServerPhase::complete;
+              active.genericDurationDone = true;
+              if (active.genericDurationDrainDeadlineUs == 0)
+              {
+                active.genericDurationDrainDeadlineUs = timeNowUs() + benchmarkDatagramDrainUs;
+              }
+              return read > 0 || fin;
+            }
+            if (streamState.controlStream)
+            {
+              if (fin)
+              {
+                streamState.complete = true;
+                streamState.phase = ServerPhase::complete;
+                active.genericDurationDone = true;
+                if (active.genericDurationDrainDeadlineUs == 0)
+                {
+                  active.genericDurationDrainDeadlineUs = timeNowUs() + benchmarkDatagramDrainUs;
+                }
+              }
+              return read > 0 || fin;
+            }
             (void)fin;
             streamState.requestRemaining -= read;
             if (streamState.requestRemaining == 0)
@@ -1218,9 +1442,13 @@ private:
             return read > 0;
           }
 
-          auto [read, fin] = readSome(socket, streamState.stream,
-                                      streamState.request.data() + streamState.requestRead,
-                                      streamState.request.size() - streamState.requestRead);
+          auto [read, fin] = durationModeActive()
+                                 ? readSomeIfAvailable(socket, streamState.stream,
+                                                       streamState.request.data() + streamState.requestRead,
+                                                       streamState.request.size() - streamState.requestRead)
+                                 : readSome(socket, streamState.stream,
+                                            streamState.request.data() + streamState.requestRead,
+                                            streamState.request.size() - streamState.requestRead);
           (void)fin;
           streamState.requestRead += read;
           if (streamState.requestRead == streamState.request.size())
@@ -1243,7 +1471,9 @@ private:
           if (streamState.payloadRemaining > 0)
           {
             size_t chunk = static_cast<size_t>(std::min<uint64_t>(streamState.payloadRemaining, buffer.size()));
-            auto [read, fin] = readSome(socket, streamState.stream, buffer.data(), chunk);
+            auto [read, fin] = durationModeActive()
+                                   ? readSomeIfAvailable(socket, streamState.stream, buffer.data(), chunk)
+                                   : readSome(socket, streamState.stream, buffer.data(), chunk);
             (void)fin;
             streamState.payloadRemaining -= read;
             progressed = read > 0;
@@ -1251,7 +1481,20 @@ private:
           if (streamState.responseRemaining > 0)
           {
             size_t chunk = static_cast<size_t>(std::min<uint64_t>(streamState.responseRemaining, buffer.size()));
-            size_t written = writeSome(socket, streamState.stream, buffer.data(), chunk);
+            size_t written = 0;
+            if (durationModeActive())
+            {
+              auto [attempted, writable] = writeSomeIfWritable(socket, streamState.stream, buffer.data(), chunk);
+              if (!writable)
+              {
+                return false;
+              }
+              written = attempted;
+            }
+            else
+            {
+              written = writeSome(socket, streamState.stream, buffer.data(), chunk);
+            }
             streamState.responseRemaining -= written;
             progressed = written > 0 || progressed;
           }
@@ -1264,9 +1507,13 @@ private:
         }
       case ServerPhase::readDone:
         {
-          auto [read, fin] = readSome(socket, streamState.stream,
-                                      &streamState.done + streamState.doneRead,
-                                      sizeof(streamState.done) - streamState.doneRead);
+          auto [read, fin] = durationModeActive()
+                                 ? readSomeIfAvailable(socket, streamState.stream,
+                                                       &streamState.done + streamState.doneRead,
+                                                       sizeof(streamState.done) - streamState.doneRead)
+                                 : readSome(socket, streamState.stream,
+                                            &streamState.done + streamState.doneRead,
+                                            sizeof(streamState.done) - streamState.doneRead);
           (void)fin;
           streamState.doneRead += read;
           if (streamState.doneRead == sizeof(streamState.done))
@@ -1277,9 +1524,24 @@ private:
         }
       case ServerPhase::sendAck:
         {
-          size_t written = writeSome(socket, streamState.stream,
-                                     &streamState.ack + streamState.ackSent,
-                                     sizeof(streamState.ack) - streamState.ackSent);
+          size_t written = 0;
+          if (durationModeActive())
+          {
+            auto [attempted, writable] = writeSomeIfWritable(socket, streamState.stream,
+                                                             &streamState.ack + streamState.ackSent,
+                                                             sizeof(streamState.ack) - streamState.ackSent);
+            if (!writable)
+            {
+              return false;
+            }
+            written = attempted;
+          }
+          else
+          {
+            written = writeSome(socket, streamState.stream,
+                                &streamState.ack + streamState.ackSent,
+                                sizeof(streamState.ack) - streamState.ackSent);
+          }
           streamState.ackSent += written;
           if (streamState.ackSent == sizeof(streamState.ack))
           {
@@ -1309,6 +1571,38 @@ private:
       progressed = processGenericServerStream(active, streamState) || progressed;
     }
     return progressed;
+  }
+
+  bool genericDurationServerConnComplete(ServerConn& active)
+  {
+    if (active.handler->connectionEnded || active.handler->connectionError)
+    {
+      return true;
+    }
+    const uint64_t nowUs = timeNowUs();
+    if (active.genericDurationServerDeadlineUs == 0)
+    {
+      active.genericDurationServerDeadlineUs =
+          nowUs + benchmarkTargetDurationMs * 1000ULL + benchmarkDatagramDrainUs;
+    }
+    const bool deadlineElapsed = nowUs >= active.genericDurationServerDeadlineUs;
+    if (!active.genericDurationDone && !deadlineElapsed)
+    {
+      return false;
+    }
+    if (active.genericDurationDrainDeadlineUs == 0)
+    {
+      active.genericDurationDrainDeadlineUs = nowUs + benchmarkDatagramDrainUs;
+    }
+    size_t pendingStreams = 0;
+    for (const auto& streamState : active.genericStreams)
+    {
+      if (!streamState.controlStream && !streamState.complete)
+      {
+        ++pendingStreams;
+      }
+    }
+    return pendingStreams == 0 || nowUs >= active.genericDurationDrainDeadlineUs;
   }
 
   void waitForTargetServerConnections(void)
@@ -1343,6 +1637,11 @@ private:
 
   void runServerGenericConnections(void)
   {
+    if (durationModeActive() && supportsGenericDurationMode(benchmarkScenario))
+    {
+      runServerGenericDurationConnections();
+      return;
+    }
     const uint64_t targetStreams =
         static_cast<uint64_t>(benchmarkServerTargetConnections) * benchmarkGenericStreamsPerConnection();
     uint64_t completed = 0;
@@ -1372,7 +1671,8 @@ private:
         pumpOnce(0);
       }
     }
-    for (;;)
+    const uint64_t closeDeadlineUs = timeNowUs() + benchmarkDatagramDrainUs;
+    while (timeNowUs() < closeDeadlineUs)
     {
       bool allClosed = true;
       for (auto& owned : serverConns)
@@ -1388,6 +1688,42 @@ private:
         break;
       }
       pumpOnce();
+    }
+  }
+
+  void runServerGenericDurationConnections(void)
+  {
+    uint32_t completed = 0;
+    while (completed < benchmarkServerTargetConnections)
+    {
+      bool progressed = false;
+      completed = 0;
+      for (auto& owned : serverConns)
+      {
+        bool connProgressed = processGenericServer(*owned);
+        progressed = connProgressed || progressed;
+        if (genericDurationServerConnComplete(*owned))
+        {
+          ++completed;
+        }
+        pumpOnce(0);
+      }
+      if (!progressed)
+      {
+        pumpOnce();
+      }
+      else
+      {
+        pumpOnce(0);
+      }
+    }
+    for (auto& owned : serverConns)
+    {
+      owned->transport->closeNow(quic::Optional<quic::QuicError> {});
+    }
+    for (uint32_t i = 0; i < 256; ++i)
+    {
+      pumpOnce(1000);
     }
   }
 
@@ -1467,6 +1803,14 @@ private:
             size_t chunk = static_cast<size_t>(std::min<uint64_t>(streamState.payloadBytes, buffer.size()));
             size_t written = writeSome(socket, streamState.stream, buffer.data(), chunk);
             streamState.payloadBytes -= written;
+            if (genericDurationMode &&
+                supportsByteGenericDurationMode(benchmarkScenario) &&
+                (benchmarkScenario == BenchmarkScenario::multistream_upload ||
+                 benchmarkScenario == BenchmarkScenario::bidi) &&
+                genericDurationOpening)
+            {
+              durationCompletedUnits += written;
+            }
             progressed = written > 0;
           }
           if (streamState.responseBytes > 0)
@@ -1475,6 +1819,18 @@ private:
             auto [read, fin] = readSome(socket, streamState.stream, buffer.data(), chunk);
             (void)fin;
             streamState.responseBytes -= read;
+            if (genericDurationMode &&
+                supportsByteGenericDurationMode(benchmarkScenario) &&
+                (benchmarkScenario == BenchmarkScenario::multistream_download ||
+                 benchmarkScenario == BenchmarkScenario::bidi) &&
+                genericDurationOpening)
+            {
+              durationCompletedUnits += read;
+            }
+            if (streamState.responseBytes == 0)
+            {
+              maybeCountGenericDurationUnit(streamState);
+            }
             progressed = read > 0 || progressed;
           }
           if (streamState.payloadBytes == 0 && streamState.responseBytes == 0)
@@ -1523,8 +1879,16 @@ private:
   void openMoreGenericClientStreams(uint64_t bytes)
   {
     std::shared_ptr<quic::QuicSocket> socket = client;
-    const uint64_t targetStreams = benchmarkGenericStreamsPerConnection();
-    const uint64_t maxActive = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
+    if (genericDurationMode && !genericDurationOpening)
+    {
+      return;
+    }
+    const uint64_t targetStreams =
+        genericDurationMode ? UINT64_MAX : benchmarkGenericStreamsPerConnection();
+    const uint64_t maxActive =
+        benchmarkScenario == BenchmarkScenario::bidi
+            ? 1
+            : std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
     while (genericOpenedStreams < targetStreams && genericClientStreams.size() < maxActive)
     {
       auto result = socket->createBidirectionalStream();
@@ -1567,6 +1931,7 @@ private:
     genericClientBytes = 0;
     genericOpenedStreams = 0;
     genericCompletedStreams = 0;
+    genericDurationControlStream = UINT64_MAX;
     genericStarted = false;
   }
 
@@ -1596,6 +1961,118 @@ private:
     updateZeroRttState();
   }
 
+  bool openGenericDurationControlStream(void)
+  {
+    if (genericDurationControlStream != UINT64_MAX)
+    {
+      return true;
+    }
+    auto result = client->createBidirectionalStream();
+    if (result.hasError())
+    {
+      return false;
+    }
+    genericDurationControlStream = *result;
+    client->setReadCallback(genericDurationControlStream, clientHandler.get());
+    return true;
+  }
+
+  void sendGenericDurationDone(void)
+  {
+    std::shared_ptr<quic::QuicSocket> socket = client;
+    const uint64_t openDeadlineUs = timeNowUs() + 100'000;
+    while (genericDurationControlStream == UINT64_MAX &&
+           timeNowUs() < openDeadlineUs)
+    {
+      if (openGenericDurationControlStream())
+      {
+        break;
+      }
+      pumpOnce(1000);
+    }
+    if (genericDurationControlStream == UINT64_MAX)
+    {
+      return;
+    }
+    const quic::StreamId controlStream = genericDurationControlStream;
+    uint8_t done = genericDurationDoneByte();
+    size_t offset = 0;
+    const uint64_t writeDeadlineUs = timeNowUs() + 100'000;
+    while (offset < sizeof(done) && timeNowUs() < writeDeadlineUs)
+    {
+      auto [written, writable] = writeSomeIfWritable(socket, controlStream, &done + offset, sizeof(done) - offset);
+      if (!writable)
+      {
+        genericDurationControlStream = UINT64_MAX;
+        return;
+      }
+      offset += written;
+      pumpOnce(written > 0 ? 0 : 1000);
+    }
+    if (offset == sizeof(done))
+    {
+      finishStream(socket, controlStream);
+    }
+    genericDurationControlStream = UINT64_MAX;
+    const uint64_t deadlineUs = timeNowUs() + 100'000;
+    while (timeNowUs() < deadlineUs)
+    {
+      pumpOnce(1000);
+    }
+  }
+
+  void runClientGenericDuration(uint64_t bytes)
+  {
+    const bool preserveZeroRttStreams =
+        importedZeroRtt && benchmarkIsZeroRttReqResp() && genericStarted;
+    if (!preserveZeroRttStreams)
+    {
+      resetGenericClientStreams();
+    }
+    genericClientBytes = bytes;
+    genericStarted = true;
+    genericDurationMode = true;
+    genericDurationOpening = true;
+    durationCompletedUnits = 0;
+    durationMeasuredSeconds = 0.0;
+    openGenericDurationControlStream();
+
+    const uint64_t startUs = timeNowUs();
+    const uint64_t deadlineUs = durationDeadlineUs(startUs);
+    while (timeNowUs() < deadlineUs)
+    {
+      openMoreGenericClientStreams(genericClientBytes);
+      bool progressed = processGenericClientStreams();
+      if (!progressed)
+      {
+        const uint64_t nowUs = timeNowUs();
+        if (nowUs >= deadlineUs)
+        {
+          break;
+        }
+        pumpOnce(std::min<uint64_t>(1000, deadlineUs - nowUs));
+      }
+      else
+      {
+        pumpOnce(0);
+      }
+    }
+
+    genericDurationOpening = false;
+    const uint64_t measuredEndUs = std::min<uint64_t>(timeNowUs(), deadlineUs);
+    recordDurationResult(durationCompletedUnits, startUs, measuredEndUs);
+
+    sendGenericDurationDone();
+    const uint64_t drainDeadlineUs = timeNowUs() + benchmarkDatagramDrainUs;
+    while (timeNowUs() < drainDeadlineUs)
+    {
+      pumpOnce(1000);
+    }
+
+    genericDurationMode = false;
+    updateZeroRttState();
+  }
+
   size_t datagramPayloadSize(void) const
   {
     uint64_t maxPayloadBytes = benchmarkDatagramPayloadLimitForFrameBytes(benchmarkUdpPayloadSize);
@@ -1611,6 +2088,7 @@ private:
 
   void runClientDatagram(void)
   {
+    const bool durationDatagram = durationModeActive();
     const uint64_t operations = benchmarkScenarioOperations;
     const uint64_t burstLimit = std::max<uint32_t>(1, benchmarkScenarioStreamsInFlight);
     const size_t payloadSize = datagramPayloadSize();
@@ -1623,7 +2101,22 @@ private:
     uint64_t drainDeadlineUs = 0;
     uint64_t writeBlocked = 0;
     uint64_t nextDebugUs = timeNowUs() + 1'000'000;
-    while (sent < operations ||
+    uint64_t durationStartUs = 0;
+    uint64_t deadlineUs = 0;
+    if (durationDatagram)
+    {
+      durationCompletedUnits = 0;
+      durationMeasuredSeconds = 0.0;
+      durationStartUs = timeNowUs();
+      deadlineUs = durationDeadlineUs(durationStartUs);
+    }
+    auto sendBudgetOpen = [&]() {
+      return durationDatagram ? timeNowUs() < deadlineUs : sent < operations;
+    };
+    auto sendBudgetReached = [&]() {
+      return durationDatagram ? timeNowUs() >= deadlineUs : sent >= operations;
+    };
+    while (sendBudgetOpen() ||
            drainDeadlineUs == 0 ||
            timeNowUs() < drainDeadlineUs)
     {
@@ -1632,7 +2125,7 @@ private:
       const uint64_t received = clientHandler->datagramReceived;
       const uint64_t inFlight = sent > received ? sent - received : 0;
       uint64_t burst = 0;
-      while (sent < operations && burst < burstLimit)
+      while (sendBudgetOpen() && burst < burstLimit)
       {
         benchmarkFillDatagramPayload(buffer.data(), payloadSize, networkHub->junk, sent);
         auto result = client->writeDatagram(
@@ -1646,13 +2139,13 @@ private:
         ++burst;
         progressed = true;
       }
-      if (sent >= operations && drainDeadlineUs == 0)
+      if (sendBudgetReached() && drainDeadlineUs == 0)
       {
         drainDeadlineUs = clientHandler->datagramReceived >= sent
                               ? timeNowUs()
                               : timeNowUs() + benchmarkDatagramDrainUs;
       }
-      else if (sent >= operations && clientHandler->datagramReceived >= sent)
+      else if (sendBudgetReached() && clientHandler->datagramReceived >= sent)
       {
         drainDeadlineUs = timeNowUs();
       }
@@ -1681,6 +2174,11 @@ private:
                                   ? std::min<uint64_t>(1000, drainDeadlineUs - waitNowUs)
                                   : 1000;
       pumpOnce(progressed ? 0 : waitUs);
+    }
+    if (durationDatagram)
+    {
+      const uint64_t measuredEndUs = std::min<uint64_t>(timeNowUs(), deadlineUs);
+      recordDurationResult(clientHandler->datagramReceived, durationStartUs, measuredEndUs);
     }
     client->closeNow(quic::Optional<quic::QuicError> {});
     for (uint32_t i = 0; i < 64; ++i)
@@ -1807,13 +2305,48 @@ private:
           active.requestRead += read;
           if (active.requestRead == active.request.size())
           {
-            active.bytesRemaining = decodeU64(active.request.data());
+            uint64_t requested = decodeU64(active.request.data());
+            active.durationMode = durationModeActive() && requested == durationTransferRequest();
+            active.bytesRemaining = active.durationMode ? 0 : requested;
+            if (benchmarkIsUpload() && active.durationMode && active.durationServerDeadlineUs == 0)
+            {
+              active.durationServerDeadlineUs =
+                  timeNowUs() + benchmarkTargetDurationMs * 1000ULL + benchmarkDatagramDrainUs;
+            }
             active.phase = ServerPhase::transfer;
           }
           return read > 0;
         }
       case ServerPhase::transfer:
         {
+          if (active.durationMode)
+          {
+            if (benchmarkIsUpload())
+            {
+              auto [read, fin] = readSomeIfAvailable(socket, activeStream, buffer.data(), buffer.size());
+              if (fin ||
+                  (active.durationServerDeadlineUs != 0 && timeNowUs() >= active.durationServerDeadlineUs))
+              {
+                active.phase = ServerPhase::sendAck;
+              }
+              return read > 0 || fin;
+            }
+
+            auto [read, fin] = readSomeIfAvailable(socket, activeStream, &active.done, sizeof(active.done));
+            if (read > 0 || fin)
+            {
+              active.phase = ServerPhase::sendAck;
+              return true;
+            }
+            auto [written, writableOk] = writeSomeIfWritable(socket, activeStream, buffer.data(), buffer.size());
+            if (!writableOk)
+            {
+              active.phase = ServerPhase::complete;
+              active.complete = true;
+              return true;
+            }
+            return written > 0;
+          }
           if (active.bytesRemaining == 0)
           {
             active.phase = ServerPhase::readDone;
@@ -1844,7 +2377,25 @@ private:
         }
       case ServerPhase::sendAck:
         {
-          size_t written = writeSome(socket, activeStream, &active.ack + active.ackSent, sizeof(active.ack) - active.ackSent);
+          size_t written = 0;
+          if (active.durationMode)
+          {
+            bool writableOk = false;
+            std::tie(written, writableOk) = writeSomeIfWritable(socket,
+                                                                activeStream,
+                                                                &active.ack + active.ackSent,
+                                                                sizeof(active.ack) - active.ackSent);
+            if (!writableOk)
+            {
+              active.phase = ServerPhase::complete;
+              active.complete = true;
+              return true;
+            }
+          }
+          else
+          {
+            written = writeSome(socket, activeStream, &active.ack + active.ackSent, sizeof(active.ack) - active.ackSent);
+          }
           active.ackSent += written;
           if (active.ackSent == sizeof(active.ack))
           {
@@ -1941,6 +2492,92 @@ private:
     finishStream(socket, stream);
     uint8_t ack = 0;
     recvExact(socket, stream, &ack, sizeof(ack));
+  }
+
+  bool recvAckBounded(std::shared_ptr<quic::QuicSocket>& socket, quic::StreamId activeStream, uint64_t drainUs)
+  {
+    const uint64_t deadlineUs = timeNowUs() + drainUs;
+    uint8_t ack = 0;
+    while (timeNowUs() < deadlineUs)
+    {
+      auto [read, fin] = readSomeIfAvailable(socket, activeStream, &ack, sizeof(ack));
+      if (read > 0 || fin)
+      {
+        return true;
+      }
+      pumpOnce(1000);
+    }
+    return false;
+  }
+
+  void runClientDownloadDuration(void)
+  {
+    std::shared_ptr<quic::QuicSocket> socket = client;
+    uint8_t request[8];
+    encodeU64(durationTransferRequest(), request);
+    sendAll(socket, stream, request, sizeof(request));
+
+    uint64_t received = 0;
+    const uint64_t startUs = timeNowUs();
+    const uint64_t deadlineUs = durationDeadlineUs(startUs);
+    while (timeNowUs() < deadlineUs)
+    {
+      auto [read, fin] = readSomeIfAvailable(socket, stream, buffer.data(), buffer.size());
+      if (read > 0)
+      {
+        received += read;
+        continue;
+      }
+      if (fin)
+      {
+        break;
+      }
+      const uint64_t nowUs = timeNowUs();
+      if (nowUs >= deadlineUs)
+      {
+        break;
+      }
+      pumpOnce(std::min<uint64_t>(1000, deadlineUs - nowUs));
+    }
+    const uint64_t measuredEndUs = std::min<uint64_t>(timeNowUs(), deadlineUs);
+    recordDurationResult(received, startUs, measuredEndUs);
+
+    uint8_t done = 0;
+    sendAll(socket, stream, &done, sizeof(done));
+    finishStream(socket, stream);
+    recvAckBounded(socket, stream, 100'000);
+  }
+
+  void runClientUploadDuration(void)
+  {
+    std::shared_ptr<quic::QuicSocket> socket = client;
+    uint8_t request[8];
+    encodeU64(durationTransferRequest(), request);
+    sendAll(socket, stream, request, sizeof(request));
+
+    uint64_t sent = 0;
+    const uint64_t startUs = timeNowUs();
+    const uint64_t deadlineUs = durationDeadlineUs(startUs);
+    while (timeNowUs() < deadlineUs)
+    {
+      const uint64_t nowUs = timeNowUs();
+      if (nowUs >= deadlineUs)
+      {
+        break;
+      }
+      size_t written = writeSome(socket, stream, buffer.data(), buffer.size());
+      if (written > 0)
+      {
+        sent += written;
+        continue;
+      }
+      pumpOnce(std::min<uint64_t>(1000, deadlineUs - nowUs));
+    }
+    const uint64_t measuredEndUs = std::min<uint64_t>(timeNowUs(), deadlineUs);
+    recordDurationResult(sent, startUs, measuredEndUs);
+
+    finishStream(socket, stream);
+    recvAckBounded(socket, stream, 1'000'000);
   }
 
 public:
@@ -2079,6 +2716,11 @@ public:
       }
       else
       {
+        if (durationModeActive() && supportsGenericDurationMode(benchmarkScenario))
+        {
+          runClientGenericDuration(nBytes);
+          return;
+        }
         runClientGeneric(nBytes);
       }
       return;
@@ -2101,6 +2743,18 @@ public:
     }
     else
     {
+      if (durationModeActive())
+      {
+        if (benchmarkIsUpload())
+        {
+          runClientUploadDuration();
+        }
+        else
+        {
+          runClientDownloadDuration();
+        }
+        return;
+      }
       if (benchmarkIsUpload())
       {
         runClientUpload(nBytes);
@@ -2120,6 +2774,24 @@ public:
   bool supportsZeroRtt(void) const override
   {
     return true;
+  }
+
+  bool supportsDurationMode(BenchmarkScenario scenario) const override
+  {
+    return benchmarkTargetDurationMs > 0 &&
+           (supportsSimpleDurationMode(scenario) ||
+            supportsGenericDurationMode(scenario) ||
+            scenario == BenchmarkScenario::datagram);
+  }
+
+  uint64_t completedUnitsForReport(uint64_t fallback) const override
+  {
+    return durationModeActive() ? durationCompletedUnits : fallback;
+  }
+
+  double measuredSecondsForReport(double fallback) const override
+  {
+    return durationModeActive() ? durationMeasuredSeconds : fallback;
   }
 
   bool exportResumptionState(BenchmarkResumptionState& state) override

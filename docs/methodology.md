@@ -29,19 +29,18 @@ Default workloads:
 | `flow_control` | `throughput_gbps` | Download under small stream/connection windows. |
 | `idle_footprint` | `server_rss_delta_bytes_per_connection` | Server RSS delta per held idle connection. |
 | `close_reset_cleanup` | `streams_per_second` | Graceful fresh-stream FIN cleanup profile. |
+| `datagram` | `datagrams_per_second` | Delivered app DATAGRAM echo rate. |
 
-Capability rows:
+Session capability workloads:
 
 | Scenario | Metric | Status |
 |---|---|---|
-| `datagram` | `datagrams_per_second` | Delivered app DATAGRAM echo rate for `lsperf`, `mvfstperf`, `neqoperf`, `ngtcp2perf`, `noqperf`, `picoperf`, `quicheperf`, `quiczigperf`, `quinnperf`, `s2nperf`, `tquicperf`, and `xquicperf`; other adapters return `unsupported` until the quicperf adapter exposes the same contract. |
-| `resumed_connect` | `connections_per_second` | Session-ticket resumption connection capability smoke. |
-| `zero_rtt_reqresp` | `requests_per_second` | 0-RTT request/response capability smoke with accepted/rejected state captured by the adapter contract. |
+| `resumed_connect` | `connections_per_second` | Session-ticket resumption connection setup. |
+| `zero_rtt_reqresp` | `requests_per_second` | 0-RTT request/response with accepted/rejected state captured by the adapter contract. |
 
-Publication-tier rows use full adaptive convergence. Capability and lifecycle
-rows (`resumed_connect`, `zero_rtt_reqresp`, `reqresp`, `stream_churn`,
-`idle_footprint`, and `close_reset_cleanup`) default to smoke/correctness
-coverage unless explicitly promoted to ranked publication metrics.
+Publication rows use a two-stage fixed design: a bounded scout chooses client
+threads and workload shape, then fixed randomized publication blocks collect the
+predeclared measured samples without adaptive extension.
 
 Unsupported rows exit with code `77` and write an explicit reason. They are not
 silently remapped to another workload, and they are quicperf adapter-contract
@@ -81,51 +80,51 @@ the stream workloads.
 Current metrics are `throughput_gbps`, `connections_per_second`,
 `requests_per_second`, `streams_per_second`, `messages_per_second`,
 `datagrams_per_second`, and `server_rss_delta_bytes_per_connection`.
-Publication scoring only normalizes within the same scenario, network backend,
-path profile, and metric group.
+Public comparisons are interpreted only within the same scenario, network
+backend, path profile, and metric group.
 
 `tools/run-benchmarks.sh` writes one `summary.tsv` row per
-binary/library/scenario/network/path-profile/client-thread/metric group and writes
-`raw-samples.tsv` for every invocation. When invoked by the adaptive publication
-runner it appends the same structured rows to `adaptive-samples.tsv`: measured
-rows carry metric values, while unsupported, failed, and thread-check rows carry
-status/reason/log metadata with a blank value.
+binary/library/scenario/network/path-profile/client-thread/metric group and
+writes `raw-samples.tsv` for every invocation. Publication runners append the
+same structured rows to `adaptive-samples.tsv`: measured rows carry metric
+values, while unsupported, failed, and thread-check rows carry status/reason/log
+metadata with a blank value.
 
-### Calibration And Workload Sizing
+### Fixed Publication Design
 
-The adaptive runner may run a preflight calibration phase to choose enough bytes
-or operations for stable timing. Calibration is never publication data:
+The publication protocol separates planning from measurement:
 
-- calibration rows use phase `calibration` and separate artifacts
-- scaled-workload validation attempts use phase `calibration_validation` in
-  `calibration-validation-samples.tsv`; failed candidates are diagnostic
-  fallback evidence, not terminal row failures
-- after a larger candidate fails, the first lower successful candidate is
-  treated as a boundary; the runner validates one additional step down before
-  accepting the workload when possible
-- publication tables, curves, rankings, and p50/p90/p99 use measurement samples only
-- rules are declared by scenario/metric class before the run
-- each row records target duration, selected work units, calibration duration,
-  clamp reason, and fixed-vs-calibrated status
-- calibration may scale bytes/operations for throughput and rate metrics, but
-  must not change adapter transport config, congestion control, flow windows,
-  DATAGRAM queues, packetization policy, backend semantics, or library internals
-- fixed-semantics rows such as single connection setup and `idle_footprint`
-  remain fixed unless separately justified
-- calibration policy changes require A/B validation against fixed-work rows
-  across fast, median, slow, syscall, iouring, and DATAGRAM cases
-- publication runs using the reviewed calibration policy must publish the
-  workload plan and exclude calibration samples from result statistics
+- scout data is non-publication data and is written to `saturation-scout.tsv`
+- scout grid: `1,2,4,8,16` client threads, 3 short samples per point
+- scout selection: choose the lowest thread count within 2% of the scout best
+  where the next grid point improves by less than 2%
+- successful scout output is cached as the default plan with a fingerprint of
+  dependency pins, benchmark-touching harness code, and scout scope; the scout is
+  regenerated only when that fingerprint changes or refresh is forced
+- `benchmark-plan.tsv` declares mode, duration/work, samples, warmup, blocks,
+  client threads, and timeout before publication starts
+- publication uses 20 measured samples, 1 warmup, and 5 randomized blocks by
+  default
+- publication never extends sample count or changes client threads based on
+  CI/spread/drift during the same run
 
-This matches established harness practice: Criterion.rs separates warmup from
-measurement and uses warmup timing to size measured samples; Google Benchmark
-has minimum benchmark and warmup time with discarded warmup results; Go adjusts
-`b.N` until timing is reliable; pytest-benchmark has an explicit calibration
-phase. Sources: https://bheisler.github.io/criterion.rs/book/analysis.html,
-https://bheisler.github.io/criterion.rs/book/user_guide/command_line_output.html,
-https://github.com/google/benchmark/blob/main/docs/user_guide.md,
-https://pkg.go.dev/testing/,
-https://pytest-benchmark.readthedocs.io/en/v5.0.0/calibration.html.
+Rate workloads use duration mode by policy: `download`, `upload`,
+`multistream_download`, `multistream_upload`, `bidi`, `loss_recovery`,
+`flow_control`, `small_payload_pps`, `datagram`, `reqresp`, `stream_churn`,
+`close_reset_cleanup`, and `zero_rtt_reqresp`. Count-semantics workloads
+(`connect`, `resumed_connect`, `idle_footprint`) use fixed counts or fixed idle
+hold time. Connection lifecycle rows cap each measured sample at 128 handshakes
+to keep one process sample from becoming a lifecycle-churn stress test.
+
+This follows established benchmark practice: warmup/calibration/scout work is
+separate from measured data, and repeated reruns until significance are avoided.
+Sources: Google Benchmark user guide
+https://google.github.io/benchmark/user_guide.html, Criterion.rs analysis
+https://bheisler.github.io/criterion.rs/book/analysis.html, Go benchmarks
+https://pkg.go.dev/testing, pytest-benchmark calibration
+https://pytest-benchmark.readthedocs.io/en/latest/calibration.html, benchstat
+guidance https://pkg.go.dev/golang.org/x/perf/cmd/benchstat, and
+Kalibera/Jones uncertainty framing https://arxiv.org/abs/2007.10899.
 
 `network` is the socket backend dimension (`syscall` or `iouring`). `path_profile`
 is the packet-delivery path dimension. The default is `loopback`; namespace-backed
@@ -139,7 +138,7 @@ enabled, so benchmark rows do not measure cold NDP resolution artifacts.
 Before publication, non-loopback path profiles must pass
 `tools/quicperf_network_validate.py --require-idle-host`; the validator records
 qdisc snapshots before and after traffic, expected BDP/queue metadata, ping
-RTT/loss/jitter checks, and raw TCP/UDP baselines. The detailed acceptance
+RTT/loss/jitter checks, and qdisc snapshots. The detailed acceptance
 criteria and source-backed profile audit live in
 `docs/network-profile-validation.md`.
 Public cellular trace archives are kept outside git under `.data/`; compact
@@ -175,9 +174,9 @@ require client-side receipt, not merely server-side enqueue.
 
 Summary statistics:
 
-The adaptive publication runner appends raw rows to `adaptive-samples.tsv`.
-Measured rows carry metric values; unsupported and failed rows carry status,
-reason, and log metadata.
+The fixed publication runner appends raw rows to `adaptive-samples.tsv` for
+schema compatibility. Measured rows carry metric values; unsupported and failed
+rows carry status, reason, and log metadata.
 
 Summary columns include `samples`, `min`, `p50`, `p90`, `p99`, and `max`.
 `p50` uses a true median and is the publication statistic. `p90` and `p99` are
@@ -187,50 +186,30 @@ upper tail. `p99` is not claimable unless a row has at least 300 samples.
 
 ## Saturation
 
-The adaptive runner normally searches client counts `1..32` with
-`server_connections == client_threads`.
-
-Selection rules:
-
-- add a higher client count only after the current count has enough samples
-- pick the lowest client count statistically within tolerance of the best p50
-- default tolerance: `1%`
-- default confidence: `95%`
-- stop at the first converged adjacent client-count step that does not improve p50
-  by more than the configured minimum incremental improvement
-- the selected row means fewest clients needed to saturate one server thread
-
-Measured-row terminal status:
-
-- `converged`: convergence, saturation probability, and adjacent-increment plateau
-  boundary passed
-- `not_ready`: more sampling/running is still schedulable
-- `failed`: a client, server, infrastructure, or required-sample gate failed
-
-Capability rows may still report `unsupported` when the adapter cannot provide
-the scenario contract. `edge_status` is a diagnostic column, not a terminal row
-status.
-
-Only `converged` rows are clean publishable rows. Noisy or high-variance rows
-that have reached the convergence decision point are still `converged`; their
-spread, drift, and high-variance details stay in the reason fields.
+Scout uses `server_connections == client_threads` and the fixed grid
+`1,2,4,8,16`; 16 client threads is the maximum accepted by fixed plans and
+direct smoke runs. The selected row means the fewest load-generator client threads
+needed to reach the scout plateau for one server thread. Scout samples are never
+publication samples.
 
 ## Publication Gates
 
-Use `tools/run-adaptive-publication-suite.py` for publishable rows.
+Use `tools/run-saturation-scout.py` followed by
+`tools/run-fixed-publication-suite.py --plan benchmark-plan.tsv` for
+publication rows.
 
 Default flow:
 
-- randomized discovery blocks across active rows
-- preflight calibration/failure pass before discovery when calibrated mode is enabled
-- calibrated per-row timeouts instead of a single global timeout where applicable
-- 10 measured samples per discovery block
-- minimum 2 discovery blocks and 20 discovery samples
-- maximum 120 discovery samples unless overridden
-- optional randomized confirmatory holdout after provisional convergence
-- statistical saturation selection before publication
-- terminal convergence with high variance or nonstationarity recorded as
-  diagnostic reasons
+- bounded scout writes `saturation-scout.tsv`
+- fixed plan writes `benchmark-plan.tsv`
+- successful scout output is cached with a benchmark-relevant fingerprint and
+  reused until dependency pins, benchmark-touching harness code, or scout scope
+  changes
+- one unmeasured warmup per row by default
+- 20 measured publication samples per selected row
+- 5 randomized blocks, 4 measured samples per row per block
+- no optional stopping or adaptive extension during publication
+- CI, spread, drift, and outliers are audit labels, not same-run sampling triggers
 
 Default gates:
 
@@ -242,25 +221,26 @@ Default gates:
 | p20/p80 middle-spread ratio | <= 1.15 |
 | Block-median ratio | <= 1.10 |
 | Absolute drift | <= 3% |
-| Saturation confidence | >= 95% |
-| Minimum incremental client-count improvement | > 1% |
+| Scout selected-vs-best tolerance | within 2% |
+| Next scout grid improvement | < 2% |
 
-Severe or persistent high variance is diagnostic, not a not-ready terminal
-state. Once a row has enough samples to stop, it is marked `converged` unless
-the client, server, infrastructure, or required-sample path failed.
+Status fields:
 
-`publication-results.tsv` is the selected-row table. `publication-curve.tsv`
-keeps the 1-client row and measured curve through saturation or boundary for
-each binary/scenario/network/path-profile row.
-`publication-row-audit.tsv` preserves gate results for publication rows.
+- `measurement_status`: `complete`, `failed`, or `unsupported`
+- `audit_status`: `clean`, `noisy`, or `tail_insufficient`
+- `publication_status`: `publishable`, `inconclusive`, `failed`, or
+  `unsupported`
 
-A `not_ready` run means at least one publication row did not satisfy the clean
-publication gate. A `failed` run can be shared only with status, CI, spread, and
-failure reasons visible. Do not present failed rows as audited results.
+A completed 20-sample row with CI, spread, or drift problems is
+`inconclusive`/`noisy`; it is not called `not_ready` and it is not extended in
+the same publication run. Public result pages may still show these completed
+rows when their status is visible. `p99` remains diagnostic unless a separate
+tail campaign has at least 300 samples.
 
-`tools/run-publication-suite.py` delegates to the adaptive runner by default.
-The old fixed `3 x 10` runner is only a compatibility smoke path:
-`QUICPERF_FIXED_PUBLICATION_COMPAT=1`.
+`publication-results.tsv` is the selected-row table. `publication-row-audit.tsv`
+preserves gate details for publication rows. `pairwise-comparisons.tsv`
+compares publishable rows only; noisy completed rows remain visible in the
+selected-row tables with their audit status.
 
 ## Controls
 

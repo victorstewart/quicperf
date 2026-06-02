@@ -1,4 +1,7 @@
-# Loopback Full Matrix 2026-05-27T05:29Z
+# Archived Loopback Full Matrix 2026-05-27T05:29Z
+
+This is an archived adaptive full-matrix run. Current results are published from
+the fixed-design full matrix in `docs/latest-results.md`.
 
 Run ID: `adaptive-20260527T052921Z-440980`
 Source run directory: `.run/full-matrix-20260527T052921Z`
@@ -24,7 +27,7 @@ This is the full loopback scenario matrix for the 12 primary QUIC binaries.
 
 ## Files
 
-- `publication-results.tsv`: selected rows used by `docs/latest-results.md`
+- `publication-results.tsv`: selected rows for this archived run
 - `publication-curve.tsv`: measured client-thread curves through each saturation boundary
 - `publication-row-audit.tsv`: gate decisions and diagnostic reasons
 - `adaptive-samples.tsv`: measured discovery samples only; calibration is excluded

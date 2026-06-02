@@ -1,4 +1,7 @@
-# Loopback Full Matrix 2026-05-25
+# Archived Loopback Full Matrix 2026-05-25
+
+This is an archived adaptive full-matrix attempt. Current results are published
+from the fixed-design full matrix in `docs/latest-results.md`.
 
 Run ID: `adaptive-20260525T002622Z-2639460`
 

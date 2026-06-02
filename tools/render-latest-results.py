@@ -78,12 +78,6 @@ BENCHMARK_ORDER = [
     "close_reset_cleanup",
 ]
 
-TIER_NAMES = {
-    "publication": "publication",
-    "lifecycle": "lifecycle smoke",
-    "capability": "capability smoke",
-}
-
 NETWORK_NAMES = {
     "syscall": "syscall",
     "iouring": "io_uring",
@@ -153,8 +147,10 @@ def load_rows(
     stats_by_key: dict[tuple[str, str, str, str, str, str], dict[str, str]] = {}
     best_stats: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
     for row in row_stats:
-        if row.get("phase") != "combined":
+        phase = row.get("phase", "publication")
+        if phase not in {"combined", "publication", ""}:
             continue
+        median_value = row.get("median") or row.get("p50") or ""
         key = (
             row["binary"],
             row["scenario"],
@@ -166,11 +162,12 @@ def load_rows(
         stats_by_key[key] = row
         group = key[:5]
         try:
-            median = float(row["median"])
+            median = float(median_value)
         except ValueError:
             continue
         old = best_stats.get(group)
-        if old is None or metric_better_than(row["metric"], median, float(old["median"])):
+        old_median = (old.get("median") or old.get("p50") or "0") if old else "0"
+        if old is None or metric_better_than(row["metric"], median, float(old_median)):
             best_stats[group] = row
 
     rows: list[dict[str, str]] = []
@@ -201,10 +198,11 @@ def load_rows(
 
         client_threads = stat["client_threads"]
         samples = stat["samples"]
-        p50 = fmt_value(metric, stat.get("median"))
+        p50_raw = stat.get("median") or stat.get("p50")
+        p50 = fmt_value(metric, p50_raw)
         p90 = fmt_value(metric, stat.get("p90"))
         p99 = fmt_value(metric, stat.get("p99"))
-        sort_p50 = stat.get("median", "")
+        sort_p50 = p50_raw or ""
         sort_p90 = stat.get("p90", "")
         sort_p99 = stat.get("p99", "")
         adapter_features = publication.get("adapter_features", "")
@@ -213,15 +211,18 @@ def load_rows(
             or adapter_feature_value(adapter_features, "cc")
             or "-"
         )
-        tier = TIER_NAMES.get(publication.get("tier", ""), publication.get("tier", "") or "-")
-
+        publication_status = publication.get("publication_status", "") or stat.get("publication_status", "")
+        audit_status = publication.get("audit_status", "") or stat.get("audit_status", "")
+        reason = publication.get("reason", "") or stat.get("reason", "")
         rows.append(
             {
                 "library": LIBRARY_NAMES.get(binary, binary),
                 "scenario": scenario,
                 "benchmark": BENCHMARK_NAMES.get(scenario, scenario),
                 "network": NETWORK_NAMES.get(network, network),
-                "tier": tier,
+                "status": publication_status or audit_status or "-",
+                "audit_status": audit_status or "-",
+                "reason": reason or "-",
                 "sort_direction": METRIC_SORT_DIRECTION.get(metric, "ascending"),
                 "client_threads": client_threads,
                 "congestion_controller": congestion_controller,
@@ -253,7 +254,7 @@ def grouped_by_benchmark(rows: list[dict[str, str]]) -> list[tuple[str, list[dic
         benchmark_rows = sorted(
             grouped[scenario],
             key=lambda row: (
-                float(row["sort_p99"]) if row["sort_p99"] else unsupported_sentinel,
+                float(row["sort_p50"]) if row["sort_p50"] else unsupported_sentinel,
                 row["library"],
                 row["network"],
             ),
@@ -273,15 +274,12 @@ def render_markdown(
         for row in read_tsv(run_dir / "publication-results.tsv")
         if row.get("binary") != "tcpperf"
     ]
-    converged_rows = sum(1 for row in summary_rows if row.get("publication_status") == "converged")
+    publishable_rows = sum(1 for row in summary_rows if row.get("publication_status") in {"publishable", "converged"})
+    inconclusive_rows = sum(1 for row in summary_rows if row.get("publication_status") in {"inconclusive", "not_ready"})
     failed_rows = sum(1 for row in summary_rows if row.get("publication_status") == "failed")
-    not_ready_rows = sum(1 for row in summary_rows if row.get("publication_status") == "not_ready")
-    tier_counts: dict[str, int] = {}
-    for row in summary_rows:
-        tier = TIER_NAMES.get(row.get("tier", ""), row.get("tier", "") or "-")
-        tier_counts[tier] = tier_counts.get(tier, 0) + 1
-    tier_summary = ", ".join(f"{count} {tier}" for tier, count in sorted(tier_counts.items()))
-    run_status = "converged" if summary_rows and failed_rows == 0 and not_ready_rows == 0 else ("failed" if failed_rows else "not_ready")
+    unsupported_rows = sum(1 for row in summary_rows if row.get("publication_status") == "unsupported")
+    complete_rows = sum(1 for row in summary_rows if row.get("measurement_status") in {"complete", "converged", ""})
+    run_status = "complete" if summary_rows and failed_rows == 0 and unsupported_rows == 0 else ("failed" if failed_rows else "partial")
     artifact_sentence = (
         "Raw QUIC data and gate details are committed under "
         f"[`{artifact_dir}`]({artifact_dir}/)."
@@ -291,25 +289,28 @@ def render_markdown(
         "# Latest Results",
         "",
         (
-            "The adaptive publication runner samples each library/network/test row "
-            "in randomized blocks until the row converges or fails. Rows that "
-            "remain noisy or nonstationary are retained as converged with their "
-            "measured distribution and diagnostic reasons."
+            "The publication runner uses a predeclared plan: scout data selects "
+            "client threads, then fixed randomized publication blocks collect the "
+            "measured samples without adaptive extension."
         ),
         "",
         (
-            "Client load is swept upward per row to find server saturation using "
-            "as many client threads as needed within the configured limit. Tables "
-            "are sorted by best bad-tail p99 first; for rate and throughput "
-            "metrics that means the higher lower-tail value is better."
+            "Tables are sorted by p50, the publication statistic. p90 and p99 "
+            "remain diagnostic tail-visibility columns unless a separate tail "
+            "campaign has enough samples to claim them."
         ),
         "",
         (
-            f"Current run status: `{run_status}`. The run produced {converged_rows} "
-            f"converged selected rows, {failed_rows} failed rows, and "
-            f"{not_ready_rows} not-ready rows across {len(summary_rows)} selected rows "
-            f"({tier_summary}). The tables below use the best available measured "
-            "distributions and diagnostic reasons."
+            f"Current run status: `{run_status}`. The run completed {complete_rows} "
+            f"of {len(summary_rows)} selected rows: {publishable_rows} publishable, "
+            f"{inconclusive_rows} inconclusive/noisy, {failed_rows} failed, and "
+            f"{unsupported_rows} unsupported."
+        ),
+        "",
+        (
+            "All completed selected rows are shown below. `inconclusive` means "
+            "the row completed but tripped at least one audit gate; it is data "
+            "with a visible caveat, not a failed or hidden row."
         ),
         "",
         artifact_sentence,
@@ -327,16 +328,16 @@ def render_markdown(
                 BENCHMARK_SUMMARIES.get(benchmark_rows[0]["scenario"], ""),
                 "",
                 (
-                    "| Library | Network | Tier | CC | Client threads | Samples | "
-                    "Unit | p50 | p90 | p99 |"
+                    "| Library | Network | CC | Client threads | Samples | "
+                    "Status | Unit | p50 | p90 | p99 |"
                 ),
-                "|---|---|---|---|---:|---:|---|---:|---:|---:|",
+                "|---|---|---|---:|---:|---|---|---:|---:|---:|",
             ]
         )
         for row in benchmark_rows:
             lines.append(
-                "| {library} | {network} | {tier} | {congestion_controller} | {client_threads} | "
-                "{samples} | {unit} | {p50} | {p90} | {p99} |".format(**row)
+                "| {library} | {network} | {congestion_controller} | {client_threads} | "
+                "{samples} | {status} | {unit} | {p50} | {p90} | {p99} |".format(**row)
             )
         lines.append("")
 
@@ -344,8 +345,8 @@ def render_markdown(
         [
             "## Caveats",
             "",
-            "- Publication-tier rows are the ranking-grade rows; lifecycle and capability rows are fixed smoke/proof rows unless explicitly promoted.",
-            "- Calibration and calibration-validation samples are published for auditability but excluded from the result tables.",
+            "- Scout samples choose workload shape and client threads; they are excluded from publication statistics.",
+            "- A completed row with CI, spread, or drift problems is inconclusive/noisy, not extended in the same run.",
             "- DATAGRAM rows report delivered unique echo rate; delivery/loss counters are in the raw sample TSV.",
             "- `idle_footprint` reports server RSS delta per connection, where lower is better.",
             (
@@ -353,7 +354,7 @@ def render_markdown(
                 f"[`publication-results.tsv`]({artifact_dir}/publication-results.tsv), "
                 f"[`row-stats.tsv`]({artifact_dir}/row-stats.tsv), "
                 f"[`publication-row-audit.tsv`]({artifact_dir}/publication-row-audit.tsv), "
-                f"and [`saturation-decisions.tsv`]({artifact_dir}/saturation-decisions.tsv)."
+                f"and [`benchmark-plan.tsv`]({artifact_dir}/benchmark-plan.tsv)."
             ),
             f"- Raw samples are in [`adaptive-samples.tsv`]({artifact_dir}/adaptive-samples.tsv).",
         ]

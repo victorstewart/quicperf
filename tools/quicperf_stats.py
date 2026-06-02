@@ -141,7 +141,7 @@ class Sample:
 
     @property
     def measured(self) -> bool:
-        return self.status == "ok" and self.phase != "warmup" and self.value is not None and self.value > 0.0
+        return self.status == "ok" and self.phase != "warmup" and self.value is not None and self.value >= 0.0
 
 
 @dataclass
@@ -702,6 +702,8 @@ def row_stats(samples: list[Sample], config: StatsConfig | None = None) -> RowSt
 def _outlier_count(values: list[float], med: float, mad: float, cfg: StatsConfig) -> int:
     if not values:
         return 0
+    if med == 0.0 and all(value == 0.0 for value in values):
+        return 0
     if any(value <= 0.0 for value in values):
         return sum(1 for value in values if value <= 0.0)
     if mad <= 0.0:
@@ -717,6 +719,8 @@ def _outlier_block_count(
     cfg: StatsConfig,
 ) -> int:
     if not ordered_blocks:
+        return 0
+    if med == 0.0 and all(value == 0.0 for _, values in ordered_blocks for value in values):
         return 0
     if any(value <= 0.0 for _, values in ordered_blocks for value in values):
         return sum(1 for _, values in ordered_blocks if any(value <= 0.0 for value in values))
