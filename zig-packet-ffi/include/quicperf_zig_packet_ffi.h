@@ -10,6 +10,11 @@ extern "C" {
 
 typedef struct qzf_engine_t qzf_engine_t;
 
+enum {
+  QZF_PACKET_ABI_VERSION = 6,
+  QZF_PACKET_BATCH_CAPACITY = 64,
+};
+
 typedef struct qzf_addr_t {
   uint8_t ip[16];
   uint16_t port;
@@ -18,6 +23,7 @@ typedef struct qzf_addr_t {
 typedef struct qzf_config_t {
   bool is_server;
   qzf_addr_t local_addr;
+  qzf_addr_t peer_addr;
   const char *cert_path;
   const char *key_path;
   const char *chain_path;
@@ -30,9 +36,43 @@ typedef struct qzf_config_t {
   uint64_t max_uni_streams;
   uint64_t idle_timeout_ms;
   uint32_t udp_payload_size;
+  uint64_t datagram_max_frame_size;
   uint64_t send_backlog_limit;
   uint64_t now_us;
+  uint64_t calendar_unix_seconds;
 } qzf_config_t;
+
+typedef struct qzf_receive_descriptor_v2_t {
+  const uint8_t *data;
+  size_t len;
+  qzf_addr_t peer;
+  uint8_t ecn;
+  uint8_t reserved[7];
+} qzf_receive_descriptor_v2_t;
+
+typedef struct qzf_transmit_descriptor_v2_t {
+  uint8_t *data;
+  size_t capacity;
+  size_t len;
+  qzf_addr_t peer;
+  uint8_t ecn;
+  uint8_t reserved[7];
+  uint64_t desired_send_raw_ns;
+} qzf_transmit_descriptor_v2_t;
+
+typedef struct qzf_adapter_status_v2_t {
+  int32_t code;
+  uint32_t reserved;
+  char message[256];
+} qzf_adapter_status_v2_t;
+
+typedef struct qzf_transport_counters_v3_t {
+  uint64_t packets_lost;
+  uint64_t packets_retransmitted;
+  uint64_t recovery_wakeups;
+  uint64_t flow_control_blocked_events;
+  uint64_t stream_credit_blocked_events;
+} qzf_transport_counters_v3_t;
 
 typedef struct qzf_stream_debug_t {
   bool found;
@@ -57,16 +97,75 @@ typedef struct qzf_stream_debug_t {
   uint64_t conn_send_window;
 } qzf_stream_debug_t;
 
+typedef struct qzf_peer_terminal_facts_v6_t {
+  bool available;
+  bool fin;
+  bool reset_stream;
+  bool stop_sending;
+  bool connection_close;
+  uint8_t reserved[3];
+  uint64_t reset_stream_error;
+  uint64_t stop_sending_error;
+  uint64_t connection_close_error;
+  uint64_t connection_close_reason_length;
+} qzf_peer_terminal_facts_v6_t;
+
+typedef struct qzf_negotiated_t {
+  bool available;
+  bool peer_certificate_verified;
+  bool hostname_verified;
+  bool active_migration;
+  bool ack_frequency;
+  uint8_t reserved[3];
+  uint32_t quic_version;
+  uint16_t tls_cipher_suite;
+  uint16_t tls_named_group;
+  uint64_t max_udp_payload_size;
+  uint64_t max_ack_delay_ns;
+  uint64_t ack_delay_exponent;
+  uint64_t active_connection_id_limit;
+  uint64_t connection_id_bytes;
+  uint64_t max_idle_timeout_ns;
+  uint64_t max_bidi_streams;
+  uint64_t max_uni_streams;
+  uint64_t connection_window_bytes;
+  uint64_t stream_window_bytes;
+  uint64_t datagram_max_frame_size;
+} qzf_negotiated_t;
+
 qzf_engine_t *qzf_engine_new(const qzf_config_t *config);
 void qzf_engine_free(qzf_engine_t *engine);
 
 int qzf_engine_connect(qzf_engine_t *engine, const qzf_addr_t *remote, uint64_t now_us, uint64_t *conn_id);
 int qzf_engine_accept_connection(qzf_engine_t *engine, uint64_t *conn_id);
 int qzf_engine_is_connected(qzf_engine_t *engine, uint64_t conn_id, uint64_t now_us);
+int qzf_connection_is_closed(qzf_engine_t *engine, uint64_t conn_id, uint64_t now_us);
 int qzf_engine_receive(qzf_engine_t *engine, const qzf_addr_t *remote, uint8_t *data, size_t len, uint64_t now_us);
 int qzf_engine_poll_transmit(qzf_engine_t *engine, qzf_addr_t *remote, uint8_t *data, size_t capacity, size_t *len, uint64_t now_us);
 int qzf_engine_next_timeout_us(qzf_engine_t *engine, uint64_t now_us, uint64_t *timeout_us);
 int qzf_engine_on_timeout(qzf_engine_t *engine, uint64_t now_us);
+uint32_t qzf_packet_abi_version(void);
+int qzf_engine_receive_batch(qzf_engine_t *engine,
+                             const qzf_receive_descriptor_v2_t *packets,
+                             size_t count,
+                             uint64_t now_raw_ns,
+                             qzf_adapter_status_v2_t *status);
+int qzf_engine_poll_transmit_batch(qzf_engine_t *engine,
+                                   qzf_transmit_descriptor_v2_t *packets,
+                                   size_t capacity,
+                                   size_t *count,
+                                   uint64_t now_raw_ns,
+                                   qzf_adapter_status_v2_t *status);
+int qzf_engine_next_timeout_raw_ns(qzf_engine_t *engine,
+                                   uint64_t now_raw_ns,
+                                   uint64_t *deadline_raw_ns,
+                                   qzf_adapter_status_v2_t *status);
+int qzf_engine_on_timeout_raw_ns(qzf_engine_t *engine,
+                                 uint64_t now_raw_ns,
+                                 qzf_adapter_status_v2_t *status);
+int qzf_engine_transport_counters_v3(qzf_engine_t *engine,
+                                     qzf_transport_counters_v3_t *counters,
+                                     qzf_adapter_status_v2_t *status);
 int qzf_engine_has_pending_app_data(qzf_engine_t *engine);
 int qzf_engine_export_resumption_state(qzf_engine_t *engine, uint64_t conn_id, uint8_t *data, size_t capacity, size_t *len, uint64_t now_us);
 int qzf_engine_import_resumption_state(qzf_engine_t *engine, const uint8_t *data, size_t len, bool use_zero_rtt, uint64_t now_us);
@@ -74,12 +173,20 @@ int qzf_connection_resumed(qzf_engine_t *engine, uint64_t conn_id, uint64_t now_
 int qzf_connection_zero_rtt_attempted(qzf_engine_t *engine, uint64_t conn_id, uint64_t now_us);
 int qzf_connection_zero_rtt_accepted(qzf_engine_t *engine, uint64_t conn_id, uint64_t now_us);
 int qzf_connection_zero_rtt_rejected(qzf_engine_t *engine, uint64_t conn_id, uint64_t now_us);
+int qzf_connection_negotiated(qzf_engine_t *engine, uint64_t conn_id, qzf_negotiated_t *settings, uint64_t now_us);
 
 int qzf_connection_open_bidi(qzf_engine_t *engine, uint64_t conn_id, uint64_t *stream_id, uint64_t now_us);
 int qzf_connection_accept_bidi(qzf_engine_t *engine, uint64_t conn_id, uint64_t *stream_id, uint64_t now_us);
+int qzf_connection_open_uni(qzf_engine_t *engine, uint64_t conn_id, uint64_t *stream_id, uint64_t now_us);
+int qzf_connection_accept_uni(qzf_engine_t *engine, uint64_t conn_id, uint64_t *stream_id, uint64_t now_us);
 int qzf_stream_send(qzf_engine_t *engine, uint64_t conn_id, uint64_t stream_id, const uint8_t *data, size_t len, size_t *written, uint64_t now_us);
 int qzf_stream_recv(qzf_engine_t *engine, uint64_t conn_id, uint64_t stream_id, uint8_t *data, size_t capacity, size_t *read, bool *fin, uint64_t now_us);
 int qzf_stream_finish(qzf_engine_t *engine, uint64_t conn_id, uint64_t stream_id, uint64_t now_us);
+int qzf_stream_reset(qzf_engine_t *engine, uint64_t conn_id, uint64_t stream_id, uint64_t error_code, uint64_t now_us);
+int qzf_stream_stop_sending(qzf_engine_t *engine, uint64_t conn_id, uint64_t stream_id, uint64_t error_code, uint64_t now_us);
+int qzf_connection_close(qzf_engine_t *engine, uint64_t conn_id, uint64_t error_code, uint64_t now_us);
+int qzf_peer_terminal_facts_v6(qzf_engine_t *engine, uint64_t conn_id, uint64_t stream_id,
+                               qzf_peer_terminal_facts_v6_t *facts, uint64_t now_us);
 int qzf_stream_debug(qzf_engine_t *engine, uint64_t conn_id, uint64_t stream_id, qzf_stream_debug_t *debug);
 int qzf_datagram_send(qzf_engine_t *engine, uint64_t conn_id, const uint8_t *data, size_t len, uint64_t now_us);
 int qzf_datagram_recv(qzf_engine_t *engine, uint64_t conn_id, uint8_t *data, size_t capacity, size_t *read, uint64_t now_us);

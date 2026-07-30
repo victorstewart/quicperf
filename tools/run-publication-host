@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import fcntl
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+from typing import IO, Sequence
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from quicperf_harness.host_policy import (
+    HostPolicyError,
+    publication_policy_change_lines,
+    publication_policy_plan_sha256,
+    snapshot,
+)
+
+
+UNIT = "quicperf-publication-host"
+UNIT_SERVICE = f"{UNIT}.service"
+STATE = Path("/run/quicperf-host-policy/state.json")
+LOCK = Path("/run/quicperf-host-policy/launcher.lock")
+CGROUP_ROOT = Path("/sys/fs/cgroup/system.slice") / UNIT_SERVICE
+POLICY_TOOL = ROOT / "tools/quicperf-host-policy"
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run one command under the transactional quicperf publication host policy"
+    )
+    parser.add_argument(
+        "--allow-temporary-host-policy-changes",
+        action="store_true",
+        help=(
+            "noninteractive consent to the exact temporary host changes printed "
+            "for this invocation"
+        ),
+    )
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    return parser
+
+
+def _resolve_command(command: list[str]) -> list[str]:
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        raise ValueError("a command is required after --")
+    executable = Path(command[0])
+    if executable.parent != Path("."):
+        executable = (
+            (Path.cwd() / executable).resolve()
+            if not executable.is_absolute()
+            else executable
+        )
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            raise ValueError(f"command is missing or nonexecutable: {executable}")
+        command[0] = str(executable)
+    expected = (ROOT / "tools/quicperfctl").resolve()
+    if Path(command[0]).resolve() != expected:
+        raise ValueError(f"publication host launcher accepts only {expected}")
+    return command
+
+
+def _unit_active() -> bool:
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/systemctl",
+                "show",
+                UNIT_SERVICE,
+                "--property=LoadState",
+                "--property=ActiveState",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return True
+    properties = {
+        key: value
+        for line in result.stdout.splitlines()
+        if "=" in line
+        for key, value in [line.split("=", 1)]
+    }
+    active_state = properties.get("ActiveState")
+    return result.returncode != 0 or active_state not in {"inactive", "failed"}
+
+
+def _stop_unit() -> bool:
+    if not _unit_active():
+        return True
+    try:
+        subprocess.run(
+            ["/usr/bin/systemctl", "stop", UNIT_SERVICE],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=35,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return not _unit_active()
+
+
+def _fallback_restore() -> bool:
+    if not STATE.exists():
+        return True
+    if _unit_active():
+        print(
+            f"refusing fallback restoration while {UNIT_SERVICE} is active",
+            file=sys.stderr,
+        )
+        return False
+    return subprocess.run(
+        [str(POLICY_TOOL), "restore", "--state", str(STATE)], check=False
+    ).returncode == 0
+
+
+def _authorize_changes(
+    changes: list[str],
+    *,
+    allowed_noninteractive: bool,
+    input_stream: IO[str],
+    output_stream: IO[str],
+) -> bool:
+    if not changes:
+        return True
+    print("quicperf requires these temporary host-policy changes:", file=output_stream)
+    for change in changes:
+        print(f"  - {change}", file=output_stream)
+    print(
+        "The launcher will restore only those changed controls to their exact "
+        "pre-run values after success, failure, or interruption.",
+        file=output_stream,
+    )
+    if allowed_noninteractive:
+        print(
+            "Temporary host-policy changes authorized by "
+            "--allow-temporary-host-policy-changes.",
+            file=output_stream,
+        )
+        return True
+    if not input_stream.isatty():
+        print(
+            "refusing host changes without interactive consent; rerun in a TTY or "
+            "pass --allow-temporary-host-policy-changes for this invocation",
+            file=output_stream,
+        )
+        return False
+    print("Type 'yes' to continue: ", end="", flush=True, file=output_stream)
+    return input_stream.readline().strip() == "yes"
+
+
+def _acquire_lock() -> int:
+    LOCK.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(LOCK.parent, 0o700)
+    descriptor = os.open(LOCK, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _run_locked(
+    command: list[str],
+    *,
+    allow_temporary_host_policy_changes: bool,
+) -> int:
+    if _unit_active():
+        print(f"{UNIT_SERVICE} is already active", file=sys.stderr)
+        return 4
+    if not _fallback_restore():
+        print("failed to restore stale publication host state", file=sys.stderr)
+        return 5
+    try:
+        state = snapshot()
+        changes = publication_policy_change_lines(state)
+    except HostPolicyError as exc:
+        print(f"cannot inspect publication host policy: {exc}", file=sys.stderr)
+        return 4
+    used_swaps = [entry["path"] for entry in state["swaps"] if entry["used_kib"]]
+    if used_swaps:
+        print(
+            f"refusing to disable swaps with live pages: {used_swaps}",
+            file=sys.stderr,
+        )
+        return 4
+    if not _authorize_changes(
+        changes,
+        allowed_noninteractive=allow_temporary_host_policy_changes,
+        input_stream=sys.stdin,
+        output_stream=sys.stderr,
+    ):
+        print("temporary host-policy changes were not authorized", file=sys.stderr)
+        return 4
+    plan_sha256 = publication_policy_plan_sha256(state)
+    publication_cpus = sorted(
+        set(state["irq_policy"]["boot"]["measured_cpus"])
+        | set(state["irq_policy"]["boot"]["housekeeping_cpus"])
+    )
+    cpu_affinity = " ".join(str(cpu) for cpu in publication_cpus)
+    systemd_command = [
+        "/usr/bin/systemd-run",
+        "--system",
+        f"--unit={UNIT}",
+        "--collect",
+        "--wait",
+        "--pipe",
+        "--service-type=exec",
+        f"--working-directory={ROOT}",
+        "--expand-environment=no",
+        f"--setenv=QUICPERF_CGROUP_ROOT={CGROUP_ROOT}",
+        "--property=Delegate=cpu cpuset memory pids",
+        "--property=DelegateSubgroup=coordinator",
+        f"--property=CPUAffinity={cpu_affinity}",
+        "--property=MemoryAccounting=yes",
+        "--property=TasksAccounting=yes",
+        "--property=TasksMax=infinity",
+        "--property=KillMode=control-group",
+        "--property=TimeoutStopSec=30s",
+        str(POLICY_TOOL),
+        "run-quicperf",
+        "--state",
+        str(STATE),
+        "--plan-sha256",
+        plan_sha256,
+        "--",
+        *command[1:],
+    ]
+
+    def interrupt(_signal: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    previous = {
+        number: signal.signal(number, interrupt)
+        for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    }
+    status = 5
+    try:
+        try:
+            completed = subprocess.run(systemd_command, check=False)
+            status = completed.returncode
+        except KeyboardInterrupt:
+            status = 130
+        except OSError as exc:
+            print(f"cannot start publication host service: {exc}", file=sys.stderr)
+            status = 5
+        finally:
+            for number in previous:
+                signal.signal(number, signal.SIG_IGN)
+
+        if not _stop_unit():
+            print(
+                f"failed to stop {UNIT_SERVICE}; refusing fallback restoration",
+                file=sys.stderr,
+            )
+            return 5
+        if not _fallback_restore():
+            return 5
+        return status
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+def run(
+    command: list[str],
+    *,
+    allow_temporary_host_policy_changes: bool = False,
+) -> int:
+    if os.geteuid() != 0:
+        print("run-publication-host requires root", file=sys.stderr)
+        return 4
+    try:
+        descriptor = _acquire_lock()
+    except BlockingIOError:
+        print("another publication host launcher is active", file=sys.stderr)
+        return 4
+    except OSError as exc:
+        print(f"cannot acquire publication host launcher lock: {exc}", file=sys.stderr)
+        return 4
+    try:
+        return _run_locked(
+            command,
+            allow_temporary_host_policy_changes=allow_temporary_host_policy_changes,
+        )
+    finally:
+        os.close(descriptor)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = _parser().parse_args(argv)
+    try:
+        command = _resolve_command(list(arguments.command))
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+    return run(
+        command,
+        allow_temporary_host_policy_changes=(
+            arguments.allow_temporary_host_policy_changes
+        ),
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

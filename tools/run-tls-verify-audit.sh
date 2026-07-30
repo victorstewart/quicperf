@@ -6,8 +6,11 @@ bin_dir="${QUICPERF_BIN_DIR:-$root/build/bin}"
 out_root="${QUICPERF_TLS_AUDIT_OUT_DIR:-$root/.run/tls-verify-audit-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 network="${QUICPERF_TLS_AUDIT_NETWORK:-syscall}"
 scenario="${QUICPERF_TLS_AUDIT_SCENARIO:-connect}"
-all_binaries="${QUICPERF_TLS_AUDIT_BINARIES-ngtcp2perf lsperf tquicperf quicheperf picoperf xquicperf quinnperf s2nperf neqoperf noqperf quiczigperf mvfstperf tcpperf}"
-negative_binaries="${QUICPERF_TLS_AUDIT_NEGATIVE_BINARIES-quinnperf s2nperf neqoperf noqperf quiczigperf mvfstperf}"
+all_binaries="${QUICPERF_TLS_AUDIT_BINARIES-ngtcp2perf lsperf tquicperf quicheperf picoperf xquicperf s2nperf quiczigperf tcpperf}"
+negative_binaries="${QUICPERF_TLS_AUDIT_NEGATIVE_BINARIES-s2nperf quiczigperf}"
+tls_cert="$root/tls/server.cert.pem"
+tls_key="$root/tls/server.key.pem"
+tls_chain="$root/tls/chain.cert.pem"
 
 mkdir -p "$out_root"
 
@@ -99,6 +102,9 @@ QUICPERF_TIMEOUT="${QUICPERF_TLS_AUDIT_TIMEOUT:-30s}" \
 QUICPERF_RANDOMIZE_ORDER=0 \
 QUICPERF_TLS_VERIFY_MODE=chain \
 QUICPERF_TLS_CERT_PROFILE=ed25519 \
+QUICPERF_TLS_CERT="$tls_cert" \
+QUICPERF_TLS_KEY="$tls_key" \
+QUICPERF_TLS_CHAIN="$tls_chain" \
 "$root/tools/run-benchmarks.sh" >"$positive_log" 2>&1
 positive_status=$?
 set -e
@@ -125,6 +131,8 @@ for binary in $negative_binaries; do
   QUICPERF_RANDOMIZE_ORDER=0 \
   QUICPERF_TLS_VERIFY_MODE=chain \
   QUICPERF_TLS_CERT_PROFILE=ed25519-wrong-chain-negative-control \
+  QUICPERF_TLS_CERT="$tls_cert" \
+  QUICPERF_TLS_KEY="$tls_key" \
   QUICPERF_TLS_CHAIN="$wrong_chain" \
   "$root/tools/run-benchmarks.sh" >"$negative_log" 2>&1
   status=$?

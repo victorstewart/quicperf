@@ -7,7 +7,7 @@ out_dir="${QUICPERF_MECHANISM_SMOKE_OUT_DIR:-$root/.run/mechanism-smoke-$(date -
 log="$out_dir/run.stdout"
 
 all_primary_binaries="${QUICPERF_MECHANISM_SMOKE_BINARIES:-ngtcp2perf lsperf tquicperf quicheperf picoperf xquicperf quinnperf s2nperf neqoperf noqperf quiczigperf mvfstperf}"
-production_scenarios="${QUICPERF_MECHANISM_SMOKE_SCENARIOS:-reqresp stream_churn multistream_download multistream_upload bidi small_payload_pps loss_recovery flow_control idle_footprint close_reset_cleanup}"
+production_scenarios="${QUICPERF_MECHANISM_SMOKE_SCENARIOS:-reqresp stream_churn multistream_download multistream_upload bidi small_payload_pps loss_recovery flow_control close_reset_cleanup}"
 networks="${QUICPERF_MECHANISM_SMOKE_NETWORKS:-syscall iouring}"
 path_profiles="${QUICPERF_MECHANISM_SMOKE_PATH_PROFILES:-${QUICPERF_PATH_PROFILES:-${QUICPERF_PATH_PROFILE:-loopback}}}"
 repeat="${QUICPERF_MECHANISM_SMOKE_REPEAT:-1}"

@@ -1,0 +1,59 @@
+{
+  "schema_version": "quicperf.amd-delivered-performance-policy.v1",
+  "provider": "amd_delivered_performance_v1",
+  "allowlist": [
+    {
+      "cpuinfo_model_name": "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics",
+      "product_name": "AMD Ryzen 7 8845HS",
+      "base_frequency_khz": 3800000,
+      "tjmax_millicelsius": 100000,
+      "official_source": {
+        "url": "https://www.amd.com/en/products/processors/laptop/ryzen/8000-series/amd-ryzen-7-8845hs.html",
+        "retrieved_utc_date": "2026-07-19",
+        "captured_content_sha256": "e64ce38835f11a31f236edc3eaaf2383b6591a4484fe430ef36735851f9aea43"
+      }
+    }
+  ],
+  "required_cpu_flags": [
+    "constant_tsc",
+    "nonstop_tsc",
+    "aperfmperf"
+  ],
+  "policy": {
+    "boost": false,
+    "governor": "performance",
+    "epp": "performance",
+    "positive_frequency_khz": 3800000,
+    "negative_control_frequency_khz": 3420000
+  },
+  "sampling": {
+    "counter_period_ns": 100000000,
+    "counter_interval_min_ns": 50000000,
+    "counter_interval_max_ns": 200000000,
+    "temperature_period_ns": 20000000,
+    "temperature_gap_max_ns": 50000000
+  },
+  "thermal": {
+    "cooling_ceiling_millicelsius": 60000,
+    "cooling_consecutive_ns": 30000000000,
+    "cooling_timeout_ns": 1200000000000,
+    "measurement_ceiling_millicelsius": 80000,
+    "tjmax_headroom_millicelsius": 20000
+  },
+  "performance": {
+    "active_fraction": "0.05",
+    "cumulative_ratio_minimum": "0.995",
+    "active_window_ratio_minimum": "0.98",
+    "loop_cumulative_minimum": "0.99",
+    "loop_bucket_minimum": "0.98",
+    "calibration_probe_seconds": 120,
+    "reference_start_second": 10,
+    "reference_end_second": 30,
+    "qualification_start_second": 30,
+    "calibration_active_windows_minimum": 850,
+    "session_probe_seconds": 60,
+    "session_active_windows_minimum": 550,
+    "negative_control_deadline_ns": 2000000000,
+    "negative_control_consecutive_windows": 3
+  }
+}

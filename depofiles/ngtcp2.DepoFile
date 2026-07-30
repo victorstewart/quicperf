@@ -1,8 +1,8 @@
 NAME ngtcp2
-VERSION 1.22.1
+VERSION 1.22.1-quicperf8
 SYSTEM_LIBS ALLOW
 DEPENDS boringssl VERSION main-beddb58-pic
-SOURCE URL https://github.com/ngtcp2/ngtcp2/releases/download/v1.22.1/ngtcp2-1.22.1.tar.gz
+SOURCE GIT https://github.com/ngtcp2/ngtcp2.git 716e64b05f4a3709dfc0b0522cf9fd4456d055e5
 BUILD_SYSTEM CMAKE
 CMAKE_DEFINE ENABLE_STATIC_LIB=ON
 CMAKE_DEFINE ENABLE_SHARED_LIB=OFF
@@ -15,6 +15,155 @@ CMAKE_DEFINE ENABLE_WOLFSSL=OFF
 CMAKE_DEFINE BUILD_TESTING=OFF
 CMAKE_DEFINE BORINGSSL_INCLUDE_DIR=${dep:boringssl}/include
 CMAKE_DEFINE "BORINGSSL_LIBRARIES=${dep:boringssl}/lib/libssl.a;${dep:boringssl}/lib/libcrypto.a"
+CMAKE_BUILD_SH <<'EOF'
+set -eu
+source_dir="$DEPO_SOURCE_DIR"
+patch_file="$DEPO_BUILD_DIR/quicperf-dependency.patch"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "716e64b05f4a3709dfc0b0522cf9fd4456d055e5"
+test "$(git -C "$source_dir" rev-parse 'HEAD^{tree}')" = "da40496c051eab2e4b5b3cfd0fd06c6fb3e09078"
+# Keep the configured receive windows exact while advertising consumed credit
+# after 1/128 rather than 1/4 of a window, before a loopback sender can exhaust it.
+cat > "$patch_file" <<'QUICPERF_DEPENDENCY_PATCH'
+diff --git a/lib/includes/ngtcp2/ngtcp2.h b/lib/includes/ngtcp2/ngtcp2.h
+index c71ff364..ab3883ab 100644
+--- a/lib/includes/ngtcp2/ngtcp2.h
++++ b/lib/includes/ngtcp2/ngtcp2.h
+@@ -5970,6 +5970,34 @@ NGTCP2_EXTERN int ngtcp2_conn_set_stream_user_data(ngtcp2_conn *conn,
+ NGTCP2_EXTERN void *ngtcp2_conn_get_stream_user_data(ngtcp2_conn *conn,
+                                                      int64_t stream_id);
+ 
++/**
++ * @function
++ *
++ * `ngtcp2_conn_get_received_stop_sending` returns nonzero if a
++ * STOP_SENDING frame was received for |stream_id|.  If non-NULL,
++ * |app_error_code| receives its application error code.  It returns zero if
++ * the stream is absent or STOP_SENDING has not been received.
++ *
++ * This quicperf extension exposes an already retained terminal fact without
++ * changing packet processing or transport behavior.
++ */
++NGTCP2_EXTERN int ngtcp2_conn_get_received_stop_sending(
++  ngtcp2_conn *conn, int64_t stream_id, uint64_t *app_error_code);
++
++/**
++ * @function
++ *
++ * `ngtcp2_conn_get_quicperf_blocked_frame_counts` returns cumulative counts
++ * of successfully serialized DATA_BLOCKED and STREAM_DATA_BLOCKED frames.
++ * NULL output pointers are permitted.
++ *
++ * This quicperf extension exposes wire-causal counters without changing
++ * packet processing or transport behavior.
++ */
++NGTCP2_EXTERN void ngtcp2_conn_get_quicperf_blocked_frame_counts(
++  ngtcp2_conn *conn, uint64_t *data_blocked,
++  uint64_t *stream_data_blocked);
++
+ /**
+  * @function
+  *
+diff --git a/lib/ngtcp2_conn.c b/lib/ngtcp2_conn.c
+index c470eb05..70fc9e7d 100644
+--- a/lib/ngtcp2_conn.c
++++ b/lib/ngtcp2_conn.c
+@@ -1808,6 +1808,19 @@ static int conn_ppe_write_frame_hd_log(ngtcp2_conn *conn, ngtcp2_ppe *ppe,
+     return rv;
+   }
+-
++
++  switch (fr->hd.type) {
++  case NGTCP2_FRAME_DATA_BLOCKED:
++    if (conn->quicperf_blocked_frame_counts.data_blocked != UINT64_MAX) {
++      ++conn->quicperf_blocked_frame_counts.data_blocked;
++    }
++    break;
++  case NGTCP2_FRAME_STREAM_DATA_BLOCKED:
++    if (conn->quicperf_blocked_frame_counts.stream_data_blocked != UINT64_MAX) {
++      ++conn->quicperf_blocked_frame_counts.stream_data_blocked;
++    }
++    break;
++  }
++
+   if (hd_logged && !*hd_logged) {
+     *hd_logged = 1;
+     ngtcp2_log_tx_pkt_hd(&conn->log, hd);
+@@ -3184,2 +3197,2 @@ static int conn_should_send_max_stream_data(ngtcp2_conn *conn,
+-  return strm->rx.window < 4 * inc;
++  return strm->rx.window < 128 * inc;
+ }
+@@ -3194,2 +3207,2 @@ static int conn_should_send_max_data(ngtcp2_conn *conn) {
+-  return conn->rx.window < 4 * inc;
++  return conn->rx.window < 128 * inc;
+ }
+@@ -14005,6 +14018,33 @@ void *ngtcp2_conn_get_stream_user_data(ngtcp2_conn *conn, int64_t stream_id) {
+   return strm->stream_user_data;
+ }
+-
++
++int ngtcp2_conn_get_received_stop_sending(ngtcp2_conn *conn,
++                                          int64_t stream_id,
++                                          uint64_t *app_error_code) {
++  ngtcp2_strm *strm = ngtcp2_conn_find_stream(conn, stream_id);
++
++  if (strm == NULL ||
++      !(strm->flags & NGTCP2_STRM_FLAG_STOP_SENDING_RECVED)) {
++    return 0;
++  }
++  if (app_error_code) {
++    *app_error_code = strm->app_error_code;
++  }
++  return 1;
++}
++
++void ngtcp2_conn_get_quicperf_blocked_frame_counts(
++  ngtcp2_conn *conn, uint64_t *data_blocked,
++  uint64_t *stream_data_blocked) {
++  if (data_blocked) {
++    *data_blocked = conn->quicperf_blocked_frame_counts.data_blocked;
++  }
++  if (stream_data_blocked) {
++    *stream_data_blocked =
++      conn->quicperf_blocked_frame_counts.stream_data_blocked;
++  }
++}
++
+ void ngtcp2_conn_update_pkt_tx_time(ngtcp2_conn *conn, ngtcp2_tstamp ts) {
+   ngtcp2_duration wait, d;
+ 
+diff --git a/lib/ngtcp2_conn.h b/lib/ngtcp2_conn.h
+index 47175736..e63f4a21 100644
+--- a/lib/ngtcp2_conn.h
++++ b/lib/ngtcp2_conn.h
+@@ -618,6 +618,10 @@ struct ngtcp2_conn {
+-
++
+   ngtcp2_map strms;
+   ngtcp2_conn_stat cstat;
++  struct {
++    uint64_t data_blocked;
++    uint64_t stream_data_blocked;
++  } quicperf_blocked_frame_counts;
+   ngtcp2_pv *pv;
+   ngtcp2_pmtud *pmtud;
+   ngtcp2_log log;
+QUICPERF_DEPENDENCY_PATCH
+if git -C "$source_dir" apply --check "$patch_file"; then
+  git -C "$source_dir" apply "$patch_file"
+elif git -C "$source_dir" apply --reverse --check "$patch_file"; then
+  :
+else
+  echo "quicperf dependency patch does not match pinned source" >&2
+  exit 1
+fi
+source_index="$DEPO_BUILD_DIR/quicperf-source.index"
+rm -f "$source_index"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" read-tree HEAD
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file"
+test "$(GIT_INDEX_FILE="$source_index" git -C "$source_dir" write-tree)" = "de62489b58ae6964241e4d5a7b438f74c89515ef"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" diff --quiet --no-ext-diff -- .
+cmake --build "$DEPO_BUILD_DIR" --parallel "$(nproc)"
+EOF
 TARGET ngtcp2::ngtcp2 STATIC lib/libngtcp2.a INTERFACE include
 TARGET ngtcp2::crypto_boringssl STATIC lib/libngtcp2_crypto_boringssl.a INTERFACE include
 LINK ngtcp2::crypto_boringssl ngtcp2::ngtcp2 boringssl

@@ -11,7 +11,8 @@ const posix = std.posix;
 const Certificate = std.crypto.Certificate;
 const c = std.c;
 
-const ALPN = "perf";
+const ALPN = "qperf/2";
+const TLS_HOSTNAME = "server.quicperf.test";
 const MAX_PACKET = 1500;
 
 pub const QzfAddr = extern struct {
@@ -22,6 +23,7 @@ pub const QzfAddr = extern struct {
 pub const QzfConfig = extern struct {
     is_server: bool,
     local_addr: QzfAddr,
+    peer_addr: QzfAddr,
     cert_path: [*:0]const u8,
     key_path: [*:0]const u8,
     chain_path: [*:0]const u8,
@@ -34,8 +36,45 @@ pub const QzfConfig = extern struct {
     max_uni_streams: u64,
     idle_timeout_ms: u64,
     udp_payload_size: u32,
+    datagram_max_frame_size: u64,
     send_backlog_limit: u64,
     now_us: u64,
+    calendar_unix_seconds: u64,
+};
+
+const QZF_PACKET_ABI_VERSION: u32 = 6;
+const QZF_PACKET_BATCH_CAPACITY: usize = 64;
+
+pub const QzfReceiveDescriptorV2 = extern struct {
+    data: [*]const u8,
+    len: usize,
+    peer: QzfAddr,
+    ecn: u8,
+    reserved: [7]u8,
+};
+
+pub const QzfTransmitDescriptorV2 = extern struct {
+    data: [*]u8,
+    capacity: usize,
+    len: usize,
+    peer: QzfAddr,
+    ecn: u8,
+    reserved: [7]u8,
+    desired_send_raw_ns: u64,
+};
+
+pub const QzfAdapterStatusV2 = extern struct {
+    code: i32,
+    reserved: u32,
+    message: [256]u8,
+};
+
+pub const QzfTransportCountersV3 = extern struct {
+    packets_lost: u64 = 0,
+    packets_retransmitted: u64 = 0,
+    recovery_wakeups: u64 = 0,
+    flow_control_blocked_events: u64 = 0,
+    stream_credit_blocked_events: u64 = 0,
 };
 
 pub const QzfStreamDebug = extern struct {
@@ -59,6 +98,47 @@ pub const QzfStreamDebug = extern struct {
     bytes_in_flight: u64 = 0,
     cwnd: u64 = 0,
     conn_send_window: u64 = 0,
+};
+
+pub const QzfPeerTerminalFactsV6 = extern struct {
+    available: bool = false,
+    fin: bool = false,
+    reset_stream: bool = false,
+    stop_sending: bool = false,
+    connection_close: bool = false,
+    reserved: [3]u8 = .{0} ** 3,
+    reset_stream_error: u64 = 0,
+    stop_sending_error: u64 = 0,
+    connection_close_error: u64 = 0,
+    connection_close_reason_length: u64 = 0,
+};
+
+const PeerCloseFacts = struct {
+    error_code: u64,
+    reason_length: u64,
+};
+
+pub const QzfNegotiated = extern struct {
+    available: bool = false,
+    peer_certificate_verified: bool = false,
+    hostname_verified: bool = false,
+    active_migration: bool = false,
+    ack_frequency: bool = false,
+    reserved: [3]u8 = .{0} ** 3,
+    quic_version: u32 = 0,
+    tls_cipher_suite: u16 = 0,
+    tls_named_group: u16 = 0,
+    max_udp_payload_size: u64 = 0,
+    max_ack_delay_ns: u64 = 0,
+    ack_delay_exponent: u64 = 0,
+    active_connection_id_limit: u64 = 0,
+    connection_id_bytes: u64 = 0,
+    max_idle_timeout_ns: u64 = 0,
+    max_bidi_streams: u64 = 0,
+    max_uni_streams: u64 = 0,
+    connection_window_bytes: u64 = 0,
+    stream_window_bytes: u64 = 0,
+    datagram_max_frame_size: u64 = 0,
 };
 
 const StreamKey = struct {
@@ -145,25 +225,36 @@ const TraceConnSnapshot = struct {
 pub const qzf_engine_t = struct {
     allocator: std.mem.Allocator,
     is_server: bool,
+    tls_verify_peer: bool,
     local_addr: posix.sockaddr.storage,
     remote_addr: ?posix.sockaddr.storage = null,
     tls_config: tls13.TlsConfig,
     imported_session_ticket: tls13.SessionTicket = .{ .psk = .{0} ** 32 },
     has_imported_session_ticket: bool = false,
     imported_zero_rtt: bool = false,
+    imported_ticket_digest: [32]u8 = .{0} ** 32,
+    consumed_ticket_digests: std.AutoHashMap([32]u8, void),
+    zero_rtt_attempted: std.AutoHashMap(u64, bool),
     conn_config: connection.ConnectionConfig,
     private_key: []u8,
     cert_chain: [][]const u8,
     ca_bundle: ?*Certificate.Bundle,
     alpn: []const []const u8,
     udp_payload_size: usize,
-    client_conn: ?connection.Connection = null,
+    client_conns: std.AutoHashMap(u64, *connection.Connection),
+    next_client_conn_id: u64 = 1,
     server: ?connection_manager.ConnectionManager = null,
+    server_conns: std.AutoHashMap(u64, *connection.Connection),
+    server_conn_ids: std.AutoHashMap(*connection.Connection, u64),
+    next_server_conn_id: u64 = 1,
     next_server_send_index: usize,
     accepted_connections: std.ArrayList(u64),
     known_connections: std.AutoHashMap(u64, void),
+    peer_closed_connections: std.AutoHashMap(u64, PeerCloseFacts),
     accepted_streams: std.AutoHashMap(StreamKey, void),
+    accepted_stream_keys: std.ArrayList(StreamKey),
     recv_backlog: std.AutoHashMap(StreamKey, RecvBacklog),
+    recv_backlog_keys: std.ArrayList(StreamKey),
     outbound: std.ArrayList(Outbound),
     send_backlog_limit: u64,
     disable_pacing: bool,
@@ -173,15 +264,27 @@ pub const qzf_engine_t = struct {
     fn deinit(self: *qzf_engine_t) void {
         self.printSendTrace();
         self.send_stats.deinit();
-        if (self.client_conn) |*conn| conn.deinit();
+        self.zero_rtt_attempted.deinit();
+        self.consumed_ticket_digests.deinit();
+        var client_it = self.client_conns.valueIterator();
+        while (client_it.next()) |conn| {
+            conn.*.deinit();
+            self.allocator.destroy(conn.*);
+        }
+        self.client_conns.deinit();
+        self.server_conns.deinit();
+        self.server_conn_ids.deinit();
         if (self.server) |*server| server.deinit();
         for (self.outbound.items) |out| self.allocator.free(out.data);
         self.outbound.deinit(self.allocator);
         var backlog_it = self.recv_backlog.valueIterator();
         while (backlog_it.next()) |pending| self.allocator.free(pending.data);
         self.recv_backlog.deinit();
+        self.recv_backlog_keys.deinit(self.allocator);
         self.accepted_streams.deinit();
+        self.accepted_stream_keys.deinit(self.allocator);
         self.known_connections.deinit();
+        self.peer_closed_connections.deinit();
         self.accepted_connections.deinit(self.allocator);
         if (self.ca_bundle) |bundle| {
             bundle.deinit(self.allocator);
@@ -195,16 +298,41 @@ pub const qzf_engine_t = struct {
     }
 
     fn connById(self: *qzf_engine_t, conn_id: u64) ?*connection.Connection {
-        if (self.is_server) {
-            if (self.server) |*server| {
-                for (server.entries.items) |entry| {
-                    if (@as(u64, @intCast(@intFromPtr(entry.conn))) == conn_id) return entry.conn;
-                }
-            }
-            return null;
+        return if (self.is_server) self.server_conns.get(conn_id) else self.client_conns.get(conn_id);
+    }
+
+    fn pendingAppBytes(conn: *connection.Connection) u64 {
+        var total: u64 = 0;
+        var bidi = conn.streams.streams.valueIterator();
+        while (bidi.next()) |stream_ptr| {
+            const send = &stream_ptr.*.send;
+            total = total +| (send.write_offset - send.ack_offset);
         }
-        if (conn_id == 1) {
-            if (self.client_conn) |*conn| return conn;
+        var uni = conn.streams.send_streams.valueIterator();
+        while (uni.next()) |send_ptr| {
+            const send = send_ptr.*;
+            total = total +| (send.write_offset - send.ack_offset);
+        }
+        return total;
+    }
+
+    fn clientConnForDatagram(self: *qzf_engine_t, data: []const u8) ?*connection.Connection {
+        if (self.client_conns.count() == 1) {
+            var only = self.client_conns.valueIterator();
+            return only.next().?.*;
+        }
+        if (data.len < 2) return null;
+        const long_header = (data[0] & 0x80) != 0;
+        const dcid = if (long_header) blk: {
+            if (data.len < 6) return null;
+            const len: usize = data[5];
+            if (data.len < 6 + len) return null;
+            break :blk data[6..][0..len];
+        } else data[1..];
+        var it = self.client_conns.valueIterator();
+        while (it.next()) |conn_ptr| {
+            const conn = conn_ptr.*;
+            if (conn.ownsLocalConnectionId(dcid, long_header)) return conn;
         }
         return null;
     }
@@ -250,7 +378,7 @@ pub const qzf_engine_t = struct {
     }
 
     fn inspectSendState(conn: *connection.Connection) SendSnapshot {
-        const now: i64 = @intCast(quic.sys.nanoTimestamp());
+        const now = conn.pacer.last_sent_time;
         var snapshot = SendSnapshot{
             .bytes_in_flight = conn.pkt_handler.bytes_in_flight,
             .cwnd = conn.cc.sendWindow(),
@@ -326,8 +454,9 @@ pub const qzf_engine_t = struct {
             var count: usize = 0;
             for (server.entries.items) |entry| {
                 if (count == snapshots.len) break;
+                const conn_id = self.server_conn_ids.get(entry.conn) orelse continue;
                 snapshots[count] = .{
-                    .conn_id = @intCast(@intFromPtr(entry.conn)),
+                    .conn_id = conn_id,
                     .state = inspectSendState(entry.conn),
                 };
                 count += 1;
@@ -348,7 +477,7 @@ pub const qzf_engine_t = struct {
         if (!self.trace_enabled or !self.is_server) return;
         if (self.server) |*server| {
             for (server.entries.items) |entry| {
-                const conn_id: u64 = @intCast(@intFromPtr(entry.conn));
+                const conn_id = self.server_conn_ids.get(entry.conn) orelse continue;
                 const after = inspectSendState(entry.conn);
                 const stats = self.sendTraceStats(conn_id) catch continue;
                 if (sameEndpoint(entry.conn.peerAddress(), remote)) {
@@ -505,11 +634,22 @@ pub const qzf_engine_t = struct {
 
     fn registerServerConnection(self: *qzf_engine_t, entry: *connection_manager.ConnEntry) !void {
         self.tuneConn(entry.conn);
-        const conn_id: u64 = @intCast(@intFromPtr(entry.conn));
-        if (self.known_connections.get(conn_id) == null) {
-            try self.known_connections.put(conn_id, {});
-            try self.accepted_connections.append(self.allocator, conn_id);
-        }
+        if (self.server_conn_ids.contains(entry.conn)) return;
+        const conn_id = self.next_server_conn_id;
+        self.next_server_conn_id = std.math.add(u64, conn_id, 1) catch return error.ConnectionIdExhausted;
+        try self.server_conn_ids.put(entry.conn, conn_id);
+        errdefer _ = self.server_conn_ids.remove(entry.conn);
+        try self.server_conns.put(conn_id, entry.conn);
+        errdefer _ = self.server_conns.remove(conn_id);
+        try self.known_connections.put(conn_id, {});
+        errdefer _ = self.known_connections.remove(conn_id);
+        try self.accepted_connections.append(self.allocator, conn_id);
+    }
+
+    fn unregisterServerConnection(self: *qzf_engine_t, conn: *connection.Connection) void {
+        const conn_id = self.server_conn_ids.get(conn) orelse return;
+        _ = self.server_conn_ids.remove(conn);
+        _ = self.server_conns.remove(conn_id);
     }
 
     fn scanServerConnections(self: *qzf_engine_t) !void {
@@ -518,23 +658,59 @@ pub const qzf_engine_t = struct {
         }
     }
 
+    fn latchPeerCloseFacts(self: *qzf_engine_t) !void {
+        var client_it = self.client_conns.iterator();
+        while (client_it.next()) |entry| {
+            if (entry.value_ptr.*.peerApplicationClose()) |close|
+                try self.peer_closed_connections.put(entry.key_ptr.*, .{
+                    .error_code = close.error_code,
+                    .reason_length = close.reason_length,
+                });
+        }
+        var server_it = self.server_conns.iterator();
+        while (server_it.next()) |entry| {
+            if (entry.value_ptr.*.peerApplicationClose()) |close|
+                try self.peer_closed_connections.put(entry.key_ptr.*, .{
+                    .error_code = close.error_code,
+                    .reason_length = close.reason_length,
+                });
+        }
+    }
+
     fn onTimeoutAll(self: *qzf_engine_t) void {
-        if (self.client_conn) |*conn| conn.onTimeout() catch {};
+        var closed_clients = std.ArrayList(u64){ .items = &.{}, .capacity = 0 };
+        defer closed_clients.deinit(self.allocator);
+        var client_it = self.client_conns.iterator();
+        while (client_it.next()) |entry| {
+            entry.value_ptr.*.onTimeout() catch {};
+            if (entry.value_ptr.*.isClosed())
+                closed_clients.append(self.allocator, entry.key_ptr.*) catch {};
+        }
+        for (closed_clients.items) |conn_id| {
+            const conn = self.client_conns.fetchRemove(conn_id) orelse continue;
+            self.purgeConnectionState(conn_id);
+            conn.value.deinit();
+            self.allocator.destroy(conn.value);
+        }
         if (self.server) |*server| {
             var i: usize = 0;
             while (i < server.entries.items.len) {
-                if (!server.tickEntry(server.entries.items[i])) continue;
+                const entry = server.entries.items[i];
+                if (!server.tickEntry(entry)) {
+                    self.unregisterServerConnection(entry.conn);
+                    continue;
+                }
                 i += 1;
             }
             server.freeDeadEntries();
         }
     }
 
-    fn nextTimeoutUs(self: *qzf_engine_t) ?u64 {
-        const now_ns: i64 = @intCast(quic.sys.nanoTimestamp());
+    fn nextTimeoutRawNs(self: *qzf_engine_t) ?u64 {
         var best: ?i64 = null;
-        if (self.client_conn) |*conn| {
-            if (conn.nextTimeoutNs()) |deadline| best = deadline;
+        var client_it = self.client_conns.valueIterator();
+        while (client_it.next()) |conn| {
+            if (conn.*.nextTimeoutNs()) |deadline| best = deadline;
         }
         if (self.server) |*server| {
             for (server.entries.items) |entry| {
@@ -544,8 +720,14 @@ pub const qzf_engine_t = struct {
             }
         }
         const deadline = best orelse return null;
+        if (deadline <= 0) return 1;
+        return @intCast(deadline);
+    }
+
+    fn nextTimeoutUs(self: *qzf_engine_t, now_ns: u64) ?u64 {
+        const deadline = self.nextTimeoutRawNs() orelse return null;
         if (deadline <= now_ns) return 0;
-        return @intCast(@divTrunc(deadline - now_ns, 1000));
+        return (deadline - now_ns) / 1000;
     }
 
     fn receive(self: *qzf_engine_t, remote: posix.sockaddr.storage, data: []u8) !void {
@@ -567,7 +749,7 @@ pub const qzf_engine_t = struct {
             }
             try self.scanServerConnections();
         } else {
-            var conn = &(self.client_conn orelse return error.NotClient);
+            var conn = self.clientConnForDatagram(data) orelse return;
             conn.handleDatagram(data, .{
                 .to = self.local_addr,
                 .from = remote,
@@ -575,6 +757,7 @@ pub const qzf_engine_t = struct {
                 .datagram_size = data.len,
             });
         }
+        try self.latchPeerCloseFacts();
     }
 
     fn pollTransmit(self: *qzf_engine_t, out: []u8) !?struct { remote: posix.sockaddr.storage, len: usize } {
@@ -586,7 +769,9 @@ pub const qzf_engine_t = struct {
             return .{ .remote = queued.remote, .len = queued.data.len };
         }
 
-        if (self.client_conn) |*conn| {
+        var client_it = self.client_conns.valueIterator();
+        while (client_it.next()) |conn_ptr| {
+            const conn = conn_ptr.*;
             self.prepareSend(conn);
             const len = try conn.send(out);
             if (len > 0) {
@@ -603,7 +788,7 @@ pub const qzf_engine_t = struct {
                 const index = (start + offset) % entry_count;
                 const entry = server.entries.items[index];
                 self.prepareSend(entry.conn);
-                const conn_id: u64 = @intCast(@intFromPtr(entry.conn));
+                const conn_id = self.server_conn_ids.get(entry.conn) orelse continue;
                 const should_trace = self.trace_enabled and self.is_server;
                 const before = if (should_trace) inspectSendState(entry.conn) else SendSnapshot{};
                 const len = entry.conn.send(out) catch {
@@ -629,6 +814,23 @@ pub const qzf_engine_t = struct {
             const key = StreamKey{ .conn_id = conn_id, .stream_id = stream_id };
             if (self.accepted_streams.get(key) != null) continue;
             try self.accepted_streams.put(key, {});
+            errdefer _ = self.accepted_streams.remove(key);
+            try self.accepted_stream_keys.append(self.allocator, key);
+            return stream_id;
+        }
+        return null;
+    }
+
+    fn scanAcceptedUni(self: *qzf_engine_t, conn_id: u64, conn: *connection.Connection) !?u64 {
+        var it = conn.streams.recv_streams.iterator();
+        while (it.next()) |kv| {
+            const stream_id = kv.key_ptr.*;
+            if (isBidi(stream_id) or isLocal(stream_id, conn.is_server)) continue;
+            const key = StreamKey{ .conn_id = conn_id, .stream_id = stream_id };
+            if (self.accepted_streams.get(key) != null) continue;
+            try self.accepted_streams.put(key, {});
+            errdefer _ = self.accepted_streams.remove(key);
+            try self.accepted_stream_keys.append(self.allocator, key);
             return stream_id;
         }
         return null;
@@ -643,6 +845,7 @@ pub const qzf_engine_t = struct {
         if (pending.offset == pending.data.len) {
             self.allocator.free(pending.data);
             _ = self.recv_backlog.remove(key);
+            self.removeTrackedKey(&self.recv_backlog_keys, key);
         }
         return n;
     }
@@ -654,6 +857,41 @@ pub const qzf_engine_t = struct {
         }
         errdefer self.allocator.free(chunk);
         try self.recv_backlog.put(key, .{ .data = chunk, .offset = offset });
+        errdefer _ = self.recv_backlog.remove(key);
+        try self.recv_backlog_keys.append(self.allocator, key);
+    }
+
+    fn removeTrackedKey(_: *qzf_engine_t, keys: *std.ArrayList(StreamKey), key: StreamKey) void {
+        for (keys.items, 0..) |candidate, index| {
+            if (candidate.conn_id == key.conn_id and candidate.stream_id == key.stream_id) {
+                _ = keys.swapRemove(index);
+                return;
+            }
+        }
+    }
+
+    fn purgeConnectionState(self: *qzf_engine_t, conn_id: u64) void {
+        var accepted_index: usize = 0;
+        while (accepted_index < self.accepted_stream_keys.items.len) {
+            const key = self.accepted_stream_keys.items[accepted_index];
+            if (key.conn_id != conn_id) {
+                accepted_index += 1;
+                continue;
+            }
+            _ = self.accepted_streams.remove(key);
+            _ = self.accepted_stream_keys.swapRemove(accepted_index);
+        }
+        var backlog_index: usize = 0;
+        while (backlog_index < self.recv_backlog_keys.items.len) {
+            const key = self.recv_backlog_keys.items[backlog_index];
+            if (key.conn_id != conn_id) {
+                backlog_index += 1;
+                continue;
+            }
+            if (self.recv_backlog.fetchRemove(key)) |removed|
+                self.allocator.free(removed.value.data);
+            _ = self.recv_backlog_keys.swapRemove(backlog_index);
+        }
     }
 };
 
@@ -680,6 +918,14 @@ fn storeError(comptime fmt: []const u8, args: anytype) c_int {
 
 fn clearError() void {
     last_error_buf[0] = 0;
+}
+
+fn setCallerTimeRaw(now_raw_ns: u64) void {
+    quic.sys.setCallerTimeNs(@intCast(@min(now_raw_ns, @as(u64, std.math.maxInt(i64)))));
+}
+
+fn setCallerTimeUs(now_us: u64) void {
+    setCallerTimeRaw(now_us *| 1000);
 }
 
 fn cstr(ptr: [*:0]const u8) []const u8 {
@@ -852,14 +1098,12 @@ fn loadFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return quic.sys.readFileAlloc(allocator, path, 1 << 20);
 }
 
-fn unixNowSeconds() i64 {
-    var ts: posix.timespec = undefined;
-    if (c.clock_gettime(posix.CLOCK.REALTIME, &ts) != 0) return 0;
-    return @as(i64, ts.sec);
-}
-
 fn makeEngine(config: *const QzfConfig) !*qzf_engine_t {
     const allocator = std.heap.c_allocator;
+    if (config.calendar_unix_seconds == 0 or
+        config.calendar_unix_seconds > std.math.maxInt(i64))
+        return error.InvalidCalendarTime;
+    const calendar_unix_seconds: i64 = @intCast(config.calendar_unix_seconds);
     const cert_pem = try loadFile(allocator, cstr(config.cert_path));
     defer allocator.free(cert_pem);
     const key_pem = try loadFile(allocator, cstr(config.key_path));
@@ -899,11 +1143,10 @@ fn makeEngine(config: *const QzfConfig) !*qzf_engine_t {
         const bundle = try allocator.create(Certificate.Bundle);
         bundle.* = Certificate.Bundle.empty;
         ca_bundle = bundle;
-        const now_sec = unixNowSeconds();
         for (trusted_chain) |cert| {
             const decoded_start: u32 = @intCast(bundle.bytes.items.len);
             try bundle.bytes.appendSlice(allocator, cert);
-            try bundle.parseCert(allocator, decoded_start, now_sec);
+            try bundle.parseCert(allocator, decoded_start, calendar_unix_seconds);
         }
     }
 
@@ -923,10 +1166,11 @@ fn makeEngine(config: *const QzfConfig) !*qzf_engine_t {
         .private_key_bytes = private_key,
         .private_key_algorithm = private_key_algorithm,
         .alpn = alpn,
-        .server_name = "localhost",
+        .server_name = TLS_HOSTNAME,
         .skip_cert_verify = !config.tls_verify_peer,
         .ca_bundle = ca_bundle,
         .ticket_key = ticket_key,
+        .calendar_unix_seconds = calendar_unix_seconds,
     };
     const send_backlog_limit = if (config.send_backlog_limit == 0)
         @as(u64, 1024 * 1024)
@@ -934,13 +1178,19 @@ fn makeEngine(config: *const QzfConfig) !*qzf_engine_t {
         config.send_backlog_limit;
     const conn_config = connection.ConnectionConfig{
         .max_idle_timeout = config.idle_timeout_ms,
+        .max_udp_payload_size = config.udp_payload_size,
+        .ack_delay_exponent = 3,
+        .max_ack_delay = 25,
+        .disable_active_migration = true,
+        .active_connection_id_limit = 2,
+        .ack_frequency = false,
         .initial_max_data = config.connection_window,
         .initial_max_stream_data_bidi_local = config.stream_window,
         .initial_max_stream_data_bidi_remote = config.stream_window,
         .initial_max_stream_data_uni = config.stream_window,
         .initial_max_streams_bidi = config.max_bidi_streams,
         .initial_max_streams_uni = config.max_uni_streams,
-        .max_datagram_frame_size = config.udp_payload_size,
+        .max_datagram_frame_size = config.datagram_max_frame_size,
         .datagram_queue_capacity = 1024,
         .disable_pmtud = true,
         .token_key = retry_token_key,
@@ -951,6 +1201,7 @@ fn makeEngine(config: *const QzfConfig) !*qzf_engine_t {
     engine.* = .{
         .allocator = allocator,
         .is_server = config.is_server,
+        .tls_verify_peer = config.tls_verify_peer,
         .local_addr = qzfToSockaddr(&config.local_addr),
         .tls_config = tls_config,
         .conn_config = conn_config,
@@ -959,12 +1210,20 @@ fn makeEngine(config: *const QzfConfig) !*qzf_engine_t {
         .ca_bundle = ca_bundle,
         .alpn = alpn,
         .udp_payload_size = @max(@as(usize, 1200), @min(@as(usize, config.udp_payload_size), @as(usize, MAX_PACKET))),
+        .client_conns = std.AutoHashMap(u64, *connection.Connection).init(allocator),
         .server = null,
+        .server_conns = std.AutoHashMap(u64, *connection.Connection).init(allocator),
+        .server_conn_ids = std.AutoHashMap(*connection.Connection, u64).init(allocator),
         .next_server_send_index = 0,
         .accepted_connections = .{ .items = &.{}, .capacity = 0 },
         .known_connections = std.AutoHashMap(u64, void).init(allocator),
+        .peer_closed_connections = std.AutoHashMap(u64, PeerCloseFacts).init(allocator),
+        .consumed_ticket_digests = std.AutoHashMap([32]u8, void).init(allocator),
+        .zero_rtt_attempted = std.AutoHashMap(u64, bool).init(allocator),
         .accepted_streams = std.AutoHashMap(StreamKey, void).init(allocator),
+        .accepted_stream_keys = .{ .items = &.{}, .capacity = 0 },
         .recv_backlog = std.AutoHashMap(StreamKey, RecvBacklog).init(allocator),
+        .recv_backlog_keys = .{ .items = &.{}, .capacity = 0 },
         .outbound = .{ .items = &.{}, .capacity = 0 },
         .send_backlog_limit = send_backlog_limit,
         .disable_pacing = config.disable_pacing,
@@ -985,6 +1244,7 @@ fn makeEngine(config: *const QzfConfig) !*qzf_engine_t {
 
 export fn qzf_engine_new(config: *const QzfConfig) ?*qzf_engine_t {
     clearError();
+    setCallerTimeUs(config.now_us);
     return makeEngine(config) catch |err| {
         _ = storeError("new: {s}", .{@errorName(err)});
         return null;
@@ -996,8 +1256,8 @@ export fn qzf_engine_free(engine: ?*qzf_engine_t) void {
 }
 
 export fn qzf_engine_connect(engine: *qzf_engine_t, remote: *const QzfAddr, now_us: u64, conn_id: *u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     if (engine.is_server) return storeError("connect called on server", .{});
     const remote_addr = qzfToSockaddr(remote);
     engine.remote_addr = remote_addr;
@@ -1005,12 +1265,41 @@ export fn qzf_engine_connect(engine: *qzf_engine_t, remote: *const QzfAddr, now_
     if (engine.has_imported_session_ticket) {
         tls_config.session_ticket = &engine.imported_session_ticket;
     }
-    var conn = connection.connect(engine.allocator, "localhost", engine.conn_config, tls_config, null) catch |err| {
+    const conn = engine.allocator.create(connection.Connection) catch |err| {
+        return storeError("connect allocate: {s}", .{@errorName(err)});
+    };
+    conn.* = connection.connect(engine.allocator, TLS_HOSTNAME, engine.conn_config, tls_config, null) catch |err| {
+        engine.allocator.destroy(conn);
         return storeError("connect: {s}", .{@errorName(err)});
     };
-    engine.tuneConn(&conn);
-    engine.client_conn = conn;
-    conn_id.* = 1;
+    engine.tuneConn(conn);
+    const id = engine.next_client_conn_id;
+    engine.next_client_conn_id +|= 1;
+    engine.client_conns.put(id, conn) catch |err| {
+        conn.deinit();
+        engine.allocator.destroy(conn);
+        return storeError("connect store: {s}", .{@errorName(err)});
+    };
+    const attempted = engine.has_imported_session_ticket and engine.imported_zero_rtt;
+    engine.zero_rtt_attempted.put(id, attempted) catch |err| {
+        _ = engine.client_conns.remove(id);
+        conn.deinit();
+        engine.allocator.destroy(conn);
+        return storeError("connect zero-rtt state: {s}", .{@errorName(err)});
+    };
+    if (engine.has_imported_session_ticket) {
+        engine.consumed_ticket_digests.put(engine.imported_ticket_digest, {}) catch |err| {
+            _ = engine.zero_rtt_attempted.remove(id);
+            _ = engine.client_conns.remove(id);
+            conn.deinit();
+            engine.allocator.destroy(conn);
+            return storeError("connect consumed ticket: {s}", .{@errorName(err)});
+        };
+        engine.has_imported_session_ticket = false;
+        engine.imported_zero_rtt = false;
+        engine.tls_config.session_ticket = null;
+    }
+    conn_id.* = id;
     return 0;
 }
 
@@ -1022,8 +1311,8 @@ export fn qzf_engine_accept_connection(engine: *qzf_engine_t, conn_id: *u64) c_i
 }
 
 export fn qzf_engine_is_connected(engine: *qzf_engine_t, conn_id: u64, now_us: u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     const conn = engine.connById(conn_id) orelse return 0;
     if (!conn.isEstablished()) return 0;
     if (!conn.is_server) {
@@ -1034,9 +1323,30 @@ export fn qzf_engine_is_connected(engine: *qzf_engine_t, conn_id: u64, now_us: u
     return 1;
 }
 
-export fn qzf_engine_receive(engine: *qzf_engine_t, remote: *const QzfAddr, data: [*]u8, len: usize, now_us: u64) c_int {
-    _ = now_us;
+export fn qzf_connection_is_closed(engine: *qzf_engine_t, conn_id: u64, now_us: u64) c_int {
     clearError();
+    setCallerTimeUs(now_us);
+    if (!engine.is_server) {
+        const conn = engine.client_conns.get(conn_id) orelse
+            return storeError("unknown connection {d}", .{conn_id});
+        if (!conn.isClosed()) return 0;
+        _ = engine.client_conns.remove(conn_id);
+        engine.purgeConnectionState(conn_id);
+        conn.deinit();
+        engine.allocator.destroy(conn);
+        return 1;
+    }
+    if (engine.server_conns.get(conn_id)) |conn| return if (conn.isClosed()) 1 else 0;
+    if (engine.known_connections.remove(conn_id)) {
+        engine.purgeConnectionState(conn_id);
+        return 1;
+    }
+    return storeError("unknown connection {d}", .{conn_id});
+}
+
+export fn qzf_engine_receive(engine: *qzf_engine_t, remote: *const QzfAddr, data: [*]u8, len: usize, now_us: u64) c_int {
+    clearError();
+    setCallerTimeUs(now_us);
     engine.receive(qzfToSockaddr(remote), data[0..len]) catch |err| {
         return storeError("receive: {s}", .{@errorName(err)});
     };
@@ -1044,8 +1354,8 @@ export fn qzf_engine_receive(engine: *qzf_engine_t, remote: *const QzfAddr, data
 }
 
 export fn qzf_engine_poll_transmit(engine: *qzf_engine_t, remote: *QzfAddr, data: [*]u8, capacity: usize, len: *usize, now_us: u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     const packet = engine.pollTransmit(data[0..capacity]) catch |err| {
         return storeError("poll_transmit: {s}", .{@errorName(err)});
     };
@@ -1059,16 +1369,138 @@ export fn qzf_engine_poll_transmit(engine: *qzf_engine_t, remote: *QzfAddr, data
 }
 
 export fn qzf_engine_next_timeout_us(engine: *qzf_engine_t, now_us: u64, timeout_us: *u64) c_int {
-    _ = now_us;
     clearError();
-    if (engine.nextTimeoutUs()) |timeout| timeout_us.* = timeout;
+    setCallerTimeUs(now_us);
+    timeout_us.* = engine.nextTimeoutUs(now_us *| 1000) orelse std.math.maxInt(u64);
     return 0;
 }
 
 export fn qzf_engine_on_timeout(engine: *qzf_engine_t, now_us: u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     engine.onTimeoutAll();
+    return 0;
+}
+
+fn writeAdapterStatus(status: *QzfAdapterStatusV2, code: c_int) void {
+    status.code = code;
+    status.reserved = 0;
+    @memset(&status.message, 0);
+    if (code == 0) return;
+    const message = std.mem.sliceTo(&last_error_buf, 0);
+    const count = @min(message.len, status.message.len - 1);
+    @memcpy(status.message[0..count], message[0..count]);
+}
+
+export fn qzf_packet_abi_version() u32 {
+    return QZF_PACKET_ABI_VERSION;
+}
+
+export fn qzf_engine_receive_batch(engine: *qzf_engine_t, packets: [*]const QzfReceiveDescriptorV2, count: usize, now_raw_ns: u64, status: *QzfAdapterStatusV2) c_int {
+    clearError();
+    setCallerTimeRaw(now_raw_ns);
+    if (count > QZF_PACKET_BATCH_CAPACITY) {
+        const code = storeError("receive batch exceeds {d}", .{QZF_PACKET_BATCH_CAPACITY});
+        writeAdapterStatus(status, code);
+        return code;
+    }
+    for (packets[0..count]) |packet| {
+        if (packet.ecn > 3 or std.mem.indexOfNone(u8, &packet.reserved, &.{0}) != null) {
+            const code = storeError("invalid receive descriptor metadata", .{});
+            writeAdapterStatus(status, code);
+            return code;
+        }
+        engine.receive(qzfToSockaddr(&packet.peer), @constCast(packet.data[0..packet.len])) catch |err| {
+            const code = storeError("receive batch: {s}", .{@errorName(err)});
+            writeAdapterStatus(status, code);
+            return code;
+        };
+    }
+    writeAdapterStatus(status, 0);
+    return 0;
+}
+
+export fn qzf_engine_poll_transmit_batch(engine: *qzf_engine_t, packets: [*]QzfTransmitDescriptorV2, capacity: usize, count: *usize, now_raw_ns: u64, status: *QzfAdapterStatusV2) c_int {
+    clearError();
+    setCallerTimeRaw(now_raw_ns);
+    count.* = 0;
+    if (capacity > QZF_PACKET_BATCH_CAPACITY) {
+        const code = storeError("transmit batch exceeds {d}", .{QZF_PACKET_BATCH_CAPACITY});
+        writeAdapterStatus(status, code);
+        return code;
+    }
+    for (packets[0..capacity]) |*packet| {
+        packet.len = 0;
+        packet.ecn = 0;
+        @memset(&packet.reserved, 0);
+        packet.desired_send_raw_ns = now_raw_ns;
+        const result = engine.pollTransmit(packet.data[0..packet.capacity]) catch |err| {
+            const code = storeError("poll transmit batch: {s}", .{@errorName(err)});
+            writeAdapterStatus(status, code);
+            return code;
+        };
+        const emitted = result orelse break;
+        packet.peer = sockaddrToQzf(&emitted.remote);
+        packet.len = emitted.len;
+        count.* += 1;
+    }
+    writeAdapterStatus(status, 0);
+    return 0;
+}
+
+export fn qzf_engine_next_timeout_raw_ns(engine: *qzf_engine_t, now_raw_ns: u64, deadline_raw_ns: *u64, status: *QzfAdapterStatusV2) c_int {
+    clearError();
+    setCallerTimeRaw(now_raw_ns);
+    deadline_raw_ns.* = engine.nextTimeoutRawNs() orelse 0;
+    writeAdapterStatus(status, 0);
+    return 0;
+}
+
+export fn qzf_engine_on_timeout_raw_ns(engine: *qzf_engine_t, now_raw_ns: u64, status: *QzfAdapterStatusV2) c_int {
+    clearError();
+    setCallerTimeRaw(now_raw_ns);
+    engine.onTimeoutAll();
+    writeAdapterStatus(status, 0);
+    return 0;
+}
+
+fn addTransportCounters(total: *QzfTransportCountersV3, conn: *const connection.Connection) !void {
+    const current = conn.getTransportCounters();
+    total.packets_lost = try std.math.add(u64, total.packets_lost, current.packets_lost);
+    total.flow_control_blocked_events = try std.math.add(
+        u64,
+        total.flow_control_blocked_events,
+        current.data_blocked_sent,
+    );
+    total.stream_credit_blocked_events = try std.math.add(
+        u64,
+        total.stream_credit_blocked_events,
+        current.stream_data_blocked_sent,
+    );
+}
+
+export fn qzf_engine_transport_counters_v3(engine: *qzf_engine_t, counters: *QzfTransportCountersV3, status: *QzfAdapterStatusV2) c_int {
+    clearError();
+    var result: QzfTransportCountersV3 = .{};
+    var client_it = engine.client_conns.valueIterator();
+    while (client_it.next()) |conn| {
+        addTransportCounters(&result, conn.*) catch {
+            const code = storeError("transport counter overflow", .{});
+            writeAdapterStatus(status, code);
+            return code;
+        };
+    }
+    if (engine.server) |*server| {
+        for (server.entries.items) |entry| {
+            addTransportCounters(&result, entry.conn) catch {
+                const code = storeError("transport counter overflow", .{});
+                writeAdapterStatus(status, code);
+                return code;
+            };
+        }
+    }
+    counters.* = result;
+    writeAdapterStatus(status, 0);
     return 0;
 }
 
@@ -1080,21 +1512,22 @@ export fn qzf_engine_has_pending_app_data(engine: *qzf_engine_t) c_int {
             if (snapshot.app_pending > 0 or snapshot.app_unsent > 0) return 1;
         }
     }
-    if (engine.client_conn) |*conn| {
-        const snapshot = qzf_engine_t.inspectSendState(conn);
+    var client_it = engine.client_conns.valueIterator();
+    while (client_it.next()) |conn| {
+        const snapshot = qzf_engine_t.inspectSendState(conn.*);
         if (snapshot.app_pending > 0 or snapshot.app_unsent > 0) return 1;
     }
     return 0;
 }
 
 export fn qzf_engine_export_resumption_state(engine: *qzf_engine_t, conn_id: u64, data: [*]u8, capacity: usize, len: *usize, now_us: u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     len.* = 0;
     if (engine.is_server) return storeError("export resumption called on server", .{});
     const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
     const ticket = conn.session_ticket orelse return 0;
-    if (ticket.isExpired()) return 0;
+    if (ticket.isExpired(engine.tls_config.calendar_unix_seconds)) return 0;
     const serialized_len = serializeResumptionTicket(&ticket, data[0..capacity]) catch |err| {
         return storeError("export resumption: {s}", .{@errorName(err)});
     };
@@ -1103,23 +1536,28 @@ export fn qzf_engine_export_resumption_state(engine: *qzf_engine_t, conn_id: u64
 }
 
 export fn qzf_engine_import_resumption_state(engine: *qzf_engine_t, data: [*]const u8, len: usize, use_zero_rtt: bool, now_us: u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     if (engine.is_server) return storeError("import resumption called on server", .{});
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(data[0..len], &digest, .{});
+    if (engine.has_imported_session_ticket or engine.consumed_ticket_digests.contains(digest))
+        return storeError("resumption ticket is overlapping or already consumed", .{});
     const ticket = parseResumptionTicket(data[0..len]) catch |err| {
         return storeError("import resumption: {s}", .{@errorName(err)});
     };
-    if (ticket.isExpired()) return 0;
+    if (ticket.isExpired(engine.tls_config.calendar_unix_seconds)) return 0;
     engine.imported_session_ticket = ticket;
     engine.has_imported_session_ticket = true;
     engine.imported_zero_rtt = use_zero_rtt;
+    engine.imported_ticket_digest = digest;
     engine.tls_config.session_ticket = &engine.imported_session_ticket;
     return 1;
 }
 
 export fn qzf_connection_resumed(engine: *qzf_engine_t, conn_id: u64, now_us: u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
     if (!conn.isEstablished()) return 0;
     if (conn.tls13_hs) |*hs| {
@@ -1129,16 +1567,15 @@ export fn qzf_connection_resumed(engine: *qzf_engine_t, conn_id: u64, now_us: u6
 }
 
 export fn qzf_connection_zero_rtt_attempted(engine: *qzf_engine_t, conn_id: u64, now_us: u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     _ = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
-    if (!engine.imported_zero_rtt or !engine.has_imported_session_ticket) return 0;
-    return if (!engine.imported_session_ticket.isExpired()) 1 else 0;
+    return if (engine.zero_rtt_attempted.get(conn_id) orelse false) 1 else 0;
 }
 
 export fn qzf_connection_zero_rtt_accepted(engine: *qzf_engine_t, conn_id: u64, now_us: u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
     if (conn.tls13_hs) |*hs| {
         return if (hs.zero_rtt_accepted) 1 else 0;
@@ -1147,10 +1584,10 @@ export fn qzf_connection_zero_rtt_accepted(engine: *qzf_engine_t, conn_id: u64, 
 }
 
 export fn qzf_connection_zero_rtt_rejected(engine: *qzf_engine_t, conn_id: u64, now_us: u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
-    if (!engine.imported_zero_rtt or !engine.has_imported_session_ticket) return 0;
+    if (!(engine.zero_rtt_attempted.get(conn_id) orelse false)) return 0;
     if (!conn.isEstablished()) return 0;
     if (conn.tls13_hs) |*hs| {
         return if (!hs.zero_rtt_accepted) 1 else 0;
@@ -1158,9 +1595,42 @@ export fn qzf_connection_zero_rtt_rejected(engine: *qzf_engine_t, conn_id: u64, 
     return 0;
 }
 
-export fn qzf_connection_open_bidi(engine: *qzf_engine_t, conn_id: u64, stream_id: *u64, now_us: u64) c_int {
-    _ = now_us;
+export fn qzf_connection_negotiated(engine: *qzf_engine_t, conn_id: u64, settings: *QzfNegotiated, now_us: u64) c_int {
     clearError();
+    setCallerTimeUs(now_us);
+    settings.* = .{};
+    const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
+    if (!conn.isEstablished()) return 0;
+    const peer = conn.peer_params orelse return 0;
+    const hs = &(conn.tls13_hs orelse return 0);
+    const verified = !conn.is_server and engine.tls_verify_peer;
+    settings.* = .{
+        .available = true,
+        .peer_certificate_verified = verified,
+        .hostname_verified = verified,
+        .active_migration = !peer.disable_active_migration,
+        .ack_frequency = conn.peer_supports_ack_freq,
+        .quic_version = conn.version,
+        .tls_cipher_suite = @intFromEnum(hs.negotiated_cipher_suite),
+        .tls_named_group = @intFromEnum(hs.negotiated_group),
+        .max_udp_payload_size = peer.max_udp_payload_size,
+        .max_ack_delay_ns = peer.max_ack_delay *| 1_000_000,
+        .ack_delay_exponent = peer.ack_delay_exponent,
+        .active_connection_id_limit = peer.active_connection_id_limit,
+        .connection_id_bytes = conn.dcid_len,
+        .max_idle_timeout_ns = peer.max_idle_timeout *| 1_000_000,
+        .max_bidi_streams = peer.initial_max_streams_bidi,
+        .max_uni_streams = peer.initial_max_streams_uni,
+        .connection_window_bytes = peer.initial_max_data,
+        .stream_window_bytes = peer.initial_max_stream_data_bidi_remote,
+        .datagram_max_frame_size = peer.max_datagram_frame_size orelse 0,
+    };
+    return 1;
+}
+
+export fn qzf_connection_open_bidi(engine: *qzf_engine_t, conn_id: u64, stream_id: *u64, now_us: u64) c_int {
+    clearError();
+    setCallerTimeUs(now_us);
     const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
     const stream = conn.openStream() catch |err| switch (err) {
         error.StreamLimitError => return 0,
@@ -1171,8 +1641,8 @@ export fn qzf_connection_open_bidi(engine: *qzf_engine_t, conn_id: u64, stream_i
 }
 
 export fn qzf_connection_accept_bidi(engine: *qzf_engine_t, conn_id: u64, stream_id: *u64, now_us: u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
     const accepted = engine.scanAcceptedBidi(conn_id, conn) catch |err| {
         return storeError("accept_bidi: {s}", .{@errorName(err)});
@@ -1184,12 +1654,42 @@ export fn qzf_connection_accept_bidi(engine: *qzf_engine_t, conn_id: u64, stream
     return 0;
 }
 
-export fn qzf_stream_send(engine: *qzf_engine_t, conn_id: u64, stream_id: u64, data: [*]const u8, len: usize, written: *usize, now_us: u64) c_int {
-    _ = now_us;
+export fn qzf_connection_open_uni(engine: *qzf_engine_t, conn_id: u64, stream_id: *u64, now_us: u64) c_int {
     clearError();
+    setCallerTimeUs(now_us);
     const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
-    const stream = conn.streams.getStream(stream_id) orelse return storeError("unknown stream {d}", .{stream_id});
-    const pending = stream.send.write_offset - stream.send.ack_offset;
+    const stream = conn.openUniStream() catch |err| switch (err) {
+        error.StreamLimitError => return 0,
+        else => return storeError("open_uni: {s}", .{@errorName(err)}),
+    };
+    stream_id.* = stream.stream_id;
+    return 1;
+}
+
+export fn qzf_connection_accept_uni(engine: *qzf_engine_t, conn_id: u64, stream_id: *u64, now_us: u64) c_int {
+    clearError();
+    setCallerTimeUs(now_us);
+    const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
+    const accepted = engine.scanAcceptedUni(conn_id, conn) catch |err| {
+        return storeError("accept_uni: {s}", .{@errorName(err)});
+    };
+    if (accepted) |sid| {
+        stream_id.* = sid;
+        return 1;
+    }
+    return 0;
+}
+
+export fn qzf_stream_send(engine: *qzf_engine_t, conn_id: u64, stream_id: u64, data: [*]const u8, len: usize, written: *usize, now_us: u64) c_int {
+    clearError();
+    setCallerTimeUs(now_us);
+    const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
+    const send = if (isBidi(stream_id))
+        if (conn.streams.getStream(stream_id)) |stream| &stream.send else null
+    else
+        conn.streams.send_streams.get(stream_id);
+    const stream = send orelse return storeError("unknown send stream {d}", .{stream_id});
+    const pending = qzf_engine_t.pendingAppBytes(conn);
     if (pending >= engine.send_backlog_limit) {
         written.* = 0;
         engine.recordAppWriteTrace(conn_id, 0, true);
@@ -1203,7 +1703,7 @@ export fn qzf_stream_send(engine: *qzf_engine_t, conn_id: u64, stream_id: u64, d
         engine.recordAppWriteTrace(conn_id, 0, true);
         return 0;
     }
-    stream.send.writeData(data[0..allowed]) catch |err| {
+    stream.writeData(data[0..allowed]) catch |err| {
         written.* = 0;
         return storeError("stream_send: {s}", .{@errorName(err)});
     };
@@ -1213,8 +1713,8 @@ export fn qzf_stream_send(engine: *qzf_engine_t, conn_id: u64, stream_id: u64, d
 }
 
 export fn qzf_stream_recv(engine: *qzf_engine_t, conn_id: u64, stream_id: u64, data: [*]u8, capacity: usize, read: *usize, fin: *bool, now_us: u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     const key = StreamKey{ .conn_id = conn_id, .stream_id = stream_id };
     var total: usize = 0;
     while (total < capacity) {
@@ -1223,13 +1723,17 @@ export fn qzf_stream_recv(engine: *qzf_engine_t, conn_id: u64, stream_id: u64, d
         if (n == 0) break;
     }
     const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
-    const stream = conn.streams.getStream(stream_id) orelse {
+    const recv = if (isBidi(stream_id))
+        if (conn.streams.getStream(stream_id)) |stream| &stream.recv else null
+    else
+        conn.streams.recv_streams.get(stream_id);
+    const stream = recv orelse {
         read.* = total;
         fin.* = false;
         return 0;
     };
     while (total < capacity) {
-        const chunk = stream.recv.read() orelse break;
+        const chunk = stream.read() orelse break;
         const n = @min(capacity - total, chunk.len);
         if (n > 0) @memcpy(data[total..][0..n], chunk[0..n]);
         engine.saveBacklog(key, chunk, n) catch |err| {
@@ -1238,17 +1742,95 @@ export fn qzf_stream_recv(engine: *qzf_engine_t, conn_id: u64, stream_id: u64, d
         total += n;
         if (n == 0) break;
     }
+    if (stream.sorter.isComplete()) stream.finished = true;
     read.* = total;
-    fin.* = total == 0 and stream.recv.finished;
+    fin.* = stream.finished;
     return 0;
 }
 
 export fn qzf_stream_finish(engine: *qzf_engine_t, conn_id: u64, stream_id: u64, now_us: u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
-    const stream = conn.streams.getStream(stream_id) orelse return storeError("unknown stream {d}", .{stream_id});
-    stream.send.close();
+    const send = if (isBidi(stream_id))
+        if (conn.streams.getStream(stream_id)) |stream| &stream.send else null
+    else
+        conn.streams.send_streams.get(stream_id);
+    const stream = send orelse return storeError("unknown send stream {d}", .{stream_id});
+    stream.close();
+    return 0;
+}
+
+export fn qzf_stream_reset(engine: *qzf_engine_t, conn_id: u64, stream_id: u64, error_code: u64, now_us: u64) c_int {
+    clearError();
+    setCallerTimeUs(now_us);
+    const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
+    const send = if (isBidi(stream_id))
+        if (conn.streams.getStream(stream_id)) |stream| &stream.send else null
+    else
+        conn.streams.send_streams.get(stream_id);
+    const stream = send orelse return storeError("unknown send stream {d}", .{stream_id});
+    stream.reset(error_code);
+    return 0;
+}
+
+export fn qzf_stream_stop_sending(engine: *qzf_engine_t, conn_id: u64, stream_id: u64, error_code: u64, now_us: u64) c_int {
+    clearError();
+    setCallerTimeUs(now_us);
+    const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
+    const recv = if (isBidi(stream_id))
+        if (conn.streams.getStream(stream_id)) |stream| &stream.recv else null
+    else
+        conn.streams.recv_streams.get(stream_id);
+    const stream = recv orelse return storeError("unknown receive stream {d}", .{stream_id});
+    stream.stopSending(error_code);
+    return 0;
+}
+
+export fn qzf_connection_close(engine: *qzf_engine_t, conn_id: u64, error_code: u64, now_us: u64) c_int {
+    clearError();
+    setCallerTimeUs(now_us);
+    const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
+    conn.close(error_code, "");
+    return 0;
+}
+
+export fn qzf_peer_terminal_facts_v6(engine: *qzf_engine_t, conn_id: u64, stream_id: u64, facts: *QzfPeerTerminalFactsV6, now_us: u64) c_int {
+    clearError();
+    setCallerTimeUs(now_us);
+    facts.* = .{};
+    facts.available = true;
+    const latched_close = engine.peer_closed_connections.get(conn_id);
+    facts.connection_close = latched_close != null;
+    if (latched_close) |close| {
+        facts.connection_close_error = close.error_code;
+        facts.connection_close_reason_length = close.reason_length;
+    }
+    const conn = engine.connById(conn_id) orelse {
+        if (facts.connection_close) {
+            _ = engine.peer_closed_connections.remove(conn_id);
+            return 0;
+        }
+        return storeError("unknown connection {d}", .{conn_id});
+    };
+    if (conn.peerApplicationClose()) |close| {
+        facts.connection_close = true;
+        facts.connection_close_error = close.error_code;
+        facts.connection_close_reason_length = close.reason_length;
+    }
+    if (facts.connection_close) {
+        _ = engine.peer_closed_connections.remove(conn_id);
+    }
+    const stream = conn.streams.getStream(stream_id) orelse return 0;
+    facts.fin = stream.recv.fin_received;
+    if (stream.recv.reset_err) |code| {
+        facts.reset_stream = true;
+        facts.reset_stream_error = code;
+    }
+    if (stream.send.reset_err) |code| {
+        facts.stop_sending = true;
+        facts.stop_sending_error = code;
+    }
     return 0;
 }
 
@@ -1283,8 +1865,8 @@ export fn qzf_stream_debug(engine: *qzf_engine_t, conn_id: u64, stream_id: u64, 
 }
 
 export fn qzf_datagram_send(engine: *qzf_engine_t, conn_id: u64, data: [*]const u8, len: usize, now_us: u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
     conn.sendDatagram(data[0..len]) catch |err| switch (err) {
         error.DatagramQueueFull => return 0,
@@ -1294,8 +1876,8 @@ export fn qzf_datagram_send(engine: *qzf_engine_t, conn_id: u64, data: [*]const 
 }
 
 export fn qzf_datagram_recv(engine: *qzf_engine_t, conn_id: u64, data: [*]u8, capacity: usize, read: *usize, now_us: u64) c_int {
-    _ = now_us;
     clearError();
+    setCallerTimeUs(now_us);
     const conn = engine.connById(conn_id) orelse return storeError("unknown connection {d}", .{conn_id});
     if (conn.recvDatagram(data[0..capacity])) |n| {
         read.* = n;

@@ -40,6 +40,7 @@ static inline BenchmarkScenario benchmarkScenario = BenchmarkScenario::download;
 static inline BenchmarkMeasureMode benchmarkMeasureMode = BenchmarkMeasureMode::work;
 static inline thread_local bool benchmarkForceWorkMode = false;
 static inline const char *benchmarkScenarioProfile = "default";
+constexpr static uint64_t benchmarkTlsCalendarUnixSeconds = 1'784'376'000;
 
 constexpr static const char *benchmarkScenarioName(BenchmarkScenario scenario)
 {
@@ -159,6 +160,17 @@ static inline bool benchmarkIsUpload(void)
 {
   return benchmarkScenario == BenchmarkScenario::upload ||
          benchmarkScenario == BenchmarkScenario::multistream_upload;
+}
+
+constexpr static bool benchmarkServerObservedDownloadDoneMarker(
+    bool upload,
+    bool requestParsed,
+    bool durationMode,
+    int64_t bytesInFlight,
+    size_t consumed,
+    size_t received)
+{
+  return !upload && requestParsed && (durationMode || bytesInFlight == 0) && consumed < received;
 }
 
 static inline bool benchmarkIsConnect(void)
@@ -321,6 +333,7 @@ static inline const char *benchmarkNetworkProfile = "default";
 static inline const char *benchmarkPathProfile = "loopback";
 static inline const char *benchmarkTlsVerifyMode = "disabled";
 static inline const char *benchmarkTlsCertProfile = "ed25519";
+static inline constexpr const char *benchmarkTlsHostname = "server.quicperf.test";
 static inline uint32_t benchmarkServerTargetConnections = 1;
 static inline uint64_t benchmarkPathRttUs = 0;
 static inline uint64_t benchmarkPathDownlinkBps = 0;
@@ -721,6 +734,20 @@ static inline uint64_t benchmarkGenericStreamsPerConnection(void)
     default:
       return 1;
   }
+}
+
+static inline uint64_t benchmarkGenericServerTargetStreams(void)
+{
+  const uint64_t streamsPerMeasuredConnection = benchmarkGenericStreamsPerConnection();
+  if (benchmarkScenario != BenchmarkScenario::zero_rtt_reqresp)
+  {
+    return static_cast<uint64_t>(benchmarkServerTargetConnections) *
+        streamsPerMeasuredConnection;
+  }
+  const uint64_t warmupConnections = benchmarkServerTargetConnections / 2;
+  const uint64_t measuredConnections =
+      benchmarkServerTargetConnections - warmupConnections;
+  return warmupConnections + measuredConnections * streamsPerMeasuredConnection;
 }
 
 static inline uint64_t benchmarkScenarioOperationsForCurrentMode(void)

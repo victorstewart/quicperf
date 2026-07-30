@@ -384,6 +384,7 @@ def write_env(state: dict[str, Any]) -> None:
         "QUICPERF_PATH_UPLINK_BPS": str(state.get("uplink_bps", 0)),
         "QUICPERF_PATH_MAX_RATE_BPS": str(state.get("max_rate_bps", 0)),
         "QUICPERF_PATH_BDP_WINDOW_BYTES": str(state.get("bdp_window_bytes", 0)),
+        "QUICPERF_PATH_TRACE_STEPS": str(state.get("trace_steps", 0)),
         "QUICPERF_SERVER_NAMESPACE": state.get("server_ns", ""),
         "QUICPERF_CLIENT_NAMESPACE": state.get("client_ns", ""),
         "QUICPERF_SERVER_ADDRESS": state.get("server_address", "loopback"),
@@ -466,6 +467,7 @@ def setup_namespace(profile: dict[str, Any], run_id: str, state_path: Path, star
             "max_rate_bps": max_rate_bps(profile),
             "bdp_window_bytes": bdp_window_bytes(profile),
             "trace_time_scale": trace_time_scale,
+            "trace_steps": len(profile.get("trace", [])),
             "state_path": str(state_path),
         }
         state_path.parent.mkdir(parents=True, exist_ok=True)

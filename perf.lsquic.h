@@ -265,7 +265,7 @@ private:
         {
           return serverCompletedConnections >= benchmarkServerTargetConnections;
         }
-        return genericCompletedStreams >= static_cast<uint64_t>(benchmarkServerTargetConnections) * benchmarkGenericStreamsPerConnection();
+        return genericCompletedStreams >= benchmarkGenericServerTargetStreams();
       }
       if (benchmarkScenario == BenchmarkScenario::datagram)
       {

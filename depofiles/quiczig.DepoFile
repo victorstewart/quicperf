@@ -1,8 +1,333 @@
 NAME quiczig
-VERSION quicperf-tls-wall-clock-97a7bec
+VERSION quicperf-tls-wall-clock-97a7bec-quicperf9
 SYSTEM_LIBS ALLOW
 SOURCE GIT https://github.com/victorstewart/quic-zig.git 97a7becfcc09e6401c45e620c27eb09fb8a9b739
 BUILD_SYSTEM MANUAL
+MANUAL_BUILD_SH <<'EOF'
+set -eu
+source_dir="$DEPO_SOURCE_DIR"
+patch_file="$DEPO_BUILD_DIR/quicperf-dependency.patch"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "97a7becfcc09e6401c45e620c27eb09fb8a9b739"
+test "$(git -C "$source_dir" rev-parse 'HEAD^{tree}')" = "f94b638ba1832535b302c6ef7a0b2527a132b0d2"
+cat > "$patch_file" <<'QUICPERF_DEPENDENCY_PATCH'
+diff --git a/src/quic/connection.zig b/src/quic/connection.zig
+index 71584ed..44ab4c1 100644
+--- a/src/quic/connection.zig
++++ b/src/quic/connection.zig
+@@ -500,0 +501,6 @@ pub const ConnectionConfig = struct {
++    max_udp_payload_size: u64 = 65527,
++    ack_delay_exponent: u64 = 3,
++    max_ack_delay: u64 = 25, // ms
++    disable_active_migration: bool = false,
++    active_connection_id_limit: u64 = 2,
++    ack_frequency: bool = true,
+@@ -623,0 +630,2 @@ pub const Connection = struct {
++    total_data_blocked_sent: u64 = 0,
++    total_stream_data_blocked_sent: u64 = 0,
+@@ -782,0 +791,5 @@ pub const Connection = struct {
++            .max_udp_payload_size = config.max_udp_payload_size,
++            .ack_delay_exponent = config.ack_delay_exponent,
++            .max_ack_delay = config.max_ack_delay,
++            .disable_active_migration = config.disable_active_migration,
++            .active_connection_id_limit = config.active_connection_id_limit,
+@@ -790 +803 @@ pub const Connection = struct {
+-            .min_ack_delay = 1000, // 1ms minimum ACK delay (draft-ietf-quic-ack-frequency)
++            .min_ack_delay = if (config.ack_frequency) 1000 else null,
+@@ -2736,0 +2750 @@ pub const Connection = struct {
++            self.total_data_blocked_sent += 1;
+@@ -2745,0 +2760 @@ pub const Connection = struct {
++                    self.total_stream_data_blocked_sent += 1;
+@@ -3718,0 +3734,14 @@ pub const Connection = struct {
++    pub const PeerApplicationClose = struct {
++        error_code: u64,
++        reason_length: u64,
++    };
++
++    pub fn peerApplicationClose(self: *const Connection) ?PeerApplicationClose {
++        const peer_close = self.local_err orelse return null;
++        if (!peer_close.is_app or self.state != .draining) return null;
++        return .{
++            .error_code = peer_close.code,
++            .reason_length = peer_close.reason.len,
++        };
++    }
++
+@@ -3891,0 +3921,27 @@ pub const Connection = struct {
++    pub const TransportCounters = struct {
++        packets_lost: u64,
++        data_blocked_sent: u64,
++        stream_data_blocked_sent: u64,
++    };
++
++    pub fn getTransportCounters(self: *const Connection) TransportCounters {
++        return .{
++            .packets_lost = self.total_packets_lost,
++            .data_blocked_sent = self.total_data_blocked_sent,
++            .stream_data_blocked_sent = self.total_stream_data_blocked_sent,
++        };
++    }
++
++    /// Whether a received packet's destination matches any active CID issued
++    /// by this endpoint. Short-header packets carry no CID length, so callers
++    /// pass the remaining datagram bytes and request a prefix comparison.
++    pub fn ownsLocalConnectionId(self: *const Connection, dcid: []const u8, exact_length: bool) bool {
++        for (self.local_cid_pool.entries) |entry| {
++            if (!entry.occupied or entry.retired) continue;
++            const cid = entry.getCid();
++            if ((exact_length and dcid.len != cid.len) or dcid.len < cid.len) continue;
++            if (std.mem.eql(u8, dcid[0..cid.len], cid)) return true;
++        }
++        return false;
++    }
++
+@@ -4148,0 +4205,5 @@ pub fn connect(
++        .max_udp_payload_size = config.max_udp_payload_size,
++        .ack_delay_exponent = config.ack_delay_exponent,
++        .max_ack_delay = config.max_ack_delay,
++        .disable_active_migration = config.disable_active_migration,
++        .active_connection_id_limit = config.active_connection_id_limit,
+@@ -4156 +4218 @@ pub fn connect(
+-        .min_ack_delay = 1000, // 1ms minimum ACK delay (draft-ietf-quic-ack-frequency)
++        .min_ack_delay = if (config.ack_frequency) 1000 else null,
+diff --git a/src/sys.zig b/src/sys.zig
+index 16a43f7..e701115 100644
+--- a/src/sys.zig
++++ b/src/sys.zig
+@@ -444 +444,8 @@ pub fn sleepNs(ns: u64) void {
+-/// Monotonic clock timestamp in nanoseconds (replaces `std.time.nanoTimestamp`).
++threadlocal var caller_time_ns: ?i64 = null;
++
++/// Set the monotonic time supplied by quicperf's common C++ driver.
++pub fn setCallerTimeNs(now_ns: i64) void {
++    caller_time_ns = now_ns;
++}
++
++/// Return the last monotonic time supplied by quicperf's common C++ driver.
+@@ -446,9 +453 @@ pub fn nanoTimestamp() i64 {
+-    switch (builtin.os.tag) {
+-        .linux, .macos, .ios, .watchos, .tvos, .visionos, .freebsd, .netbsd, .openbsd, .dragonfly => {},
+-        .windows => @compileError("sys.nanoTimestamp: Windows support pending (use QueryPerformanceCounter)"),
+-        else => @compileError("sys.nanoTimestamp: unsupported OS"),
+-    }
+-    var ts: timespec = undefined;
+-    const rc = c.clock_gettime(posix.CLOCK.MONOTONIC, &ts);
+-    if (rc != 0) return 0; // monotonic clock should never fail; fall back to 0.
+-    return @as(i64, ts.sec) * std.time.ns_per_s + @as(i64, ts.nsec);
++    return caller_time_ns orelse @panic("quicperf caller monotonic time was not injected");
+QUICPERF_DEPENDENCY_PATCH
+if git -C "$source_dir" apply --unidiff-zero --check "$patch_file"; then
+  git -C "$source_dir" apply --unidiff-zero "$patch_file"
+elif git -C "$source_dir" apply --unidiff-zero --reverse --check "$patch_file"; then
+  :
+else
+  echo "quicperf structural dependency patch does not match pinned source" >&2
+  exit 1
+fi
+tls_patch_file="$DEPO_BUILD_DIR/quicperf-tls-clock.patch"
+cat > "$tls_patch_file" <<'QUICPERF_TLS_CLOCK_PATCH'
+diff --git a/src/quic/tls13.zig b/src/quic/tls13.zig
+index 5832401..94373f7 100644
+--- a/src/quic/tls13.zig
++++ b/src/quic/tls13.zig
+@@ -28,8 +27,0 @@ const Aes128Gcm = crypto.aead.aes_gcm.Aes128Gcm;
+-fn unixNowSeconds() i64 {
+-    var ts: std.posix.timespec = undefined;
+-    return switch (std.posix.errno(std.posix.system.clock_gettime(.REALTIME, &ts))) {
+-        .SUCCESS => @as(i64, ts.sec),
+-        else => 0,
+-    };
+-}
+-
+@@ -503,2 +495 @@ pub const SessionTicket = struct {
+-    pub fn isExpired(self: *const SessionTicket) bool {
+-        const now_sec = unixNowSeconds();
++    pub fn isExpired(self: *const SessionTicket, now_sec: i64) bool {
+@@ -523,0 +515 @@ pub const TlsConfig = struct {
++    calendar_unix_seconds: i64, // Caller-owned frozen TLS calendar time
+@@ -930,0 +923 @@ pub const Tls13Handshake = struct {
++            self.config.calendar_unix_seconds,
+@@ -1138 +1131 @@ pub const Tls13Handshake = struct {
+-                    const now_sec = unixNowSeconds();
++                    const now_sec = self.config.calendar_unix_seconds;
+@@ -1160 +1153 @@ pub const Tls13Handshake = struct {
+-                        const now_sec = unixNowSeconds();
++                        const now_sec = self.config.calendar_unix_seconds;
+@@ -1719 +1712 @@ pub const Tls13Handshake = struct {
+-        const now_sec = unixNowSeconds();
++        const now_sec = self.config.calendar_unix_seconds;
+@@ -1746 +1739 @@ pub const Tls13Handshake = struct {
+-        const lifetime: u32 = 7 * 24 * 3600; // 7 days
++        const lifetime: u32 = 300; // quicperf frozen ticket lifetime
+@@ -1971 +1964 @@ pub const Tls13Handshake = struct {
+-        ticket.creation_time = unixNowSeconds();
++        ticket.creation_time = self.config.calendar_unix_seconds;
+@@ -2065,0 +2059 @@ fn buildClientHello(
++    calendar_unix_seconds: i64,
+@@ -2219 +2213 @@ fn buildClientHello(
+-            const now_sec = unixNowSeconds();
++            const now_sec = calendar_unix_seconds;
+@@ -2848,0 +2843 @@ test "buildClientHello: produces valid message" {
++        1_700_000_000,
+@@ -2892,0 +2888 @@ test "loopback handshake: client and server complete" {
++        .calendar_unix_seconds = 1_700_000_000,
+@@ -2899,0 +2896 @@ test "loopback handshake: client and server complete" {
++        .calendar_unix_seconds = 1_700_000_000,
+@@ -3037,0 +3035 @@ test "loopback PSK resumption: two handshakes with session ticket" {
++        .calendar_unix_seconds = 1_700_000_000,
+@@ -3044,0 +3043 @@ test "loopback PSK resumption: two handshakes with session ticket" {
++        .calendar_unix_seconds = 1_700_000_000,
+@@ -3197 +3196 @@ test "NewSessionTicket: build and parse roundtrip" {
+-    original.creation_time = unixNowSeconds();
++    original.creation_time = 1_700_000_000;
+@@ -3207 +3206 @@ test "NewSessionTicket: build and parse roundtrip" {
+-    try std.testing.expect(!original.isExpired());
++    try std.testing.expect(!original.isExpired(1_700_000_000));
+QUICPERF_TLS_CLOCK_PATCH
+if git -C "$source_dir" apply --unidiff-zero --check "$tls_patch_file"; then
+  git -C "$source_dir" apply --unidiff-zero "$tls_patch_file"
+elif git -C "$source_dir" apply --unidiff-zero --reverse --check "$tls_patch_file"; then
+  :
+else
+  echo "quicperf TLS clock patch does not match pinned source" >&2
+  exit 1
+fi
+network_input_patch_file="$DEPO_BUILD_DIR/quicperf-network-input-diagnostics.patch"
+cat > "$network_input_patch_file" <<'QUICPERF_NETWORK_INPUT_PATCH'
+diff --git a/src/quic/crypto.zig b/src/quic/crypto.zig
+index 4df783a..33ae236 100644
+--- a/src/quic/crypto.zig
++++ b/src/quic/crypto.zig
+@@ -126 +126 @@ pub const Open = struct {
+-                    std.log.err("AES-128-GCM decryption failed: {any}", .{err});
++                    std.log.debug("AES-128-GCM decryption failed: {any}", .{err});
+@@ -132 +132 @@ pub const Open = struct {
+-                    std.log.err("ChaCha20-Poly1305 decryption failed: {any}", .{err});
++                    std.log.debug("ChaCha20-Poly1305 decryption failed: {any}", .{err});
+diff --git a/src/quic/packet.zig b/src/quic/packet.zig
+index c28bd9c..b61506a 100644
+--- a/src/quic/packet.zig
++++ b/src/quic/packet.zig
+@@ -509 +509 @@ pub fn parseQuicHeader(fbs: anytype, short_dcid_len: u8) !Header {
+-            std.log.err("Destination CID is too long ({any} bytes)", .{dcid_length});
++            std.log.debug("Destination CID is too long ({any} bytes)", .{dcid_length});
+@@ -521 +521 @@ pub fn parseQuicHeader(fbs: anytype, short_dcid_len: u8) !Header {
+-            std.log.err("Source CID is too long ({any} bytes)", .{scid_length});
++            std.log.debug("Source CID is too long ({any} bytes)", .{scid_length});
+QUICPERF_NETWORK_INPUT_PATCH
+if git -C "$source_dir" apply --unidiff-zero --check "$network_input_patch_file"; then
+  git -C "$source_dir" apply --unidiff-zero "$network_input_patch_file"
+elif git -C "$source_dir" apply --unidiff-zero --reverse --check "$network_input_patch_file"; then
+  :
+else
+  echo "quicperf network-input diagnostics patch does not match pinned source" >&2
+  exit 1
+fi
+pto_flow_control_patch_file="$DEPO_BUILD_DIR/quicperf-pto-flow-control.patch"
+cat > "$pto_flow_control_patch_file" <<'QUICPERF_PTO_FLOW_CONTROL_PATCH'
+diff --git a/src/quic/connection.zig b/src/quic/connection.zig
+--- a/src/quic/connection.zig
++++ b/src/quic/connection.zig
+@@ -3008,9 +3008 @@ pub const Connection = struct {
+-                    if (s.send.hasUnackedData()) {
+-                        const start = s.send.ack_offset;
+-                        const end = s.send.write_offset;
+-                        if (end > start) {
+-                            s.send.queueRetransmit(start, end - start, s.send.fin_queued);
+-                        } else if (s.send.fin_queued) {
+-                            s.send.queueRetransmit(end, 0, true);
+-                        }
+-                    }
++                    _ = s.send.queuePtoRetransmit();
+@@ -3391,10 +3383,3 @@ pub const Connection = struct {
+-                                    if (s.send.hasUnackedData()) {
+-                                        const start = s.send.ack_offset;
+-                                        const end = s.send.write_offset;
+-                                        if (end > start) {
+-                                            s.send.queueRetransmit(start, end - start, s.send.fin_queued);
+-                                        } else if (s.send.fin_queued) {
+-                                            s.send.queueRetransmit(end, 0, true);
+-                                        }
++                                    if (s.send.queuePtoRetransmit()) {
+                                         has_data = true;
+                                     }
+diff --git a/src/quic/stream.zig b/src/quic/stream.zig
+--- a/src/quic/stream.zig
++++ b/src/quic/stream.zig
+@@ -577,0 +578,23 @@ pub const SendStream = struct {
++    /// Queue only bytes that have actually crossed the wire for a PTO probe.
++    /// write_offset includes an unsent application-buffered tail, which must
++    /// remain subject to MAX_DATA and MAX_STREAM_DATA on its first send.
++    pub fn queuePtoRetransmit(self: *SendStream) bool {
++        if (self.reset_err != null) return false;
++
++        const start = self.ack_offset;
++        const end = self.send_offset;
++        if (end > start) {
++            self.queueRetransmit(
++                start,
++                end - start,
++                self.fin_sent and end == self.write_offset,
++            );
++            return true;
++        }
++        if (self.fin_sent) {
++            self.queueRetransmit(self.write_offset, 0, true);
++            return true;
++        }
++        return false;
++    }
++
+@@ -1685,0 +1709,30 @@ test "SendStream: retransmit prioritized over new data" {
++
++test "SendStream: PTO retransmit excludes unsent buffered data" {
++    var ss = SendStream.init(testing.allocator, 0);
++    defer ss.deinit();
++
++    ss.send_window = 4;
++    try ss.writeData("helloworld");
++    ss.close();
++
++    const first = ss.popStreamFrame(100).?;
++    try testing.expectEqualSlices(u8, "hell", first.stream.data);
++    try testing.expect(!first.stream.fin);
++    try testing.expectEqual(@as(u64, 4), ss.send_offset);
++    try testing.expectEqual(@as(u64, 10), ss.write_offset);
++    try testing.expect(!ss.fin_sent);
++
++    try testing.expect(ss.queuePtoRetransmit());
++    const probe = ss.popStreamFrame(100).?;
++    try testing.expectEqual(@as(u64, 0), probe.stream.offset);
++    try testing.expectEqualSlices(u8, "hell", probe.stream.data);
++    try testing.expect(!probe.stream.fin);
++    try testing.expectEqual(@as(u64, 4), ss.send_offset);
++
++    // The never-sent tail remains blocked until the peer raises stream credit.
++    try testing.expect(ss.popStreamFrame(100) == null);
++    ss.updateSendWindow(10);
++    const tail = ss.popStreamFrame(100).?;
++    try testing.expectEqualSlices(u8, "oworld", tail.stream.data);
++    try testing.expect(tail.stream.fin);
++}
+QUICPERF_PTO_FLOW_CONTROL_PATCH
+if git -C "$source_dir" apply --unidiff-zero --check "$pto_flow_control_patch_file"; then
+  git -C "$source_dir" apply --unidiff-zero "$pto_flow_control_patch_file"
+elif git -C "$source_dir" apply --unidiff-zero --reverse --check "$pto_flow_control_patch_file"; then
+  :
+else
+  echo "quicperf PTO flow-control patch does not match pinned source" >&2
+  exit 1
+fi
+source_index="$DEPO_BUILD_DIR/quicperf-source.index"
+rm -f "$source_index"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" read-tree HEAD
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --unidiff-zero --cached "$patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --unidiff-zero --cached "$tls_patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --unidiff-zero --cached "$network_input_patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --unidiff-zero --cached "$pto_flow_control_patch_file"
+test "$(GIT_INDEX_FILE="$source_index" git -C "$source_dir" write-tree)" = "a21114998f29aad5e33b5d87b1b3b5106d490929"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" diff --quiet --no-ext-diff -- .
+:
+EOF
 STAGE_FILE SOURCE build.zig share/quic-zig/build.zig
 STAGE_FILE SOURCE build.zig.zon share/quic-zig/build.zig.zon
 STAGE_FILE SOURCE LICENSE share/quic-zig/LICENSE

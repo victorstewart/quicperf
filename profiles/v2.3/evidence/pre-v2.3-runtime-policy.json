@@ -1,0 +1,38 @@
+{
+  "schema_version": "quicperf.pre-v2.3-runtime-policy.v1",
+  "evidence_role": "historical_design_evidence_only_never_publication_input",
+  "source_campaign": {
+    "tag": "8f71fbc-r2",
+    "two_backend_session_wall_ns": 14628078000000,
+    "retained_iouring_trials_plus_block_gaps_ns": 7301392000000,
+    "non_attempt_service_time_ns": 170771000000,
+    "expected_one_backend_session_ns": 7472163000000
+  },
+  "v2.2_observed_session": {
+    "campaign_id": "81bab4004b852561424ea9e10c51222f9fc2364e2c1f9d44d156c0da0ab1b76c",
+    "session_wall_ns": 8363071232433,
+    "committed_microblocks": 173,
+    "unstarted_microblocks": 7,
+    "termination_reason": "runtime_session_wall_feasibility_budget_exhausted",
+    "evidence_role": "historical_design_evidence_only_never_publication_input",
+    "publication_sample_reuse": false
+  },
+  "runtime_budget": {
+    "operational_session_timeout_ns": 10800000000000,
+    "deterministic_verification_budget_ns": 1200000000000,
+    "admission_conservative_reservation_ns": 3847800000000,
+    "two_session_budget_ns": 21600000000000,
+    "analysis_finalization_export_budget_ns": 600000000000,
+    "clean_start_conservative_budget_ns": 27247800000000,
+    "suite_deadline_ns": 30000000000000
+  },
+  "scheduled_campaign_floor": {
+    "measurement_ns": 9504000000000,
+    "warmup_ns": 936000000000,
+    "arm_lead_ns": 3240000000000,
+    "four_probes_ns": 241000000000,
+    "total_ns": 13921000000000
+  },
+  "localized_transient_budget_per_session": 2,
+  "derivation": "The original one-backend estimate reconstructed every retained iouring trial and block gap in the archived two-backend session plus non-attempt service time. V2.2 then reached 8363.071232433 seconds with seven unstarted microblocks under its 8400-second feasibility ceiling. V2.3 uses that failure only as predeclared historical design evidence, never as publication input, and freezes 10800 seconds per session. The clean-start total adds the full conservative admission reservation, deterministic verification, both session budgets, and final processing."
+}

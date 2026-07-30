@@ -347,8 +347,7 @@ private:
         {
           return serverCompletedConnections >= benchmarkServerTargetConnections;
         }
-        return genericServerCompletedStreams >=
-               static_cast<uint64_t>(benchmarkServerTargetConnections) * benchmarkGenericStreamsPerConnection();
+        return genericServerCompletedStreams >= benchmarkGenericServerTargetStreams();
       }
       if (benchmarkScenario == BenchmarkScenario::datagram)
       {
@@ -2254,7 +2253,7 @@ public:
 
     // picoquic_cnx_t* picoquic_create_cnx(picoquic_quic_t* quic, picoquic_connection_id_t initial_cnx_id, picoquic_connection_id_t remote_cnx_id, const struct sockaddr* addr_to, uint64_t start_time, uint32_t preferred_version, char const* sni, char const* alpn, char client_mode);
 
-    cnx = picoquic_create_cnx(engine, picoquic_null_connection_id, picoquic_null_connection_id, address, timeNowUs(), 0, "localhost", "perf", true);
+    cnx = picoquic_create_cnx(engine, picoquic_null_connection_id, picoquic_null_connection_id, address, timeNowUs(), 0, benchmarkTlsHostname, "perf", true);
 
     picoquic_set_callback(cnx, datain, this);
     picoquic_set_congestion_algorithm(cnx, benchmarkPicoquicCongestionAlgorithm());
@@ -2276,7 +2275,7 @@ public:
     {
       ready = false;
       cnx = picoquic_create_cnx(engine, picoquic_null_connection_id, picoquic_null_connection_id,
-                                address, timeNowUs(), 0, "localhost", "perf", true);
+                                address, timeNowUs(), 0, benchmarkTlsHostname, "perf", true);
       if (cnx == nullptr)
       {
         fprintf(stderr, "picoquic: failed to create 0-RTT connection\n");

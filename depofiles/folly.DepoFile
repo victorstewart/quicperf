@@ -1,5 +1,5 @@
 NAME folly
-VERSION main-5e1874-quicperf8
+VERSION main-5e1874-quicperf9
 SYSTEM_LIBS ALLOW
 DEPENDS boost VERSION 1.91.0-quicperf3
 DEPENDS doubleconversion VERSION 3.4.0
@@ -7,7 +7,7 @@ DEPENDS fastfloat VERSION 8.2.5
 DEPENDS fmt VERSION 12.1.0-quicperf2
 DEPENDS gflags VERSION 2.3.0-quicperf2
 DEPENDS glog VERSION 0.7.1-quicperf2
-DEPENDS libsodium VERSION 1.0.22-quicperf2
+DEPENDS libsodium VERSION 1.0.22-quicperf3
 DEPENDS liburing VERSION main-40999f5
 DEPENDS openssl VERSION 4.0.0
 DEPENDS zlib VERSION 1.3.2
@@ -22,25 +22,121 @@ CMAKE_DEFINE BUILD_TESTS=OFF
 CMAKE_DEFINE BUILD_BENCHMARKS=OFF
 CMAKE_DEFINE PYTHON_EXTENSIONS=OFF
 CMAKE_BUILD_SH <<'EOF'
-openssl_utils="${DEPO_SOURCE_DIR}/folly/io/async/ssl/OpenSSLUtils.cpp"
-perl -0pi -e 's/unsigned char const\* const rawIpStr = name->d\.iPAddress->data;\n      auto const rawIpLen = size_t\(name->d\.iPAddress->length\);/const unsigned char* const rawIpStr = ASN1_STRING_get0_data(name->d.iPAddress);\n      auto const rawIpLen = size_t(ASN1_STRING_length(name->d.iPAddress));/' "$openssl_utils"
-perl -0pi -e 's/X509_NAME\* subject = X509_get_subject_name\(x509\);/const X509_NAME* subject = X509_get_subject_name(x509);/' "$openssl_utils"
-grep -Fq 'ASN1_STRING_get0_data(name->d.iPAddress)' "$openssl_utils"
-grep -Fq 'const X509_NAME* subject = X509_get_subject_name(x509);' "$openssl_utils"
-
-openssl_cert_utils="${DEPO_SOURCE_DIR}/folly/ssl/OpenSSLCertUtils.cpp"
-perl -0pi -e 's/std::string asn1ToString\(ASN1_STRING\* a\)/std::string asn1ToString(const ASN1_STRING* a)/' "$openssl_cert_utils"
-perl -0pi -e 's/unsigned char\* data = const_cast<unsigned char\*>\(ASN1_STRING_get0_data\(a\)\);/const unsigned char* data = ASN1_STRING_get0_data(a);/' "$openssl_cert_utils"
-perl -0pi -e 's/reinterpret_cast<char\*>\(data\)/reinterpret_cast<const char*>(data)/' "$openssl_cert_utils"
-perl -0pi -e 's/std::string getExtOid\(X509_EXTENSION\* extension\)/std::string getExtOid(const X509_EXTENSION* extension)/' "$openssl_cert_utils"
-perl -0pi -e 's/ASN1_OBJECT\* object = X509_EXTENSION_get_object\(extension\);/const ASN1_OBJECT* object = X509_EXTENSION_get_object(extension);/' "$openssl_cert_utils"
-perl -0pi -e 's/std::string getExtData\(X509_EXTENSION\* extension\)/std::string getExtData(const X509_EXTENSION* extension)/' "$openssl_cert_utils"
-perl -0pi -e 's/Optional<std::string> commonName\(X509_NAME\* name\)/Optional<std::string> commonName(const X509_NAME* name)/' "$openssl_cert_utils"
-perl -0pi -e 's/X509_EXTENSION\* extension = X509_get_ext\(&x509, i\);/const X509_EXTENSION* extension = X509_get_ext(\&x509, i);/g' "$openssl_cert_utils"
-grep -Fq 'std::string asn1ToString(const ASN1_STRING* a)' "$openssl_cert_utils"
-grep -Fq 'const ASN1_OBJECT* object = X509_EXTENSION_get_object(extension);' "$openssl_cert_utils"
-grep -Fq 'Optional<std::string> commonName(const X509_NAME* name)' "$openssl_cert_utils"
-grep -Fq 'const X509_EXTENSION* extension = X509_get_ext(&x509, i);' "$openssl_cert_utils"
+set -eu
+source_dir="$DEPO_SOURCE_DIR"
+patch_file="$DEPO_BUILD_DIR/quicperf-dependency.patch"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "5e1874e7bbaf5b883d65fa2a8632b86e2f29ce16"
+test "$(git -C "$source_dir" rev-parse 'HEAD^{tree}')" = "74c4f1815b0b0ef284773cb9f6953f83244a88c5"
+cat > "$patch_file" <<'QUICPERF_DEPENDENCY_PATCH'
+diff --git a/folly/io/async/ssl/OpenSSLUtils.cpp b/folly/io/async/ssl/OpenSSLUtils.cpp
+index f4eb336fb..b9b5c9b48 100644
+--- a/folly/io/async/ssl/OpenSSLUtils.cpp
++++ b/folly/io/async/ssl/OpenSSLUtils.cpp
+@@ -122,8 +122,8 @@ bool OpenSSLUtils::validatePeerCertNames(
+     auto name = sk_GENERAL_NAME_value(altNames, i);
+     if ((addr4 != nullptr || addr6 != nullptr) && name->type == GEN_IPADD) {
+       // Extra const-ness for paranoia
+-      unsigned char const* const rawIpStr = name->d.iPAddress->data;
+-      auto const rawIpLen = size_t(name->d.iPAddress->length);
++      const unsigned char* const rawIpStr = ASN1_STRING_get0_data(name->d.iPAddress);
++      auto const rawIpLen = size_t(ASN1_STRING_length(name->d.iPAddress));
+ 
+       if (rawIpLen == 4 && addr4 != nullptr) {
+         if (::memcmp(rawIpStr, &addr4->sin_addr, rawIpLen) == 0) {
+@@ -284,7 +284,7 @@ std::string OpenSSLUtils::getCommonName(X509* x509) {
+   if (x509 == nullptr) {
+     return "";
+   }
+-  X509_NAME* subject = X509_get_subject_name(x509);
++  const X509_NAME* subject = X509_get_subject_name(x509);
+   char buf[ub_common_name + 1];
+   int length =
+       X509_NAME_get_text_by_NID(subject, NID_commonName, buf, sizeof(buf));
+diff --git a/folly/ssl/OpenSSLCertUtils.cpp b/folly/ssl/OpenSSLCertUtils.cpp
+index 03f5c0e56..d786e3c69 100644
+--- a/folly/ssl/OpenSSLCertUtils.cpp
++++ b/folly/ssl/OpenSSLCertUtils.cpp
+@@ -31,7 +31,7 @@ std::string getOpenSSLErrorString(unsigned long err) {
+   return std::string(errBuff.data());
+ }
+ 
+-std::string asn1ToString(ASN1_STRING* a) {
++std::string asn1ToString(const ASN1_STRING* a) {
+   auto strType = ASN1_STRING_type(a);
+   if (strType == V_ASN1_UTF8STRING || strType == V_ASN1_OCTET_STRING) {
+     long len = ASN1_STRING_length(a);
+@@ -40,18 +40,18 @@ std::string asn1ToString(ASN1_STRING* a) {
+     ASN1_get_object(&data, &len, &type, &xclass, len);
+     return std::string(reinterpret_cast<const char*>(data), len);
+   } else {
+-    unsigned char* data = const_cast<unsigned char*>(ASN1_STRING_get0_data(a));
++    const unsigned char* data = ASN1_STRING_get0_data(a);
+     int len = ASN1_STRING_length(a);
+     if (len <= 0) {
+       return std::string();
+     }
+-    return std::string(reinterpret_cast<char*>(data), len);
++    return std::string(reinterpret_cast<const char*>(data), len);
+   }
+ }
+ 
+-std::string getExtOid(X509_EXTENSION* extension) {
++std::string getExtOid(const X509_EXTENSION* extension) {
+   CHECK_NOTNULL(extension);
+-  ASN1_OBJECT* object = X509_EXTENSION_get_object(extension);
++  const ASN1_OBJECT* object = X509_EXTENSION_get_object(extension);
+   // Query for extension OID
+   constexpr int buf_size = 256;
+   std::string ret(buf_size, '\0');
+@@ -66,13 +66,13 @@ std::string getExtOid(X509_EXTENSION* extension) {
+   return ret;
+ }
+ 
+-std::string getExtData(X509_EXTENSION* extension) {
++std::string getExtData(const X509_EXTENSION* extension) {
+   CHECK_NOTNULL(extension);
+   auto asnValue = X509_EXTENSION_get_data(extension);
+   return asnValue ? asn1ToString(asnValue) : std::string();
+ }
+ 
+-Optional<std::string> commonName(X509_NAME* name) {
++Optional<std::string> commonName(const X509_NAME* name) {
+   if (!name) {
+     return none;
+   }
+@@ -243,7 +243,7 @@ std::vector<std::string> OpenSSLCertUtils::getExtension(
+     X509& x509, folly::StringPiece oid) {
+   std::vector<std::string> extValues;
+   for (int i = 0; i < X509_get_ext_count(&x509); i++) {
+-    X509_EXTENSION* extension = X509_get_ext(&x509, i);
++    const X509_EXTENSION* extension = X509_get_ext(&x509, i);
+     std::string extensionOid = getExtOid(extension);
+     if (extensionOid == oid) {
+       extValues.push_back(getExtData(extension));
+@@ -256,7 +256,7 @@ std::vector<std::pair<std::string, std::string>>
+ OpenSSLCertUtils::getAllExtensions(X509& x509) {
+   std::vector<std::pair<std::string, std::string>> extensions;
+   for (int i = 0; i < X509_get_ext_count(&x509); i++) {
+-    X509_EXTENSION* extension = X509_get_ext(&x509, i);
++    const X509_EXTENSION* extension = X509_get_ext(&x509, i);
+     std::string oid = getExtOid(extension);
+     std::string value = getExtData(extension);
+     extensions.push_back(std::make_pair(oid, value));
+QUICPERF_DEPENDENCY_PATCH
+if git -C "$source_dir" apply --check "$patch_file"; then
+  git -C "$source_dir" apply "$patch_file"
+elif git -C "$source_dir" apply --reverse --check "$patch_file"; then
+  :
+else
+  echo "quicperf dependency patch does not match pinned source" >&2
+  exit 1
+fi
+source_index="$DEPO_BUILD_DIR/quicperf-source.index"
+rm -f "$source_index"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" read-tree HEAD
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file"
+test "$(GIT_INDEX_FILE="$source_index" git -C "$source_dir" write-tree)" = "4a1fb0f7f95da3f2ac1f39d15c8ee230d9a0b442"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" diff --quiet --no-ext-diff -- .
 cmake --build "${DEPO_BUILD_DIR}" --parallel
 EOF
 CMAKE_INSTALL_SH <<'EOF'

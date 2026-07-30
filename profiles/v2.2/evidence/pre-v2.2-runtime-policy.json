@@ -1,0 +1,29 @@
+{
+  "schema_version": "quicperf.pre-v2.2-runtime-policy.v1",
+  "evidence_role": "historical_design_evidence_only_never_publication_input",
+  "source_campaign": {
+    "tag": "8f71fbc-r2",
+    "two_backend_session_wall_ns": 14628078000000,
+    "retained_iouring_trials_plus_block_gaps_ns": 7301392000000,
+    "non_attempt_service_time_ns": 170771000000,
+    "expected_one_backend_session_ns": 7472163000000
+  },
+  "runtime_budget": {
+    "operational_session_timeout_ns": 8400000000000,
+    "deterministic_verification_budget_ns": 1200000000000,
+    "admission_conservative_reservation_ns": 3847800000000,
+    "two_session_budget_ns": 16800000000000,
+    "analysis_finalization_export_budget_ns": 600000000000,
+    "clean_start_conservative_budget_ns": 22447800000000,
+    "suite_deadline_ns": 25200000000000
+  },
+  "scheduled_campaign_floor": {
+    "measurement_ns": 9504000000000,
+    "warmup_ns": 936000000000,
+    "arm_lead_ns": 3240000000000,
+    "four_probes_ns": 241000000000,
+    "total_ns": 13921000000000
+  },
+  "localized_transient_budget_per_session": 2,
+  "derivation": "The frozen one-backend session estimate is reconstructed from every retained iouring trial and its block gap in the archived two-backend session, plus observed non-attempt service time. The 8400-second per-session budget supplies a conservative upper-tail allowance. The clean-start total adds the full conservative admission reservation, deterministic verification, both session budgets, and final processing without using publication outcomes."
+}

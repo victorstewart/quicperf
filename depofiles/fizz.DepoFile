@@ -1,12 +1,12 @@
 NAME fizz
-VERSION main-44ca082-quicperf8
+VERSION main-44ca082-quicperf9
 SYSTEM_LIBS ALLOW
 DEPENDS boost VERSION 1.91.0-quicperf3
-DEPENDS folly VERSION main-5e1874-quicperf8
+DEPENDS folly VERSION main-5e1874-quicperf9
 DEPENDS fmt VERSION 12.1.0-quicperf2
 DEPENDS gflags VERSION 2.3.0-quicperf2
 DEPENDS glog VERSION 0.7.1-quicperf2
-DEPENDS libsodium VERSION 1.0.22-quicperf2
+DEPENDS libsodium VERSION 1.0.22-quicperf3
 DEPENDS openssl VERSION 4.0.0
 DEPENDS zlib VERSION 1.3.2
 DEPENDS zstd VERSION 1.5.7-quicperf2

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quicperf.invalid/schemas/suite-v1.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "campaigns": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "campaign_id": {"anyOf": [{"pattern": "^[0-9a-f]{64}$", "type": "string"}, {"type": "null"}]},
+          "maximum_trial_ids": {"anyOf": [{"minimum": 1, "type": "integer"}, {"type": "null"}]},
+          "name": {"minLength": 1, "type": "string"},
+          "planned_trials": {"anyOf": [{"minimum": 1, "type": "integer"}, {"type": "null"}]},
+          "profile": {"minLength": 1, "type": "string"},
+          "profile_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+          "run_directory": {"minLength": 1, "type": "string"},
+          "schedule_hash": {"anyOf": [{"pattern": "^[0-9a-f]{64}$", "type": "string"}, {"type": "null"}]},
+          "seed": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+        },
+        "required": ["campaign_id", "maximum_trial_ids", "name", "planned_trials", "profile", "profile_sha256", "run_directory", "schedule_hash", "seed"],
+        "type": "object"
+      },
+      "maxItems": 5,
+      "minItems": 5,
+      "type": "array"
+    },
+    "creation_inputs": {
+      "additionalProperties": false,
+      "properties": {
+        "bin_dir": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "interoperability_store": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "qualification_store": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "root": {"minLength": 1, "type": "string"}
+      },
+      "required": ["bin_dir", "interoperability_store", "qualification_store", "root"],
+      "type": "object"
+    },
+    "phase": {"enum": ["freezing", "frozen"]},
+    "schema_version": {"const": "quicperf.publication-suite.v1"},
+    "suite_seed": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+  },
+  "required": ["campaigns", "creation_inputs", "phase", "schema_version", "suite_seed"],
+  "type": "object"
+}

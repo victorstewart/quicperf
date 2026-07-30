@@ -231,6 +231,10 @@ private:
   {
     if constexpr (mode & Mode::server)
     {
+      if (benchmarkIsZeroRttReqResp())
+      {
+        return genericCompletedStreams >= benchmarkGenericServerTargetStreams();
+      }
       return serverCompletedConnections >= benchmarkServerTargetConnections;
     }
     else
@@ -909,6 +913,7 @@ private:
     streamState->complete = true;
     streamState->phase = GenericPhase::complete;
     ++connState.genericCompletedStreams;
+    ++genericCompletedStreams;
     if (connState.durationMode && supportsGenericDurationMode(benchmarkScenario) && connState.clientDone)
     {
       connState.serverDrainDeadlineUs = timeNowUs() + benchmarkDatagramDrainUs;
@@ -2442,7 +2447,7 @@ public:
           networkHub->socket.addressLen,
           address,
           sizeof(struct sockaddr_in6),
-          "localhost",
+          benchmarkTlsHostname,
           importedResumption ? importedSession.data() : nullptr,
           importedResumption ? importedSession.size() : 0,
           nullptr,

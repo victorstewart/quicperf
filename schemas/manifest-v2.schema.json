@@ -1,0 +1,31 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://quicperf.invalid/schemas/manifest-v2.schema.json",
+  "title":"ImmutableIdentityManifestV2",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["schema_version","source","binaries","dependencies","toolchains","protocols","host_policy","path_profiles"],
+  "properties":{
+    "schema_version":{"const":"quicperf.manifest.v2"},
+    "source":{"$ref":"#/$defs/source"},
+    "binaries":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/binary"}},
+    "dependencies":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/dependency"}},
+    "toolchains":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/toolchain"}},
+    "protocols":{"$ref":"#/$defs/protocols"},
+    "host_policy":{"$ref":"#/$defs/host"},
+    "path_profiles":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/pathProfile"}}
+  },
+  "$defs":{
+    "digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+    "source":{"type":"object","additionalProperties":false,"required":["tree_sha256","archive_sha256","git_commit","clean","dirty_patch_sha256","dirty_patch"],"properties":{"tree_sha256":{"$ref":"#/$defs/digest"},"archive_sha256":{"$ref":"#/$defs/digest"},"git_commit":{"type":"string","pattern":"^[0-9a-f]{40,64}$"},"clean":{"type":"boolean"},"dirty_patch_sha256":{"oneOf":[{"$ref":"#/$defs/digest"},{"type":"null"}]},"dirty_patch":{"type":["string","null"]}}},
+    "library":{"type":"object","additionalProperties":false,"required":["path","sha256","elf_build_id"],"properties":{"path":{"type":"string","minLength":1},"sha256":{"$ref":"#/$defs/digest"},"elf_build_id":{"type":"string","minLength":1}}},
+    "binary":{"type":"object","additionalProperties":false,"required":["name","role","path","sha256","elf_build_id","expected_loaded_libraries"],"properties":{"name":{"type":"string","minLength":1},"role":{"enum":["server","reference_client","server_reference_client","coordinator","path_controller"]},"path":{"type":"string","minLength":1},"sha256":{"$ref":"#/$defs/digest"},"elf_build_id":{"type":"string","minLength":1},"expected_loaded_libraries":{"type":"array","items":{"$ref":"#/$defs/library"}}}},
+    "dependency":{"type":"object","additionalProperties":false,"required":["name","revision","content_sha256","lockfile_sha256"],"properties":{"name":{"type":"string","minLength":1},"revision":{"type":"string","minLength":1},"content_sha256":{"$ref":"#/$defs/digest"},"lockfile_sha256":{"oneOf":[{"$ref":"#/$defs/digest"},{"type":"null"}]}}},
+    "toolchain":{"type":"object","additionalProperties":false,"required":["name","version","executable_sha256","effective_compile_flags","effective_link_flags"],"properties":{"name":{"type":"string","minLength":1},"version":{"type":"string","minLength":1},"executable_sha256":{"$ref":"#/$defs/digest"},"effective_compile_flags":{"type":"array","items":{"type":"string","minLength":1}},"effective_link_flags":{"type":"array","items":{"type":"string","minLength":1}}}},
+    "protocols":{"type":"object","additionalProperties":false,"required":["adapter_abi_version","control_protocol_version","workload_protocol_version","capability_schema_version","adapter_capabilities_sha256"],"properties":{"adapter_abi_version":{"type":"string","minLength":1},"control_protocol_version":{"type":"string","minLength":1},"workload_protocol_version":{"type":"string","minLength":1},"capability_schema_version":{"type":"string","minLength":1},"adapter_capabilities_sha256":{"$ref":"#/$defs/digest"}}},
+    "topologyCore":{"type":"object","additionalProperties":false,"required":["package","core","cpus","numa_node"],"properties":{"package":{"type":"integer","minimum":0},"core":{"type":"integer","minimum":0},"cpus":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"integer","minimum":0}},"numa_node":{"type":"integer","minimum":0}}},
+    "lane":{"type":"object","additionalProperties":false,"required":["lane","server_cpu","client_cpus","housekeeping_cpus"],"properties":{"lane":{"type":"integer","minimum":0},"server_cpu":{"type":"integer","minimum":0},"client_cpus":{"type":"array","minItems":2,"maxItems":2,"uniqueItems":true,"items":{"type":"integer","minimum":0}},"housekeeping_cpus":{"type":"array","minItems":2,"maxItems":2,"uniqueItems":true,"items":{"type":"integer","minimum":0}}}},
+    "host":{"type":"object","additionalProperties":false,"required":["kernel_release","microcode","cpu_model","cpu_stepping","topology","topology_sha256","numa_sha256","clocksource","cgroup_mode","smt_policy","governor","epp","frequency_min_khz","frequency_max_khz","turbo","irq_affinity_sha256","offloads_sha256","sysctls_sha256","socket_policy_sha256","lane_layout","lane_layout_sha256"],"properties":{"kernel_release":{"type":"string","minLength":1},"microcode":{"type":"string","minLength":1},"cpu_model":{"type":"string","minLength":1},"cpu_stepping":{"type":"string","minLength":1},"topology":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/topologyCore"}},"topology_sha256":{"$ref":"#/$defs/digest"},"numa_sha256":{"$ref":"#/$defs/digest"},"clocksource":{"type":"string","minLength":1},"cgroup_mode":{"type":"string","minLength":1},"smt_policy":{"type":"string","minLength":1},"governor":{"type":"string","minLength":1},"epp":{"type":"string","minLength":1},"frequency_min_khz":{"type":"string","pattern":"^[1-9][0-9]*$"},"frequency_max_khz":{"type":"string","pattern":"^[1-9][0-9]*$"},"turbo":{"type":"boolean"},"irq_affinity_sha256":{"$ref":"#/$defs/digest"},"offloads_sha256":{"$ref":"#/$defs/digest"},"sysctls_sha256":{"$ref":"#/$defs/digest"},"socket_policy_sha256":{"$ref":"#/$defs/digest"},"lane_layout":{"type":"array","minItems":1,"maxItems":2,"items":{"$ref":"#/$defs/lane"}},"lane_layout_sha256":{"$ref":"#/$defs/digest"}}},
+    "pathProfile":{"type":"object","additionalProperties":false,"required":["name","content_hash","content"],"properties":{"name":{"type":"string","minLength":1},"content_hash":{"$ref":"#/$defs/digest"},"content":{"type":"object"}}}
+  }
+}

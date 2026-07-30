@@ -1,0 +1,186 @@
+{
+  "schema_version": "quicperf.pre-v2.1-runtime-policy.v1",
+  "evidence_cutoff": "2026-07-28T02:36:09.071901634-04:00",
+  "selection": {
+    "archive_root": ".run",
+    "eligible_population": "all exact pre-v2.1 one-lane publication journals containing complete 24-trial blocks or session monitor-replay artifacts",
+    "complete_block_predicate": "exactly 24 joined trial/attempt rows, every attempt state committed, non-null started_ns and ended_ns",
+    "block_span": "MAX(attempt.ended_ns)-MIN(attempt.started_ns)",
+    "input_manifest_line_grammar": "db|tag|journal_sha256|source_commit|campaign_id|status or artifact|tag|path|sha256, sorted with LF terminators",
+    "input_manifest_sha256": "74a6778af1404cf2810a3245c1a1daf7214230677a8b101d5cce6fb73677522b"
+  },
+  "inputs": [
+    {
+      "tag": "23204c1",
+      "journal_sha256": "649999e09cf3a284838208742a2d33d52169aaa2914d40067393f5290811a615",
+      "source_commit": "23204c1854a65e16342e75b6535e9b284baeab2e",
+      "campaign_id": "dd2084c6051b05f2c353b36161d19d8064ef27d278ca32458461ad0e9248201f",
+      "status": "hardware_unqualified",
+      "runtime_artifacts": [
+        {
+          "path": "runtime/session-1-hardware-unqualified.json",
+          "sha256": "c1e8beee73990d22440718ff3b4a183dc8aa2395f51262c4be7d9d769d6343d1"
+        },
+        {
+          "path": "runtime/session-1-replay-1.json",
+          "sha256": "150df1368ea88408d4ac3873e8b5e2e8d669ea739bdd3ce2ee7d33aac65a8a5a"
+        },
+        {
+          "path": "runtime/session-1-replay-2.json",
+          "sha256": "b6198e4bbe9bd5c438add72dc955f029309b051fee246b55cb1c66d4d87b5cae"
+        },
+        {
+          "path": "runtime/session-1-state.json",
+          "sha256": "f5b5ace765cdc786b81885a3db0517e62cebb3bc97be5f29751ce276d7a85ee8"
+        },
+        {
+          "path": "runtime/session-1.json",
+          "sha256": "b76619b7b7809cfe1d4e409c378daeabaf470ed88d305145d252ca391a63fe24"
+        }
+      ]
+    },
+    {
+      "tag": "dadf972",
+      "journal_sha256": "322715f0bcc229552fbfd1b6daa7b85250d2230c2274097b221beabd533264e5",
+      "source_commit": "dadf97277ac4081866555e16d12e9b6333d5e0b2",
+      "campaign_id": "8e52cd3b08354e76602dd7b19c0ad10f9c14c65c02f11f1ae555858001148837",
+      "status": "hardware_unqualified",
+      "runtime_artifacts": [
+        {
+          "path": "runtime/session-1-hardware-unqualified.json",
+          "sha256": "a0b1ff77b99a76bc57f4e5a0ef4e69a27a9c74ca90eadba276a48c3ddde10a14"
+        },
+        {
+          "path": "runtime/session-1-replay-1.json",
+          "sha256": "199d122aa6f281bfeb435619e708ceb7a35a69c472e5b7d79952e7ad0151ea42"
+        },
+        {
+          "path": "runtime/session-1-replay-2.json",
+          "sha256": "72247ce1c71290d2e50e29efd3c04908e39e4e84d7624dddea1d2828784e0301"
+        },
+        {
+          "path": "runtime/session-1-state.json",
+          "sha256": "db817fda72536b28e865d294b64bed432be6ce072d68eba06656eb0f49f371e1"
+        },
+        {
+          "path": "runtime/session-1.json",
+          "sha256": "ef85940529ea55050887baee8065b72e986da546efe7f3ba7debbbb47d97f508"
+        }
+      ]
+    },
+    {
+      "tag": "a51c604",
+      "journal_sha256": "c07c3288ea8ed2d0bb5c3ba486d7c0a6c428c77342c913036eb80646ff5b8390",
+      "source_commit": "a51c604a384948e5f2bbf661debc0273d90fcbfa",
+      "campaign_id": "3276b446b14e05d82601223cc5db02636abd88f43604703642bab17cbaa39c03",
+      "status": "hardware_unqualified",
+      "runtime_artifacts": [
+        {
+          "path": "runtime/session-1-hardware-unqualified.json",
+          "sha256": "7b39d11ecb2466b0b7a33746b13f947760328520dcd390fa6fc1de192affad05"
+        },
+        {
+          "path": "runtime/session-1-replay-1.json",
+          "sha256": "633cb8215cce353ed5ca40e9c7b39c80ce6f141ae56f64e41e77c85378bfb209"
+        },
+        {
+          "path": "runtime/session-1-replay-2.json",
+          "sha256": "9fda855e67b6e3fbeb232645872c8b1944b0a890996accbad612d04108bce9dc"
+        },
+        {
+          "path": "runtime/session-1-state.json",
+          "sha256": "49f8a212a4e3f1f9de3c298408ef0761cdd1c918ba72298a1de0f3d08a779dd6"
+        },
+        {
+          "path": "runtime/session-1.json",
+          "sha256": "e826f7f65e177877fa4503177a61b7f7b7b3754c13dc67b82bd123049c63e673"
+        }
+      ]
+    },
+    {
+      "tag": "54fd706",
+      "journal_sha256": "cc3e9f448f4bba8a8d19704feb20352f48ecd192bf75c4f27b00543c465bd1b0",
+      "source_commit": "54fd7068f5558611637eac71ce29b50284e5ec38",
+      "campaign_id": "2dbcce55c5c6e6aa0f36055ca1f67f0322a61cc965dc94c994d594ba6e8593cb",
+      "status": "superseded_nonpublication_v2_1_cutover",
+      "runtime_artifacts": [
+        {
+          "path": "runtime/session-1-replay-1.json",
+          "sha256": "1fadd04346862a35acc43124da7b2e9f6645ed37222b4b5a17f99e79bbf3c449"
+        },
+        {
+          "path": "runtime/session-1-state.json",
+          "sha256": "bb0cf66adc49ec90fe819ccabb5ec83bf63c56b01cc553a1746e7be76775f122"
+        }
+      ]
+    }
+  ],
+  "complete_block_spans_ns": {
+    "download": {
+      "count": 35,
+      "minimum": 73847473125,
+      "median": "77873971585",
+      "nearest_rank_p95": 83427926467,
+      "maximum": 83760026969
+    },
+    "upload": {
+      "count": 22,
+      "minimum": 71387379610,
+      "median": "72203385351",
+      "nearest_rank_p95": 72780952383,
+      "maximum": 72864715114
+    },
+    "multistream_download": {
+      "count": 12,
+      "minimum": 77658446871,
+      "median": "83445297911.5",
+      "nearest_rank_p95": 93870012002,
+      "maximum": 93870012002
+    },
+    "multistream_upload": {
+      "count": 7,
+      "minimum": 71893472705,
+      "median": "72473455027",
+      "nearest_rank_p95": 72819965560,
+      "maximum": 72819965560
+    }
+  },
+  "localized_transient_derivation": {
+    "included_reason": "host_stability_monitor_transient",
+    "excluded_reasons": [
+      "coordinator_interruption"
+    ],
+    "per_session_counts": {
+      "23204c1": 2,
+      "dadf972": 2,
+      "a51c604": 2,
+      "54fd706": 0
+    },
+    "rule": "maximum observed isolated monitor-transient count in any eligible pre-v2.1 session; a failed preallocated mate remains immediately terminal",
+    "localized_transient_budget_per_session": 2
+  },
+  "operational_timeout_derivation": {
+    "historical_arm_lead_ns": 75000000,
+    "hardened_arm_lead_ns": 750000000,
+    "deterministic_arm_adjustment_per_24_trial_block_ns": 16200000000,
+    "scheduled_ordinary_block_ns": 72000000000,
+    "scheduled_loss_block_ns": 150000000000,
+    "maximum_observed_overhead_ns": 38070012002,
+    "rounded_upper_tail_allowance_ns": 40000000000,
+    "ordinary_block_bound_ns": 112000000000,
+    "loss_block_bound_ns": 190000000000,
+    "ordinary_blocks_per_session": 168,
+    "loss_blocks_per_session": 12,
+    "base_session_bound_ns": 21096000000000,
+    "initial_and_final_probe_allowance_ns": 120500000000,
+    "three_worst_case_retry_blocks_ns": 570000000000,
+    "two_fresh_probe_allowances_ns": 120500000000,
+    "finalization_reserve_ns": 5000000000,
+    "raw_bound_ns": 21912000000000,
+    "rounding": "up to the next whole minute",
+    "operational_session_timeout_ns": 21960000000000,
+    "publication_effect": "reported operational threshold only; exceeding it does not invalidate otherwise valid samples"
+  },
+  "localized_transient_budget_per_session": 2,
+  "operational_session_timeout_ns": 21960000000000
+}
