@@ -44,7 +44,7 @@ class PreflightInventoryTests(unittest.TestCase):
             inventory.add(passed("ready", "duplicate"))
 
     def test_publication_reports_nonloopback_controller_as_not_run(self):
-        spec = load_experiment_spec(ROOT / "profiles/v2/publication.json")
+        spec = load_experiment_spec(ROOT / "profiles/v2.3/publication.json")
         with mock.patch(
             "quicperf_harness.preflight.NamespacePathController.create_session",
             side_effect=PathError("CAP_NET_ADMIN denied"),
@@ -103,20 +103,6 @@ class ProductionContractTests(unittest.TestCase):
             required_backend=None,
             required_scenario=None,
         )
-
-    def test_memory_curve_has_a_current_native_capability_id(self):
-        spec = load_experiment_spec(ROOT / "profiles/v2/memory.json")
-        entry = {"role": "server_reference_client"}
-        capabilities = {
-            "roles": "describe,server,client",
-            "backends": "syscall,iouring",
-            "scenarios": ",".join(str(value) for value in range(1, 16)),
-        }
-        accepted, detail = _capability_contract_check(entry, spec, capabilities)
-        self.assertFalse(accepted)
-        self.assertEqual(detail, "configured scenario IDs are not attested: 16")
-        capabilities["scenarios"] += ",16"
-        self.assertTrue(_capability_contract_check(entry, spec, capabilities)[0])
 
     def test_cgroup_probe_requires_creation_and_cleanup(self):
         topology = LaneTopology(0, 1, (2, 3), (4,))

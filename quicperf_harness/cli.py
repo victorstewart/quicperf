@@ -1,10 +1,9 @@
-"""Canonical command surface for the quicperf v2 coordinator."""
+"""Canonical command surface for the quicperf V2.3 coordinator."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import socket
 import sys
 import tempfile
@@ -14,8 +13,6 @@ from typing import Any, Sequence
 
 from .canonical import canonical_bytes
 from .errors import HarnessError, IdentityMismatchError, InvalidConfigurationError
-from .legacy import translate_legacy
-from .legacy_parity import run_legacy_v2_parity
 from .interoperability import (
     FAIL as INTEROPERABILITY_FAIL,
     interoperability_check_detail,
@@ -39,7 +36,6 @@ from .preflight import (
     tls_material_check,
 )
 from .qualification import (
-    ARTIFACT_KINDS,
     QualificationArtifactStore,
     build_qualification_identity,
 )
@@ -80,6 +76,7 @@ EXIT_INCOMPLETE = 3
 EXIT_INVALID = 4
 EXIT_INTERNAL = 5
 EXIT_INTERRUPT = 130
+PUBLIC_QUALIFICATION_KINDS = ("client-headroom", "host-stability")
 
 
 def _root() -> Path:
@@ -105,25 +102,21 @@ def _parser() -> argparse.ArgumentParser:
     doctor.add_argument("--interoperability-store", type=Path)
     doctor.add_argument("--qualification-store", type=Path)
 
-    for kind in ("campaign", "capacity", "memory", "tail"):
-        surface = commands.add_parser(kind)
-        operations = surface.add_subparsers(dest="operation", required=True)
-        create = operations.add_parser("create")
-        create.add_argument("--profile", type=Path, required=True)
-        create.add_argument("--out", type=Path, required=True)
-        create.add_argument("--seed")
-        create.add_argument("--bin-dir", type=Path)
-        create.add_argument("--qualification-store", type=Path)
-        create.add_argument("--interoperability-store", type=Path)
-        run = operations.add_parser("run")
-        run.add_argument("--run-dir", type=Path, required=True)
-        run.add_argument("--session", type=int, choices=(1, 2), required=True)
-        for operation in ("analyze", "finalize"):
-            subcommand = operations.add_parser(operation)
-            subcommand.add_argument("--run-dir", type=Path, required=True)
-        if kind == "campaign":
-            status = operations.add_parser("status")
-            status.add_argument("--run-dir", type=Path, required=True)
+    campaign = commands.add_parser("campaign")
+    campaign_operations = campaign.add_subparsers(dest="operation", required=True)
+    create = campaign_operations.add_parser("create")
+    create.add_argument("--profile", type=Path, required=True)
+    create.add_argument("--out", type=Path, required=True)
+    create.add_argument("--seed")
+    create.add_argument("--bin-dir", type=Path)
+    create.add_argument("--qualification-store", type=Path)
+    create.add_argument("--interoperability-store", type=Path)
+    run = campaign_operations.add_parser("run")
+    run.add_argument("--run-dir", type=Path, required=True)
+    run.add_argument("--session", type=int, choices=(1, 2), required=True)
+    for operation in ("analyze", "finalize", "status"):
+        subcommand = campaign_operations.add_parser(operation)
+        subcommand.add_argument("--run-dir", type=Path, required=True)
 
     export = commands.add_parser("export")
     export.add_argument("--run-dir", type=Path, required=True)
@@ -134,9 +127,6 @@ def _parser() -> argparse.ArgumentParser:
     suite_run_command = suite_commands.add_parser("run")
     suite_run_command.add_argument("--out", type=Path, required=True)
     suite_run_command.add_argument("--seed")
-    suite_run_command.add_argument(
-        "--diagnostic-unqualified-host", action="store_true"
-    )
     for option in (suite_run_command, suite_commands.add_parser("resume")):
         if option is not suite_run_command:
             option.add_argument("--suite-dir", type=Path, required=True)
@@ -150,7 +140,9 @@ def _parser() -> argparse.ArgumentParser:
     qualification_commands = qualification.add_subparsers(dest="operation", required=True)
     for operation in ("run", "store", "acquire", "status"):
         subcommand = qualification_commands.add_parser(operation)
-        subcommand.add_argument("--kind", choices=sorted(ARTIFACT_KINDS), required=True)
+        subcommand.add_argument(
+            "--kind", choices=PUBLIC_QUALIFICATION_KINDS, required=True
+        )
         subcommand.add_argument("--run-dir", type=Path, required=True)
         subcommand.add_argument("--artifact-store", type=Path, required=True)
         if operation == "store":
@@ -158,21 +150,6 @@ def _parser() -> argparse.ArgumentParser:
         if operation == "run":
             subcommand.add_argument("--driver", type=Path)
 
-    legacy = commands.add_parser("legacy")
-    legacy_commands = legacy.add_subparsers(dest="operation", required=True)
-    translate = legacy_commands.add_parser("translate")
-    translate.add_argument("--base-profile", type=Path, required=True)
-    translate.add_argument("--out", type=Path, required=True)
-    translate.add_argument("--set", action="append", default=[], metavar="NAME=VALUE")
-    parity = legacy_commands.add_parser("parity")
-    parity.add_argument("--profile", type=Path, required=True)
-    parity.add_argument("--out", type=Path, required=True)
-    parity.add_argument("--bin-dir", type=Path, required=True)
-    parity.add_argument("--qualification-profile", type=Path, required=True)
-    parity.add_argument("--qualification-run-dir", type=Path, required=True)
-    parity.add_argument("--qualification-store", type=Path, required=True)
-    parity.add_argument("--seed")
-    parity.add_argument("--diagnostic-unqualified-host", action="store_true")
     return parser
 
 
@@ -595,10 +572,6 @@ def doctor(
     }, EXIT_SUCCESS if preflight_passed else EXIT_INVALID
 
 
-def _expected_kind(command: str) -> str | None:
-    return {"capacity": "capacity", "memory": "memory", "tail": "tail"}.get(command)
-
-
 def _dispatch(arguments: argparse.Namespace) -> int:
     root = _root()
     if arguments.command == "doctor":
@@ -628,7 +601,6 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                 qualification_store=arguments.qualification_store,
                 interoperability_store=arguments.interoperability_store,
                 campaign_names=DEFAULT_CAMPAIGNS,
-                diagnostic_unqualified_host=arguments.diagnostic_unqualified_host,
             )
         elif arguments.operation == "resume":
             result = suite_resume(
@@ -682,60 +654,17 @@ def _dispatch(arguments: argparse.Namespace) -> int:
             )
         _emit(result)
         return EXIT_SUCCESS if result["qualified"] else EXIT_NONPUBLISHABLE
-    if arguments.command == "legacy":
-        if arguments.operation == "parity":
-            execution = run_legacy_v2_parity(
-                root=root,
-                profile=arguments.profile,
-                out_dir=arguments.out,
-                bin_dir=arguments.bin_dir,
-                qualification_profile=arguments.qualification_profile,
-                qualification_run_dir=arguments.qualification_run_dir,
-                qualification_store=arguments.qualification_store,
-                seed_text=arguments.seed,
-                diagnostic_unqualified_host=arguments.diagnostic_unqualified_host,
-            )
-            _emit(
-                {
-                    **execution.artifact,
-                    "artifact_path": str(execution.artifact_path),
-                }
-            )
-            return (
-                EXIT_NONPUBLISHABLE
-                if execution.artifact["status"]
-                == "diagnostic_complete_nonpublication"
-                else EXIT_SUCCESS
-                if execution.artifact["status"] == "qualified"
-                else EXIT_NONPUBLISHABLE
-            )
-        assignments = {}
-        for item in arguments.set:
-            if "=" not in item:
-                raise InvalidConfigurationError("--set requires NAME=VALUE")
-            name, value = item.split("=", 1)
-            if not name or name in assignments:
-                raise InvalidConfigurationError("legacy assignments must be nonempty and unique")
-            assignments[name] = value
-        content = translate_legacy(arguments.base_profile, assignments)
-        arguments.out.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(arguments.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb", closefd=True) as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        _emit({"translated_profile": str(arguments.out), "bytes": len(content), "executed": False})
-        return EXIT_SUCCESS
-
-    expected_kind = _expected_kind(arguments.command)
     if arguments.operation == "create":
         spec = load_experiment_spec(arguments.profile)
-        if expected_kind is not None and spec.campaign_kind != expected_kind:
+        if (
+            spec.campaign_kind != "publication"
+            or spec.estimand != "fixed_treatment_server"
+            or spec.methodology.get("version") != "2.3"
+        ):
             raise InvalidConfigurationError(
-                f"{arguments.command} create requires a {expected_kind} profile"
+                "the public coordinator accepts only the V2.3 fixed-treatment "
+                "publication profile"
             )
-        if arguments.command == "campaign" and spec.campaign_kind in {"capacity", "memory", "tail"}:
-            raise InvalidConfigurationError(f"use quicperfctl {spec.campaign_kind} create for this profile")
         created = create_campaign(
             root=root,
             profile=arguments.profile,

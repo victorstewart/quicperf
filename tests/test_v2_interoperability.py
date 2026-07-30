@@ -80,7 +80,7 @@ class InteroperabilityPlanTests(unittest.TestCase):
         )
 
     def test_canonical_plan_is_exact_unique_deterministic_and_identity_ordered(self):
-        spec = load_experiment_spec(ROOT / "profiles/v2/publication.json")
+        spec = load_experiment_spec(ROOT / "profiles/v2.3/publication.json")
         manifest = manifest_for(spec)
         identity = build_interoperability_identity(spec, manifest)
         identity_hash = interoperability_identity_hash(identity)
@@ -102,7 +102,7 @@ class InteroperabilityPlanTests(unittest.TestCase):
             (item.scenario, item.reference_client, item.server_backend)
             for item in first
         )
-        self.assertEqual(set(per_scenario.values()), {3})
+        self.assertEqual(set(per_scenario.values()), {6})
         for server in spec.servers:
             per_server = Counter(
                 (item.reference_client, item.server_backend)
@@ -114,7 +114,7 @@ class InteroperabilityPlanTests(unittest.TestCase):
                 for client in spec.reference_clients
                 for backend in spec.server_backends
             })
-            self.assertEqual(set(per_server.values()), {3, 4})
+            self.assertEqual(set(per_server.values()), {7, 8})
         changed = copy.deepcopy(manifest_fixture())
         changed["source"]["tree_sha256"] = "9" * 64
         changed["binaries"] = json.loads(canonical_bytes(manifest.binaries))
@@ -225,7 +225,7 @@ class InteroperabilityPlanTests(unittest.TestCase):
                 store.refresh(spec, identity, lambda _item: (PASS, "passed", {}))
 
     def test_publication_finalization_requires_the_frozen_balanced_artifact(self):
-        spec = load_experiment_spec(ROOT / "profiles/v2/publication.json")
+        spec = load_experiment_spec(ROOT / "profiles/v2.3/publication.json")
         manifest = manifest_for(spec)
         identity = build_interoperability_identity(spec, manifest)
         with tempfile.TemporaryDirectory() as temporary:

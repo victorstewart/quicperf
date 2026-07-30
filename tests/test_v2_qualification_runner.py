@@ -37,7 +37,6 @@ from tests.test_v2_spec_identity import ROOT, manifest_fixture
 
 
 PROFILE = ROOT / "profiles" / "v2" / "ci-smoke.json"
-TAIL_PROFILE = ROOT / "profiles" / "v2" / "tail.json"
 
 
 def make_run(root: Path, source_profile: Path = PROFILE) -> tuple[Path, object]:
@@ -420,205 +419,6 @@ class QualificationRunnerTests(unittest.TestCase):
                             {"canonical", "reordered"},
                         )
 
-    def test_tail_window_freezes_maximum_schedule_and_activates_exact_union(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            run_dir, _spec = make_run(root, TAIL_PROFILE)
-            result = run_qualification(
-                run_dir=run_dir,
-                kind="tail-window",
-                artifact_store=root / "store",
-                observation_source=DeterministicSource(),
-            )
-            self.assertTrue(result["qualified"], result)
-            self.assertEqual(result["screen_observations"], 384)
-            self.assertEqual(result["screen_attempt_records"], 384)
-            self.assertEqual(result["held_out_observations"], 640)
-            with Journal(run_dir) as journal:
-                raw = json.loads(
-                    bytes(
-                        journal.connection.execute(
-                            "SELECT content FROM artifact WHERE path=?",
-                            (result["journal_path"],),
-                        ).fetchone()["content"]
-                    )
-                )
-            maximum = raw["plan"]["maximum_held_out_requests"]
-            self.assertEqual(len(maximum), 7_680)
-            self.assertEqual(
-                sum(item["status"] == "active" for item in maximum), 640
-            )
-            self.assertEqual(
-                sum(item["status"] == "not_selected" for item in maximum), 7_040
-            )
-            self.assertEqual(
-                len({item["request_id"] for item in maximum}), 7_680
-            )
-            self.assertEqual(
-                len({item["retry_request_id"] for item in maximum}), 7_680
-            )
-            self.assertEqual(
-                set(raw["plan"]["selection"]["nominations_seconds"].values()),
-                {2},
-            )
-            self.assertTrue(
-                all(
-                    servers == ["ngtcp2perf"]
-                    for servers in raw["plan"]["selection"][
-                        "selected_servers"
-                    ].values()
-                )
-            )
-
-    def test_transient_replays_complete_session_with_only_preallocated_ids(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            run_dir, _spec = make_run(root, TAIL_PROFILE)
-            source = SessionTransientSource()
-            result = run_qualification(
-                run_dir=run_dir,
-                kind="tail-window",
-                artifact_store=root / "store",
-                observation_source=source,
-            )
-            self.assertTrue(result["qualified"], result)
-            self.assertEqual(result["screen_observations"], 384)
-            self.assertEqual(result["screen_attempt_records"], 384)
-            self.assertEqual(result["held_out_observations"], 640)
-            self.assertEqual(result["session_attempt_records"], 2)
-            self.assertEqual(
-                [stage for _kind, stage, _requests in source.calls],
-                ["screens", "screens_retry", "held_out_retry"],
-            )
-            with Journal(run_dir) as journal:
-                raw = json.loads(
-                    bytes(
-                        journal.connection.execute(
-                            "SELECT content FROM artifact WHERE path=?",
-                            (result["journal_path"],),
-                        ).fetchone()["content"]
-                    )
-                )
-            attempts = raw["session_attempts"]
-            self.assertEqual(
-                [(item["attempt"], item["status"]) for item in attempts],
-                [
-                    ("primary", "infrastructure_transient"),
-                    ("retry", "completed"),
-                ],
-            )
-            primary_records = attempts[0]["observations"]["screens"]
-            primary = next(
-                item
-                for item in primary_records
-                if item["request_id"] == source.primary_request_id
-            )
-            frozen = next(
-                item
-                for item in raw["plan"]["screen_requests"]
-                if item["request_id"] == source.primary_request_id
-            )
-            self.assertEqual(primary["status"], "infrastructure_transient")
-            self.assertEqual(primary["attempt"], "primary")
-            retry_screens = source.calls[1][2]
-            frozen_screens = {
-                item["request_id"]: item for item in raw["plan"]["screen_requests"]
-            }
-            self.assertEqual(len(retry_screens), len(frozen_screens))
-            self.assertEqual(
-                {
-                    (
-                        item["primary_request_id"],
-                        item["request_id"],
-                        item["attempt_slot"],
-                    )
-                    for item in retry_screens
-                },
-                {
-                    (request_id, item["retry_request_id"], "retry")
-                    for request_id, item in frozen_screens.items()
-                },
-            )
-            retry_held_out = source.calls[2][2]
-            frozen_held_out = {
-                item["request_id"]: item
-                for item in raw["plan"]["held_out_requests"]
-            }
-            self.assertEqual(len(retry_held_out), len(frozen_held_out))
-            self.assertEqual(
-                {
-                    (item["primary_request_id"], item["request_id"])
-                    for item in retry_held_out
-                },
-                {
-                    (request_id, item["retry_request_id"])
-                    for request_id, item in frozen_held_out.items()
-                },
-            )
-            self.assertEqual(
-                {item["attempt"] for item in raw["observations"]["screens"]},
-                {"retry"},
-            )
-            self.assertEqual(frozen["retry_request_id"], retry_screens[0]["request_id"])
-
-    def test_second_session_transient_is_terminal_and_preserves_both_attempts(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            run_dir, _spec = make_run(root, TAIL_PROFILE)
-            source = SessionTransientSource(exhaust=True)
-            result = run_qualification(
-                run_dir=run_dir,
-                kind="tail-window",
-                artifact_store=root / "store",
-                observation_source=source,
-            )
-            self.assertFalse(result["qualified"])
-            self.assertEqual(result["status"], "not_qualified")
-            self.assertEqual(result["screen_observations"], 0)
-            self.assertEqual(result["screen_attempt_records"], 384)
-            self.assertEqual(result["session_attempt_records"], 2)
-            self.assertIn(
-                "preallocated_complete_session_replay_exhausted",
-                result["reasons"][0],
-            )
-            self.assertEqual(
-                [stage for _kind, stage, _requests in source.calls],
-                ["screens", "screens_retry"],
-            )
-            with Journal(run_dir) as journal:
-                raw = json.loads(
-                    bytes(
-                        journal.connection.execute(
-                            "SELECT content FROM artifact WHERE path=?",
-                            (result["journal_path"],),
-                        ).fetchone()["content"]
-                    )
-                )
-            self.assertEqual(
-                [
-                    (item["attempt"], item["status"])
-                    for item in raw["session_attempts"]
-                ],
-                [
-                    ("primary", "infrastructure_transient"),
-                    ("retry", "infrastructure_transient"),
-                ],
-            )
-            failed = [
-                record
-                for attempt in raw["session_attempts"]
-                for record in attempt["observations"]["screens"]
-                if record["status"] == "infrastructure_transient"
-            ]
-            self.assertEqual(len(failed), 385)
-            self.assertEqual(
-                {item["attempt"] for item in failed}, {"primary", "retry"}
-            )
-            self.assertEqual(
-                raw["session_attempts"][1]["transient"]["reason"],
-                "external_cpu_or_irq_noise",
-            )
-
     def test_raised_transient_replays_full_headroom_session(self) -> None:
         class RaisingSource(DeterministicSource):
             def observe(self, *, kind, stage, stage_plan_hash, requests):
@@ -720,13 +520,13 @@ class QualificationRunnerTests(unittest.TestCase):
 
     def test_publication_headroom_plan_uses_only_four_core_treatment(self) -> None:
         spec = load_experiment_spec(
-            ROOT / "profiles" / "v2" / "publication.json"
+            ROOT / "profiles" / "v2.3" / "publication.json"
         )
         identity = "12" * 32
         screens = _headroom_screens(spec, identity)
-        selected = ("ngtcp2perf", "syscall", "datagram")
+        selected = ("ngtcp2perf", "iouring", "datagram")
         held_out = _headroom_held_out(spec, identity, selected)
-        self.assertEqual(len(screens), 72)
+        self.assertEqual(len(screens), 36)
         self.assertEqual({item["client_cores"] for item in screens}, {4})
         self.assertEqual(len(held_out), 12)
         self.assertEqual({item["client_cores"] for item in held_out}, {4})
@@ -1499,80 +1299,6 @@ class QualificationRunnerTests(unittest.TestCase):
         self.assertEqual(
             source._window_trial_values(request, result)[3],
             "valid",
-        )
-
-    def test_native_tail_window_projects_exact_prefixes_from_reference_client(self) -> None:
-        source = NativeSessionObservationSource(
-            root=ROOT,
-            run_dir=ROOT / ".run" / "unused",
-            campaign_id="c" * 64,
-            spec=SimpleNamespace(),
-            manifest=None,
-        )
-        endpoint_caps = {
-            "work_cap_hits": 0,
-            "byte_cap_hits": 0,
-            "stream_cap_hits": 0,
-            "stream_id_cap_hits": 0,
-            "generator_starvation_events": 0,
-        }
-        bins = [
-            {"blocked_events": 0, "validated_units": 1}
-            for _ in range(200)
-        ]
-        result = {
-            "server_result": {
-                "measurement_subwindows": bins,
-                **endpoint_caps,
-            },
-            "client_result": {
-                "measurement_subwindows": bins,
-                **endpoint_caps,
-            },
-        }
-        tail = {
-            "prefixes": [
-                {
-                    "duration_seconds": duration,
-                    "successful_operations": 1_500 + duration,
-                    "failed_operations": duration,
-                    "censored_operations": duration + 1,
-                    "p99_ns": 1_000 + duration,
-                }
-                for duration in (2, 5, 10, 20)
-            ]
-        }
-        resources = mock.MagicMock()
-        resources.__enter__.return_value = (["topology"], ["cgroup"], ["path"], (7,))
-        request = {
-            "request_id": "a" * 64,
-            "scenario": "reqresp",
-            "reference_client": "picoperf",
-        }
-        with (
-            mock.patch.object(source, "_lane_resources", return_value=resources),
-            mock.patch.object(source, "_lane_trial", return_value=result) as trial,
-            mock.patch(
-                "quicperf_harness.qualification_runner._construct_tail_evidence",
-                return_value=tail,
-            ),
-        ):
-            observation = source._observe_tail_window(request)
-        trial.assert_called_once()
-        self.assertEqual(trial.call_args.kwargs["reference_client"], "picoperf")
-        self.assertEqual(
-            observation["values"]["prefixes"],
-            [
-                {
-                    "duration_seconds": duration,
-                    "eligible_operations": 1_500 + duration,
-                    "failed_or_censored_operations": 2 * duration + 1,
-                    "p99_ns": 1_000 + duration,
-                    "validity_classification": "valid",
-                    "capped_or_stalled": False,
-                }
-                for duration in (2, 5, 10, 20)
-            ],
         )
 
 

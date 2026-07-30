@@ -330,9 +330,9 @@ class RunnerLifecycleTests(unittest.TestCase):
             else:
                 gc.disable()
 
-    def test_v21_arm_guard_rebases_an_injected_300_ms_delay(self) -> None:
+    def test_v23_arm_guard_rebases_an_injected_300_ms_delay(self) -> None:
         spec = load_experiment_spec(
-            ROOT / "profiles" / "v2.1" / "publication.json"
+            ROOT / "profiles" / "v2.3" / "publication.json"
         )
         policy = _arm_control_policy(spec)
         self.assertEqual(policy.lead_ns, V21_ARM_LEAD_NS)
@@ -974,7 +974,7 @@ class RunnerLifecycleTests(unittest.TestCase):
                 encoding="utf-8",
             )
             profile = json.loads(
-                (ROOT / "profiles" / "v2" / "publication.json").read_bytes()
+                (ROOT / "profiles" / "v2.3" / "publication.json").read_bytes()
             )
             profile["analysis"]["statistical_calibration"] = frozen_analysis_calibration(
                 artifact,
@@ -2037,37 +2037,38 @@ class CommandAndRendererTests(unittest.TestCase):
             "connect": (0, 0, 0, 0, 0, 0, 0, 16, 0),
             "resumed_connect": (0, 0, 0, 0, 0, 0, 0, 16, 16),
             "zero_rtt_reqresp": (1, 0, 64, 1_024, 0, 0, 0, 16, 16),
-            "memory_curve": (1, 262_144, 1, 1, 1, 64, 0, 1, 0),
         }
-        self.assertEqual(_NATIVE_WORKLOAD_FIELDS, expected)
+        self.assertEqual(
+            {key: _NATIVE_WORKLOAD_FIELDS[key] for key in expected},
+            expected,
+        )
         observed = {}
-        for profile in ("publication.json", "memory.json"):
-            spec = load_experiment_spec(ROOT / "profiles" / "v2" / profile)
-            for workload in spec.raw["workloads"]:
-                scenario = str(workload["scenario"])
-                config = _endpoint_config(
-                    root=ROOT,
-                    spec=spec,
-                    workload=workload,
-                    cell={"scenario": scenario, "concurrency": int(workload["connections"])},
-                    role="server",
-                    backend="syscall",
-                    peer_port=0,
+        spec = load_experiment_spec(ROOT / "profiles/v2.3/publication.json")
+        for workload in spec.raw["workloads"]:
+            scenario = str(workload["scenario"])
+            config = _endpoint_config(
+                root=ROOT,
+                spec=spec,
+                workload=workload,
+                cell={"scenario": scenario, "concurrency": int(workload["connections"])},
+                role="server",
+                backend="iouring",
+                peer_port=0,
+            )
+            observed[scenario] = tuple(
+                int(config[field])
+                for field in (
+                    "active_streams_per_connection",
+                    "bulk_chunk_bytes",
+                    "request_body_bytes",
+                    "response_body_bytes",
+                    "operation_body_bytes",
+                    "datagram_body_bytes",
+                    "datagram_max_unreturned_per_connection",
+                    "global_operation_slots",
+                    "ticket_slots",
                 )
-                observed[scenario] = tuple(
-                    int(config[field])
-                    for field in (
-                        "active_streams_per_connection",
-                        "bulk_chunk_bytes",
-                        "request_body_bytes",
-                        "response_body_bytes",
-                        "operation_body_bytes",
-                        "datagram_body_bytes",
-                        "datagram_max_unreturned_per_connection",
-                        "global_operation_slots",
-                        "ticket_slots",
-                    )
-                )
+            )
         self.assertEqual(observed, expected)
 
     def test_native_config_is_complete_role_specific_and_flat(self):
@@ -2085,7 +2086,7 @@ class CommandAndRendererTests(unittest.TestCase):
         self.assertEqual(len(server), 63)
         self.assertTrue(all(not isinstance(value, (dict, list)) for value in server.values()))
         self.assertEqual((server["event_loop_workers"], client["event_loop_workers"]), (1, 2))
-        publication = load_experiment_spec(ROOT / "profiles/v2/publication.json")
+        publication = load_experiment_spec(ROOT / "profiles/v2.3/publication.json")
         publication_workload = publication.raw["workloads"][0]
         publication_client = _endpoint_config(
             root=ROOT,
@@ -2141,44 +2142,6 @@ class CommandAndRendererTests(unittest.TestCase):
         self.assertTrue(server["tls_one_use_tickets"])
         self.assertTrue(client["require_multishot_receive"])
 
-    def test_tail_schedule_freezes_every_qualified_scenario_duration(self):
-        spec = load_experiment_spec(ROOT / "profiles" / "v2" / "tail.json")
-        selected = {
-            scenario: (2, 5, 10, 20)[index % 4]
-            for index, scenario in enumerate(spec.scenarios)
-        }
-        decision = QualificationDecision(
-            "tail-window",
-            "qualified",
-            (),
-            {"scenario_durations_seconds": selected},
-        )
-        self.assertEqual(_tail_qualification_durations(decision, spec), selected)
-        schedule = _generic_schedule(
-            spec,
-            b"tail-schedule-test",
-            b"t" * 32,
-            tail_durations_seconds=selected,
-        )
-        for block in schedule["blocks"]:
-            for trial in block["trials"]:
-                cell = trial["cell_config"]
-                self.assertEqual(
-                    cell["measurement_duration_ns"],
-                    selected[cell["scenario"]] * 1_000_000_000,
-                )
-        missing = dict(selected)
-        missing.pop(next(iter(missing)))
-        with self.assertRaisesRegex(RunnerError, "every frozen tail scenario"):
-            _tail_qualification_durations(
-                QualificationDecision(
-                    "tail-window",
-                    "qualified",
-                    (),
-                    {"scenario_durations_seconds": missing},
-                ),
-                spec,
-            )
     def test_command_surface_and_exit_code_constants_are_visible(self):
         completed = subprocess.run(
             [str(ROOT / "tools" / "quicperfctl"), "--help"],
@@ -2190,10 +2153,11 @@ class CommandAndRendererTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0)
         for command in (
-            "doctor", "campaign", "capacity", "memory", "tail", "suite",
-            "export", "legacy",
+            "doctor", "campaign", "suite", "export", "qualification",
         ):
             self.assertIn(command, completed.stdout)
+        for command in ("capacity", "memory", "tail", "legacy"):
+            self.assertNotIn(command, completed.stdout)
         diagnostic_help = subprocess.run(
             [
                 str(ROOT / "tools" / "quicperfctl"),
@@ -2208,23 +2172,15 @@ class CommandAndRendererTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(diagnostic_help.returncode, 0)
-        self.assertIn("--diagnostic-unqualified-host", diagnostic_help.stdout)
+        self.assertNotIn("--diagnostic-unqualified-host", diagnostic_help.stdout)
         self.assertNotIn("--campaign", diagnostic_help.stdout)
         self.assertNotIn("--all-confirmatory", diagnostic_help.stdout)
 
-    def test_publication_session_budget_is_hard_and_diagnostic_exempt(self):
-        publication = load_experiment_spec(ROOT / "profiles/v2/publication.json")
-        publication_v22 = load_experiment_spec(
-            ROOT / "profiles/v2.2/publication.json"
-        )
-        publication_v23 = load_experiment_spec(
+    def test_v23_publication_session_budget_is_hard(self):
+        publication = load_experiment_spec(
             ROOT / "profiles/v2.3/publication.json"
         )
-        diagnostic = load_experiment_spec(
-            ROOT / "profiles/v2/symmetric-diagnostic.json"
-        )
-        budget = PUBLICATION_SESSION_WALL_BUDGET_NS
-        self.assertEqual(budget, 12_672_000_000_000)
+        budget = 10_800_000_000_000
         self.assertFalse(
             _publication_session_budget_reached(publication, False, budget - 1)
         )
@@ -2233,9 +2189,6 @@ class CommandAndRendererTests(unittest.TestCase):
         )
         self.assertFalse(
             _publication_session_budget_reached(publication, True, budget)
-        )
-        self.assertFalse(
-            _publication_session_budget_reached(diagnostic, False, budget)
         )
         self.assertTrue(
             _publication_session_budget_allows_block(
@@ -2250,66 +2203,6 @@ class CommandAndRendererTests(unittest.TestCase):
                 publication,
                 False,
                 budget - PUBLICATION_SESSION_FINALIZATION_RESERVE_NS,
-                1,
-            )
-        )
-        v22_budget = 8_400_000_000_000
-        self.assertFalse(
-            _publication_session_budget_reached(
-                publication_v22, False, v22_budget - 1
-            )
-        )
-        self.assertTrue(
-            _publication_session_budget_reached(
-                publication_v22, False, v22_budget
-            )
-        )
-        self.assertTrue(
-            _publication_session_budget_allows_block(
-                publication_v22,
-                False,
-                v22_budget
-                - PUBLICATION_SESSION_FINALIZATION_RESERVE_NS
-                - 1,
-                1,
-            )
-        )
-        self.assertFalse(
-            _publication_session_budget_allows_block(
-                publication_v22,
-                False,
-                v22_budget
-                - PUBLICATION_SESSION_FINALIZATION_RESERVE_NS,
-                1,
-            )
-        )
-        v23_budget = 10_800_000_000_000
-        self.assertFalse(
-            _publication_session_budget_reached(
-                publication_v23, False, v23_budget - 1
-            )
-        )
-        self.assertTrue(
-            _publication_session_budget_reached(
-                publication_v23, False, v23_budget
-            )
-        )
-        self.assertTrue(
-            _publication_session_budget_allows_block(
-                publication_v23,
-                False,
-                v23_budget
-                - PUBLICATION_SESSION_FINALIZATION_RESERVE_NS
-                - 1,
-                1,
-            )
-        )
-        self.assertFalse(
-            _publication_session_budget_allows_block(
-                publication_v23,
-                False,
-                v23_budget
-                - PUBLICATION_SESSION_FINALIZATION_RESERVE_NS,
                 1,
             )
         )

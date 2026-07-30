@@ -125,19 +125,11 @@ class ExperimentSpecTests(unittest.TestCase):
         self.assertEqual(
             {path.name for path in paths},
             {
-                "capacity.json",
                 "ci-smoke.json",
                 "client-headroom-validation.json",
-                "lane-interference-validation.json",
-                "memory.json",
-                "parity-validation.json",
-                "publication.json",
-                "symmetric-diagnostic.json",
-                "tail.json",
-                "window-equivalence-validation.json",
-                "worker-reuse-validation.json",
             },
         )
+        paths.append(ROOT / "profiles/v2.3/publication.json")
         for path in paths:
             with self.subTest(path=path.name):
                 spec = load_experiment_spec(path)
@@ -145,123 +137,7 @@ class ExperimentSpecTests(unittest.TestCase):
                 with self.assertRaises(TypeError):
                     spec.raw["name"] = "changed"  # type: ignore[index]
 
-    def test_v21_publication_profile_is_additive_strict_and_identity_bound(
-        self,
-    ) -> None:
-        path = ROOT / "profiles" / "v2.1" / "publication.json"
-        original = load_strict(path)
-        spec = load_experiment_spec(path)
-        self.assertEqual(spec.schema_version, "quicperf.experiment.v2.1")
-        self.assertEqual(
-            spec.raw["methodology"]["runtime"][
-                "operational_session_timeout_ns"
-            ],
-            21_960_000_000_000,
-        )
-        self.assertFalse(
-            spec.raw["methodology"]["runtime"][
-                "useful_time_publication_gate"
-            ]
-        )
-        self.assertEqual(
-            spec.raw["methodology"]["control_plane"]["arm_lead_ns"],
-            750_000_000,
-        )
-        self.assertEqual(
-            spec.raw["methodology"]["control_plane"]["pre_send_guard_ns"],
-            500_000_000,
-        )
-        changed = copy.deepcopy(original)
-        changed["methodology"]["monitor"]["phase_offset_max_ns"] -= 1
-        self.assertNotEqual(spec_hash(original), spec_hash(changed))
-        missing = copy.deepcopy(original)
-        del missing["methodology"]["monitor"]["combined_tctl_gap_max_ns"]
-        with self.assertRaisesRegex(
-            SpecValidationError, "combined_tctl_gap_max_ns"
-        ):
-            validate_experiment_spec(missing)
-
-    def test_v22_publication_is_iouring_only_and_exactly_budgeted(
-        self,
-    ) -> None:
-        path = ROOT / "profiles" / "v2.2" / "publication.json"
-        original = load_strict(path)
-        spec = load_experiment_spec(path)
-        self.assertEqual(spec.schema_version, "quicperf.experiment.v2.2")
-        self.assertEqual(spec.server_backends, ("iouring",))
-        self.assertEqual(
-            (
-                spec.expected_cardinality.planned_trials,
-                spec.expected_cardinality.maximum_trial_ids,
-                spec.expected_cardinality.committed_samples,
-            ),
-            (4_320, 8_640, 4_320),
-        )
-        runtime = spec.raw["methodology"]["runtime"]
-        self.assertEqual(runtime["operational_session_timeout_ns"], 8_400_000_000_000)
-        self.assertEqual(
-            runtime["clean_start_conservative_budget_ns"],
-            22_447_800_000_000,
-        )
-        self.assertEqual(runtime["suite_deadline_ns"], 25_200_000_000_000)
-        calibration = spec.raw["analysis"]["statistical_calibration"][
-            "planning_result"
-        ]
-        self.assertEqual((calibration["raw_rows"], calibration["blocks"]), (24, 12))
-        self.assertAlmostEqual(
-            float(calibration["declared_effect_power"]["probability"]),
-            0.91504,
-        )
-        self.assertAlmostEqual(
-            float(
-                calibration["declared_effect_power"][
-                    "one_sided_95_exact_binomial_lower"
-                ]
-            ),
-            0.91208,
-            places=5,
-        )
-        self.assertAlmostEqual(
-            float(calibration["equivalence"]["probability"]),
-            0.8668,
-        )
-        self.assertAlmostEqual(
-            float(
-                calibration["equivalence"][
-                    "one_sided_95_exact_binomial_lower"
-                ]
-            ),
-            0.86321,
-            places=5,
-        )
-        self.assertAlmostEqual(
-            float(calibration["twice_margin_power"]["probability"]),
-            0.93216,
-        )
-        self.assertAlmostEqual(
-            float(
-                calibration["twice_margin_power"][
-                    "one_sided_95_exact_binomial_lower"
-                ]
-            ),
-            0.92949,
-            places=5,
-        )
-        syscall = copy.deepcopy(original)
-        syscall["backends"]["server"] = ["syscall", "iouring"]
-        with self.assertRaisesRegex(SpecValidationError, "iouring only"):
-            validate_experiment_spec(syscall)
-        oversized = copy.deepcopy(original)
-        oversized["methodology"]["runtime"][
-            "clean_start_conservative_budget_ns"
-        ] = 25_200_000_000_001
-        with self.assertRaisesRegex(
-            SpecValidationError, "clean_start_conservative_budget_ns"
-        ):
-            validate_experiment_spec(oversized)
-
-    def test_v23_changes_only_the_authorized_runtime_identity(self) -> None:
-        v22 = load_strict(ROOT / "profiles/v2.2/publication.json")
+    def test_v23_publication_is_exactly_frozen(self) -> None:
         v23_path = ROOT / "profiles/v2.3/publication.json"
         v23 = load_strict(v23_path)
         spec = load_experiment_spec(v23_path)
@@ -298,21 +174,19 @@ class ExperimentSpecTests(unittest.TestCase):
         self.assertFalse(
             evidence["v2.2_observed_session"]["publication_sample_reuse"]
         )
-        normalized = copy.deepcopy(v23)
-        normalized["schema_version"] = v22["schema_version"]
-        normalized["name"] = v22["name"]
-        normalized["methodology"]["version"] = v22["methodology"]["version"]
-        normalized_runtime = normalized["methodology"]["runtime"]
-        v22_runtime = v22["methodology"]["runtime"]
-        for field in (
-            "operational_session_timeout_ns",
-            "clean_start_conservative_budget_ns",
-            "suite_deadline_ns",
-            "historical_evidence_artifact",
-            "historical_evidence_sha256",
-        ):
-            normalized_runtime[field] = v22_runtime[field]
-        self.assertEqual(normalized, v22)
+        calibration = spec.raw["analysis"]["statistical_calibration"][
+            "planning_result"
+        ]
+        self.assertEqual((calibration["raw_rows"], calibration["blocks"]), (24, 12))
+        self.assertAlmostEqual(
+            float(calibration["declared_effect_power"]["probability"]), 0.91504
+        )
+        self.assertAlmostEqual(
+            float(calibration["equivalence"]["probability"]), 0.8668
+        )
+        self.assertAlmostEqual(
+            float(calibration["twice_margin_power"]["probability"]), 0.93216
+        )
         wrong_ceiling = copy.deepcopy(v23)
         wrong_ceiling["methodology"]["runtime"][
             "operational_session_timeout_ns"
@@ -323,16 +197,16 @@ class ExperimentSpecTests(unittest.TestCase):
             validate_experiment_spec(wrong_ceiling)
 
     def test_profile_identity_is_filename_and_order_independent(self) -> None:
-        raw = load_strict(ROOT / "profiles" / "v2" / "publication.json")
+        raw = load_strict(ROOT / "profiles" / "v2.3" / "publication.json")
         reordered = dict(reversed(tuple(raw.items())))
         self.assertEqual(spec_hash(raw), spec_hash(reordered))
         self.assertEqual(
             load_experiment_spec(raw).expected_cardinality.planned_trials,
-            8640,
+            4320,
         )
 
     def test_unknown_missing_empty_and_wrong_decimal_fields_are_rejected(self) -> None:
-        original = load_strict(ROOT / "profiles" / "v2" / "publication.json")
+        original = load_strict(ROOT / "profiles" / "v2.3" / "publication.json")
         mutations = []
         value = copy.deepcopy(original); value["surprise"] = True; mutations.append(value)
         value = copy.deepcopy(original); del value["timing"]; mutations.append(value)
@@ -346,10 +220,10 @@ class ExperimentSpecTests(unittest.TestCase):
                 validate_experiment_spec(value)
 
     def test_cross_field_cardinality_path_and_lifecycle_errors_are_rejected(self) -> None:
-        original = load_strict(ROOT / "profiles" / "v2" / "publication.json")
+        original = load_strict(ROOT / "profiles" / "v2.3" / "publication.json")
         value = copy.deepcopy(original)
-        value["expected_cardinality"]["planned_trials"] = 8639
-        value["expected_cardinality"]["committed_samples"] = 8639
+        value["expected_cardinality"]["planned_trials"] = 4319
+        value["expected_cardinality"]["committed_samples"] = 4319
         with self.assertRaisesRegex(SpecValidationError, "publication cardinality"):
             validate_experiment_spec(value)
         value = copy.deepcopy(original)

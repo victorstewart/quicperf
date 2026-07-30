@@ -35,7 +35,6 @@ from tests.test_v2_spec_identity import ROOT, manifest_fixture
 
 
 PROFILE = ROOT / "profiles" / "v2" / "ci-smoke.json"
-TAIL_PROFILE = ROOT / "profiles" / "v2" / "tail.json"
 
 
 def make_run(
@@ -459,69 +458,6 @@ class QualificationCommandTests(unittest.TestCase):
                     )
                     self.assertTrue(result["qualified"], result)
 
-            tail_run, tail_spec, tail_manifest, _campaign = make_run(
-                root / "tail", TAIL_PROFILE
-            )
-            prefixes = [
-                {
-                    "duration_seconds": duration,
-                    "eligible_operations": 1_500,
-                    "failed_or_censored_operations": 0,
-                    "p99_ns": 1_000,
-                    "validity_classification": "valid",
-                    "capped_or_stalled": False,
-                }
-                for duration in (2, 5, 10, 20)
-            ]
-            tail_inputs = {
-                "screens": [
-                    {
-                        "scenario": scenario,
-                        "server": server,
-                        "server_backend": backend,
-                        "reference_client": client,
-                        "prefixes": prefixes,
-                    }
-                    for scenario in tail_spec.scenarios
-                    for server in tail_spec.servers
-                    for backend in tail_spec.server_backends
-                    for client in tail_spec.reference_clients
-                ],
-                "held_out": [
-                    {
-                        "scenario": scenario,
-                        "server": "ngtcp2perf",
-                        "server_backend": backend,
-                        "reference_client": client,
-                        "block": block,
-                        "prefixes": [
-                            {**prefix, "eligible_operations": 1_100}
-                            for prefix in prefixes
-                        ],
-                    }
-                    for scenario in tail_spec.scenarios
-                    for backend in tail_spec.server_backends
-                    for client in tail_spec.reference_clients
-                    for block in range(1, 21)
-                ],
-            }
-            tail_identity = build_qualification_identity(
-                "tail-window", tail_spec, tail_manifest
-            )
-            tail_evidence = root / "tail-window.json"
-            write_evidence(
-                tail_evidence,
-                qualification_identity_hash("tail-window", tail_identity),
-                tail_inputs,
-                kind="tail-window",
-            )
-            tail_result = store_qualification_evidence(
-                run_dir=tail_run,
-                kind="tail-window",
-                evidence_path=tail_evidence,
-                artifact_store=root / "store-all",
-            )
-            self.assertTrue(tail_result["qualified"], tail_result)
 
     def test_cli_exposes_qualification_and_nonpassing_status_exits_two(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -543,7 +479,7 @@ class QualificationCommandTests(unittest.TestCase):
                     "qualification",
                     "status",
                     "--kind",
-                    "worker-reuse",
+                    "client-headroom",
                     "--run-dir",
                     str(run_dir),
                     "--artifact-store",
