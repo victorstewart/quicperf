@@ -2692,7 +2692,9 @@ class NativeEndpointContractTests(unittest.TestCase):
                 self.assertGreater(client_result["numerator"], 0)
                 self.assertEqual(server_result["numerator"], client_result["numerator"])
                 for result in (server_result, client_result):
-                    self.assertEqual(result["termination_reason"], "deadline_reached")
+                    self.assertEqual(
+                        result["termination_reason"], "deadline_reached", result
+                    )
                     self.assertEqual(
                         (result["failed"], result["outstanding"], result["in_flight"]),
                         (0, 0, 0),

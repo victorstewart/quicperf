@@ -1,0 +1,7 @@
+title: quicperf
+description: Publication-grade QUIC server benchmarking with shared I/O and paired inference
+url: https://victorstewart.github.io
+baseurl: /quicperf
+theme: jekyll-theme-primer
+exclude:
+  - review-metadata.md

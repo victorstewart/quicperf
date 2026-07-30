@@ -19,6 +19,13 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILE_PATH = ROOT / "profiles" / "network" / "wan-profiles.json"
+LOOPBACK_PROFILE = {
+    "kind": "loopback",
+    "description": "Direct loopback path with no namespace or tc shaping.",
+    "rtt_us": 0,
+    "downlink_bps": 0,
+    "uplink_bps": 0,
+}
 CLIENT_IFACE = "qpc0"
 SERVER_IFACE = "qps0"
 ROUTER_CLIENT_IFACE = "qprc0"
@@ -60,7 +67,11 @@ def load_profiles(path: Path = DEFAULT_PROFILE_PATH) -> dict[str, dict[str, Any]
     if path != DEFAULT_PROFILE_PATH:
         return load_profile_file(path)
     merged: dict[str, dict[str, Any]] = {}
-    profile_files = [DEFAULT_PROFILE_PATH]
+    profile_files: list[Path] = []
+    if DEFAULT_PROFILE_PATH.is_file():
+        profile_files.append(DEFAULT_PROFILE_PATH)
+    else:
+        merged["loopback"] = copy.deepcopy(LOOPBACK_PROFILE)
     profile_files.extend(sorted(candidate for candidate in DEFAULT_PROFILE_PATH.parent.glob("*.json") if candidate != DEFAULT_PROFILE_PATH))
     for profile_path in profile_files:
         for name, profile in load_profile_file(profile_path).items():

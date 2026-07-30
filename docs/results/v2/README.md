@@ -1,11 +1,10 @@
-# v2 publication artifacts
+# Qualified V2 results
 
-This directory accepts immutable exports only from a campaign whose canonical
-v2 `finalize` operation recorded `publication_qualified`.
+Only immutable campaigns whose canonical final status is
+`publication_qualified` may appear here.
 
-It intentionally contains no result data. Diagnostic runs,
-`implementation_complete` runs, and campaigns with any physical gate recorded
-as `NOT_RUN` are not eligible.
+- [V2.3 campaign ca3fc476…](ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/README.md)
 
-No qualified-host evidence is committed, so the required physical publication
-gates are currently `NOT_RUN`.
+The committed bundles are compact and checksum-bound. Journals, raw health
+streams, samples, events, and logs are distributed as release assets rather
+than committed to Git.

@@ -131,6 +131,17 @@ def window_endpoint(
 
 
 class RunnerLifecycleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        synthetic_cores = tuple(
+            PhysicalCore(0, core, (core,), 0) for core in range(16)
+        )
+        self._topology_patch = mock.patch(
+            "quicperf_harness.topology.discover_physical_cores",
+            return_value=synthetic_cores,
+        )
+        self._topology_patch.start()
+        self.addCleanup(self._topology_patch.stop)
+
     @staticmethod
     def trace(path: Path) -> list[dict[str, object]]:
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -976,6 +987,12 @@ class RunnerLifecycleTests(unittest.TestCase):
             profile = json.loads(
                 (ROOT / "profiles" / "v2.3" / "publication.json").read_bytes()
             )
+            evidence_relative = Path(
+                profile["methodology"]["runtime"]["historical_evidence_artifact"]
+            )
+            evidence_path = root / evidence_relative
+            evidence_path.parent.mkdir(parents=True)
+            evidence_path.write_bytes((ROOT / evidence_relative).read_bytes())
             profile["analysis"]["statistical_calibration"] = frozen_analysis_calibration(
                 artifact,
                 hashlib.sha256(artifact_path.read_bytes()).hexdigest(),

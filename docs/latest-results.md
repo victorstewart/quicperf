@@ -1,32 +1,60 @@
-# quicperf v2 result index
+# Latest qualified results
 
-There are currently no publication-qualified v2 results in this repository.
+Campaign [`ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492`](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/README.md) is
+`publication_qualified`.
 
-All previously committed generated claims, result indexes, calibration output,
-and fixed-design scout data were removed during the harness v2 cutover. They are
-not numerical parity targets and must not be restored or imported into a v2
-campaign.
+- Executed: 2026-07-29–30 (America/New_York)
+- Source: `44250d751e650f11f620733aa6e5d0498f947d12`; exact Git tree `a72228525e2f09fabd0b01cee4888e201a376ef4`
+- Host: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics; turbo disabled;
+  3.8 GHz
+  `performance`/`performance` policy
+- Treatment: one `iouring` server core, four client cores, exactly 16 active
+  connections, 50/50 `ngtcp2perf`/`picoperf` reference-client mixture
+- Matrix: 12 server implementations × 15 scenarios × 24 rows = 4,320/4,320
+  valid samples
+- Session walls: 8819.694s and
+  8793.689s (10,800s ceiling each)
+- Maximum Tctl: 57.875°C and
+  56.875°C (80°C ceiling)
+- Localized preallocated retries: 1 in session 1 and
+  1 in session 2
+- Deterministic render: 39.322s (60s ceiling)
+- Simultaneous classifications: 459 superior,
+  374 inferior, 15
+  equivalent, 307 inconclusive
+- Admission: 180/180 native interoperability, host stability qualified, and
+  four-client-core headroom qualified
 
-Future entries may link only immutable artifacts under [`results/v2/`](results/v2/)
-whose campaign finalized with `publication_qualified`. A successful build,
-deterministic test suite, diagnostic run, incomplete session, or
-`implementation_complete` status is insufficient. Any required physical gate
-recorded as `NOT_RUN` prevents an entry here.
+## Read the results
 
-Current exact-identity campaign evidence is absent. Lane interference, client
-headroom, publication runtime budgets, and publication host isolation/health
-are therefore `NOT_RUN` for this index. Persistent-worker reset integrity and
-fixed-window validity are checked in every primary trial rather than by
-separate multi-hour prerequisite campaigns. These are unexecuted external
-validation gates, not passes or measured failures.
+Use the [campaign page](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/README.md) for
+scenario-specific tables. There is deliberately no global leaderboard:
+throughput and operation rates have different meanings across scenarios, and
+reference-client or session sensitivity constrains some comparisons.
 
-The checked-in 25,000-campaign calibration passes the frozen implementation,
-FWER, coverage, equivalence, and 80% power gates for the current 12
-session-paired-superblock design. It retains the older underpowered design only
-as explicit noncurrent failure evidence.
+- [Download](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/download.md)
+- [Upload](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/upload.md)
+- [Multi-stream download](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/multistream_download.md)
+- [Multi-stream upload](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/multistream_upload.md)
+- [Bidirectional transfer](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/bidi.md)
+- [Small-payload packet rate](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/small_payload_pps.md)
+- [QUIC DATAGRAM](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/datagram.md)
+- [Request/response](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/reqresp.md)
+- [Stream churn](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/stream_churn.md)
+- [Connection setup](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/connect.md)
+- [Resumed connection setup](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/resumed_connect.md)
+- [0-RTT request/response](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/zero_rtt_reqresp.md)
+- [Loss recovery](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/loss_recovery.md)
+- [Flow control](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/flow_control.md)
+- [Close/reset cleanup](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/close_reset_cleanup.md)
 
-Each future entry must identify its estimand, campaign and manifest hashes,
-source and binary identities, host policy, two independent sessions, fixed
-treatment, reference-client mixture, packet-I/O backend, path, metric, validity
-audit, simultaneous inference family, and sensitivity labels. Fixed-treatment,
-capacity, memory, tail, and symmetric results must remain in separate tables.
+Compact machine-readable files are committed with the campaign page. Complete
+raw evidence is prepared as release assets described in
+[`release-assets.json`](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/release-assets.json).
+
+## Limitations
+
+These results describe this host and exact fixed treatment. They do not estimate
+capacity, memory scaling, long-tail latency, a syscall backend, or same-stack
+client/server performance. GitHub Actions validates publication artifacts but
+does not reproduce physical qualification.

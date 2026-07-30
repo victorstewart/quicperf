@@ -1,170 +1,124 @@
 # AGENTS.md
 
-Repository-specific instructions for Codex work in `/root/quicperf`.
+Repository instructions for work in quicperf. Preserve established benchmark
+contracts unless the user explicitly authorizes a methodology change.
 
-## First Checks
+## Start and plan
 
-- Work on `main` unless the user explicitly names another branch or worktree.
-- Start by running `git status --short --branch`; preserve unrelated dirt.
-- Read relevant entries in `.tasks/lessons.md` before major benchmark, docs, dependency, or performance work.
-- For non-trivial work, create a task-specific `.tasks/plan-<slug>.md` with scope, checklist, verification, and a final review section.
-- Do not start a fresh result run from stale assumptions. Recheck current scripts, docs, pins, and branch state.
+- Work on `main` unless the user names another branch or worktree.
+- Begin with `git status --short --branch`; preserve unrelated changes.
+- Read relevant `.tasks/lessons.md` entries before benchmark, dependency,
+  documentation, or performance work.
+- For coordinated or interruptible work, maintain an ignored
+  `.tasks/plan-<slug>.md` with scope, checks, verification, and final review.
+- Recheck current profiles, pins, scripts, host state, and identities before a
+  fresh run. Do not act from an old status summary.
 
-## Dependency And Fork Refresh
+## Design and editing
 
-When the user asks for fresh benchmark data or fresh publication results, first confirm whether dependencies and quicperf-maintained forks should be refreshed. If they ask to upgrade, do that before running data.
+- Prefer the smallest root-cause change. Delete obsolete machinery rather than
+  adding speculative compatibility paths.
+- Keep shared modules free of consumer-specific policy and composition roots
+  focused on wiring and lifecycle.
+- Preserve user-owned dirt and all journals. Never mutate an earlier result to
+  fit a later methodology version.
+- Reuse a build directory only after proving its source path, compiler,
+  dependency graph, configuration, and generated graph still match.
+- Evaluate eBPF when Linux kernel observability, tracing, profiling,
+  networking, security, or low-overhead telemetry would materially benefit.
+  Use it only when its visibility or performance advantage justifies
+  privilege, verifier, portability, lifecycle, and attack-surface costs; retain
+  a simpler fallback where deployment requires one.
 
-Inventory dependency state from:
+## Dependencies and forks
 
-- `depofiles/*.DepoFile`
-- `rust-packet-ffi/Cargo.toml`
-- `rust-packet-ffi/Cargo.lock`
-- `zig-packet-ffi/build.zig.zon`
-- `CMakeLists.txt`
+Inventory native pins in `depofiles/*.DepoFile`, Rust pins in
+`rust-packet-ffi/Cargo.{toml,lock}`, Zig pins in
+`zig-packet-ffi/build.zig.zon`, and top-level build inputs in `CMakeLists.txt`.
+When the user requests upgrades, refresh quicperf fork branches against their
+upstreams before updating local pins. Keep required third-party patches in
+Depofiles and apply them at build time; do not push them upstream without
+separate authorization. Verify every refreshed C ABI through quicperf itself.
 
-For native Depofile sources, compare pinned SHAs/tags with upstream using `git ls-remote` or current release archives. Update `VERSION`, `SOURCE`, dependent `DEPENDS VERSION` fields, and any required compatibility patches together.
+## Supported publication product
 
-For quicperf fork branches, check and rebase/update the fork branch against its upstream before changing local pins:
+The only publication profile is `profiles/v2.3/publication.json`. Its primary
+estimand is fixed-treatment server performance with:
 
-- `victorstewart/quinn`, branch `quicperf-c-abi`
-- `victorstewart/noq`, branch `quicperf-c-abi`
-- `victorstewart/neqo`, branch `quicperf-c-abi`
-- `victorstewart/s2n-quic`, branch `quicperf-c-abi`
-- `endel/quic-zig`, branch `main` if upstream still contains the quicperf Ed25519 TLS and correctness fixes; only recreate a fork branch if a new quicperf-only Zig change is required.
+- 12 frozen servers and 15 frozen scenarios;
+- one common C++ `iouring` backend;
+- one isolated server core and four isolated client cores;
+- exactly 16 active connections;
+- equal `ngtcp2perf`/`picoperf` reference-client mixture;
+- two independently started sessions, 24 raw rows and 12 paired superblocks;
+- exact 4,096 common-sign max-absolute-t inference.
 
-After fork refresh, verify the C ABI or source package still builds through quicperf, not just in the upstream project alone.
+Capacity, memory, tail, symmetric, all-confirmatory, syscall treatment, scout,
+adaptive selection, legacy translation, unqualified-host diagnostic fallback,
+and outcome-dependent rescheduling are not supported publication paths.
+`tools/run-benchmarks.sh` and syscall remain developer diagnostics only.
 
-## Build And Smoke Gates
+`tools/quicperfctl` is the sole publication coordinator. The SQLite journal is
+authoritative. Resume requires the exact immutable source, binary, build,
+host-policy, spec, schedule, and analysis identity. Logs and exported tables
+are never state or sample inputs.
 
-Default full release build:
+## Fairness and validity
+
+- C++ owns measured UDP sockets, receive/send, batching, backend selection,
+  loss, clocks, timeout scheduling, and the event loop.
+- Rust, Zig, mvfst, and native adapters use equivalent shared-I/O boundaries.
+- DATAGRAM rows must preserve batch-equivalent accounting. Loss recovery drops
+  at QUIC-packet granularity under GSO.
+- Endpoint workload windows, reset, negotiated settings, terminal events,
+  cleanup, thermal ceiling, zero throttling, host policy, isolation, and
+  identity gates fail closed.
+- Unsupported rows describe an adapter-contract gap unless upstream/local API
+  evidence proves a library limitation.
+- The primary estimand must be named on every result. Never call it generic,
+  client-invariant, or a global ranking.
+
+## Build and verification
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel "$(nproc)"
-```
-
-Use focused `BUILD_*` toggles only for diagnosis or narrow dependency proofs. Before claiming the repo is ready for fresh results, build all primary benchmark targets that are in scope for the run.
-
-Important smoke/audit commands:
-
-```sh
+ctest --test-dir build --output-on-failure
+python3 -m unittest discover -s tests -p 'test_*.py'
 tools/run-mechanism-workload-smoke.sh
 tools/run-high-value-workload-smoke.sh
 tools/run-tls-verify-audit.sh
 ```
 
-The C++ I/O boundary audit is part of the CMake build graph. If it fails, fix the benchmark ownership violation instead of bypassing the audit.
+The C++ I/O-boundary audit belongs to the build graph and may not be bypassed.
+Use focused toggles only for diagnosis. Performance changes require
+representative before/after evidence; library optimization requires profiling
+the library source, not only its adapter.
 
-## Fresh Loopback Runs
+Physical gates unavailable on the current host are `NOT_RUN`, never passed.
+Continue deterministic implementation work when possible, but do not claim
+`publication_qualified`.
 
-Use the fixed-design scout plus publication runner for publishable or
-publication-candidate loopback data:
+## Results
 
-```sh
-QUICPERF_PATH_PROFILES=loopback \
-QUICPERF_NETWORKS="syscall iouring" \
-tools/run-saturation-scout.py
+Only the deterministic V2.3 publisher may populate `docs/results/v2/<id>/`,
+and only from an immutable campaign whose final status is
+`publication_qualified`. Do not commit journals, samples, raw health streams,
+events, logs, build products, `.run`, `.data`, `.tasks`, or large evidence.
+Full evidence belongs in checksummed release assets.
 
-tools/run-fixed-publication-suite.py --plan .run/<scout-run>/benchmark-plan.tsv
-```
+Public pages must:
 
-Use `tools/run-benchmarks.sh` for targeted row checks, not as a substitute for fixed publication evidence.
+- link immutable compact artifacts;
+- use readable scenario-specific tables and correct metric direction;
+- show simultaneous intervals/classifications, variance misses, and client/
+  session sensitivity;
+- mark unsupported or nonpublishable rows explicitly;
+- never invent a global leaderboard.
 
-Scout samples go to `saturation-scout.tsv` and must not be used in publication
-statistics, curves, rankings, or result tables. The fixed publication plan must
-be declared before measured samples and recorded in `benchmark-plan.tsv`.
-Successful scout output is cached in `profiles/fixed-design/default-scout/`
-with a benchmark-relevant fingerprint. Reuse that default plan unless dependency
-pins, benchmark-touching harness code, or the scout scope changes; use
-`QUICPERF_SCOUT_CACHE_MODE=refresh` to force regeneration.
+## Completion
 
-Default loopback matrix policy:
-
-- publication rows use fixed measured samples and fixed randomized blocks
-- capability/lifecycle rows use explicit fixed plan rows when included
-- measured loopback rows stay serial unless CPU/core isolation has been implemented and validated
-- high variance is an audit label; terminal rows are `publishable`,
-  `inconclusive`, `failed`, or `unsupported`
-
-Batch output lives under `.run/`. Key files include:
-
-- `saturation-scout.tsv`
-- `benchmark-plan.tsv`
-- `adaptive-samples.tsv`
-- `row-stats.tsv`
-- `publication-results.tsv`
-- `publication-row-audit.tsv`
-- `pairwise-comparisons.tsv`
-
-Public result pages may include every completed selected row when
-`publication_status` and audit caveats are visible. Only rows with
-`publication_status=publishable` are clean pairwise/ranking rows; inconclusive
-rows are completed noisy data, while failed or unsupported rows must remain
-clearly marked.
-
-## Benchmark Contract
-
-- Treat `docs/methodology.md` as the benchmark contract.
-- Primary QUIC binaries are `ngtcp2perf`, `lsperf`, `tquicperf`, `quicheperf`, `picoperf`, `xquicperf`, `quinnperf`, `s2nperf`, `neqoperf`, `noqperf`, `quiczigperf`, and `mvfstperf`.
-- `tcpperf` is a TCP+TLS sidecar baseline; do not include it in QUIC result tables unless the user explicitly asks for sidecar comparison.
-- Use concrete implementation labels such as native adapter, Rust packet engine with C++ UDP I/O, Zig packet engine with C++ UDP I/O, mvfst transport, TCP+TLS sidecar, unsupported capability row, or not-publishable result row.
-- Do not use vague labels like `Primary QUIC row`.
-- Treat unsupported rows as quicperf adapter-contract gaps, not proof that the upstream library lacks the feature. Verify upstream/local APIs before documenting a true library capability gap.
-
-## Fairness Rules
-
-- C++ owns measured UDP socket creation, receive, send, batching, backend selection, and timeout scheduling.
-- Rust, Zig, mvfst, and native adapters must be compared through equivalent shared I/O paths.
-- DATAGRAM rows must use batch-equivalent drive loops. Compare sent, received, unreturned/lost, delivery ratio, UDP packets, send batches, receive polls, and DATAGRAMs per UDP packet before accepting the numbers.
-- GSO/GRO is default on the `iouring` path. Do not quarantine rows to hide semantic gaps; fix packet accounting, loss filtering, and receive splitting so the benchmark contract remains valid.
-- `loss_recovery` must drop at the QUIC packet unit even when UDP GSO is enabled.
-- `idle_footprint` must publish `server_rss_delta_bytes_per_connection`; do not publish placeholder `idle_connections` rows.
-- `picoperf` default BBR means picoquic's current `bbr` algorithm string.
-
-## Performance Work
-
-Performance changes need before/after evidence. For library-specific work, profile the library source itself when that is the stated target.
-
-For picoquic work in particular:
-
-- Do not rely only on `perf.picoquic.h` adapter evidence when the task asks for picoquic-library optimization.
-- Every picoquic source change must have a recorded profile artifact, expected mechanism, same-build A/B benchmark, p50 delta, and accept/reject decision.
-- If profiles are diffuse, consider design-level costs such as stream lifecycle, receive-path scheduling, packetization, and allocation patterns.
-
-## Result Docs And Artifacts
-
-Public result docs must link committed artifacts, not ignored `.run/` paths. Copy selected result TSVs under `docs/results/<run-id>/` before linking them from `docs/latest-results.md`.
-
-Public tables should be readable:
-
-- one canonical public results page unless the user asks for more
-- full words instead of terse status codes
-- no mostly-empty `n/a` tables
-- sort by the requested metric and correct direction
-- unsupported rows clearly marked and placed after measured rows
-
-Retract or quarantine implausible result tables immediately if fairness is challenged or audit evidence is incomplete.
-
-## Network Profiles
-
-Loopback is the default path profile. Non-loopback profiles require root or `CAP_NET_ADMIN`, `ip netns`, and `tc`.
-
-Before publishing non-loopback rows, run the network validator:
-
-```sh
-tools/quicperf_network_validate.py --samples 10 --ping-count 100 --require-idle-host
-```
-
-Keep raw public trace archives in ignored `.data/`; only compact generated profile packs belong under `profiles/network/*.json`.
-
-## Completion Standard
-
-Before final handoff, report:
-
-- exact commands run
-- key artifact paths
-- pass/fail status and blockers
-- whether data is publishable, diagnostic, or partial
-- cleanup performed and concrete cleanup candidates in touched scope
-
-Never claim benchmark, build, or publication success without observed output.
+Never claim an unobserved check passed. Final implementation handoffs include
+scope, status, readiness, completed work, observed verification, remaining
+work/blockers, and cleanup. Use `publication_qualified` only after every
+deterministic and physical gate passes on the exact identity.
