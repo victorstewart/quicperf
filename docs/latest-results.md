@@ -27,10 +27,13 @@ Campaign [`ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492`](re
 
 ## Read the results
 
-Use the [campaign page](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/README.md) for
-scenario-specific tables. There is deliberately no global leaderboard:
-throughput and operation rates have different meanings across scenarios, and
-reference-client or session sensitivity constrains some comparisons.
+Use the [interactive results explorer](explorer/) to inspect all 180 result
+cells and 1,155 reported contrasts, or use the
+[campaign page](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/README.md)
+for static scenario-specific tables. There is deliberately no global
+leaderboard: throughput and operation rates have different meanings across
+scenarios, and reference-client or session sensitivity constrains some
+comparisons.
 
 - [Download](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/download.md)
 - [Upload](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/scenarios/upload.md)

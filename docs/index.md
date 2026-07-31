@@ -6,7 +6,8 @@ shared C++ I/O path, a fixed treatment, and paired simultaneous inference.
 ## Latest qualified campaign
 
 [ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/README.md) contains 4,320/4,320 valid
-V2.3 samples. Read the [result summary](latest-results.md), browse
+V2.3 samples. Open the [interactive results explorer](explorer/), read the
+[result summary](latest-results.md), browse
 [scenario-specific tables](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/README.md), review the
 [methodology](methodology.md), or follow the [operator guide](harness-v2.md).
 

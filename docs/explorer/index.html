@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#10171d">
+    <meta name="color-scheme" content="light">
+    <meta
+      name="description"
+      content="All 180 qualified QUIC implementation results and 1,155 simultaneous comparisons from the quicperf V2.3 fixed-treatment campaign."
+    >
+    <title>quicperf V2.3 — Complete publication results</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero-grid" aria-hidden="true"></div>
+      <div class="hero-inner">
+        <div class="brand-line">
+          <a class="brand-mark" href="../" aria-label="quicperf home">QP</a>
+          <span>QUICPERF · PUBLICATION CAMPAIGN V2.3</span>
+          <span class="qualified-dot">Publication qualified</span>
+        </div>
+        <div class="hero-copy">
+          <div>
+            <p class="eyebrow">Complete benchmark results</p>
+            <h1>Twelve QUIC stacks.<br>Fifteen distinct tests.</h1>
+          </div>
+          <p class="hero-deck">
+            Every aggregated result and every simultaneous comparison,
+            presented by scenario without inventing a global leaderboard.
+          </p>
+        </div>
+        <div class="hero-stats" aria-label="Campaign summary">
+          <div><strong>4,320</strong><span>valid measurements</span></div>
+          <div><strong>180</strong><span>complete result cells</span></div>
+          <div><strong>1,155</strong><span>reported comparisons</span></div>
+          <div><strong>4h 55m</strong><span>measurement runtime</span></div>
+        </div>
+      </div>
+    </header>
+
+    <nav class="section-nav" aria-label="Report sections">
+      <div>
+        <a href="#scope">Scope</a>
+        <a href="#overview">Overview</a>
+        <a href="#results">All test results</a>
+        <a href="#comparisons">Comparison explorer</a>
+        <a href="#evidence">Evidence files</a>
+      </div>
+    </nav>
+
+    <main class="report-shell">
+      <section class="scope-section" id="scope">
+        <div class="scope-callout">
+          <p class="eyebrow">What these results answer</p>
+          <h2>One common fixed treatment—not each server’s saturation point.</h2>
+          <p>
+            Every implementation received the same treatment: one isolated
+            io_uring server core, four isolated client cores, and exactly 16
+            active connections split equally between ngtcp2 and picoquic
+            reference clients. These results compare server performance at
+            that fixed load. They do not claim that C=16 saturates every server
+            or estimate a client-invariant capacity frontier.
+          </p>
+          <a href="../methodology.html">Read the complete methodology →</a>
+        </div>
+      </section>
+
+      <section class="overview" id="overview">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Observed scenario leaders</p>
+            <h2>The highest result is not always a confirmed win.</h2>
+          </div>
+          <p>
+            “Observed lead” means the highest geometric mean within one
+            scenario. “Confirmed” means that leader was classified superior to
+            all eleven rivals under the campaign’s simultaneous all-pairs rule.
+          </p>
+        </div>
+        <div class="winner-grid" id="leader-summary" aria-live="polite">
+          <div class="loading-panel" role="status">Loading scenario leaders…</div>
+        </div>
+      </section>
+
+      <section class="results-section" id="results">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">All test results</p>
+            <h2>Every implementation, ranked within each scenario.</h2>
+          </div>
+          <p>
+            Values are geometric means for the fixed-treatment primary
+            estimand. Each formal decision is oriented against the observed
+            leader and includes its simultaneous ratio interval.
+          </p>
+        </div>
+        <div id="load-error" class="error-banner" hidden></div>
+        <div id="scenario-results" class="scenario-list" aria-live="polite">
+          <div class="loading-panel" role="status">
+            Loading the qualified result tables…
+          </div>
+        </div>
+      </section>
+
+      <section class="comparison-section" id="comparisons">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Complete comparison explorer</p>
+            <h2>All 1,155 reported contrasts.</h2>
+          </div>
+          <p>
+            Includes 990 all-pairs comparisons and 165 ngtcp2-baseline
+            comparisons. Ratios are numerator over denominator exactly as
+            printed in the evidence.
+          </p>
+        </div>
+
+        <form class="filters" id="comparison-filters">
+          <label>
+            Scenario
+            <select id="scenario-filter">
+              <option value="all">All scenarios</option>
+            </select>
+          </label>
+          <label>
+            Family
+            <select id="family-filter">
+              <option value="all">Both families</option>
+              <option value="all_pairs">All pairs</option>
+              <option value="baseline">ngtcp2 baseline</option>
+            </select>
+          </label>
+          <label>
+            Classification
+            <select id="classification-filter">
+              <option value="all">All decisions</option>
+              <option value="superior">Superior</option>
+              <option value="inferior">Inferior</option>
+              <option value="equivalent">Equivalent</option>
+              <option value="inconclusive">Inconclusive</option>
+            </select>
+          </label>
+          <label class="search-field">
+            Search
+            <input
+              id="comparison-search"
+              type="search"
+              placeholder="Implementation or scenario"
+            >
+          </label>
+        </form>
+
+        <div class="comparison-count" aria-live="polite">
+          <strong id="comparison-count">0</strong> matching comparisons
+        </div>
+        <div class="table-scroll comparison-table-wrap">
+          <table class="comparison-table">
+            <thead>
+              <tr>
+                <th scope="col">Scenario</th>
+                <th scope="col">Family</th>
+                <th scope="col">Contrast</th>
+                <th scope="col">Point ratio</th>
+                <th scope="col">Simultaneous interval</th>
+                <th scope="col">Decision</th>
+                <th scope="col">Quality / sensitivity</th>
+              </tr>
+            </thead>
+            <tbody id="comparison-rows">
+              <tr><td colspan="7">Loading comparisons…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="pagination">
+          <button id="previous-page" type="button" disabled>Previous</button>
+          <span id="page-label">Page 1 of 1</span>
+          <button id="next-page" type="button" disabled>Next</button>
+        </div>
+      </section>
+
+      <section class="evidence-section" id="evidence">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Publication evidence</p>
+            <h2>Inspect the source tables directly.</h2>
+          </div>
+          <p>
+            This visual explorer never replaces the machine-readable evidence.
+            Every result shown above is loaded from the committed, checksummed
+            compact campaign bundle.
+          </p>
+        </div>
+        <div class="evidence-grid" id="evidence-files"></div>
+        <aside class="provenance">
+          <div>
+            <span>Campaign</span>
+            <code>ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492</code>
+          </div>
+          <div>
+            <span>Executed source</span>
+            <code>44250d751e650f11f620733aa6e5d0498f947d12</code>
+          </div>
+          <div>
+            <span>Publication state</span>
+            <strong>Qualified · 4,320 / 4,320 valid</strong>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        quicperf publication campaign V2.3 · Scenario-specific fixed-treatment
+        results only · No cross-estimand global leaderboard.
+      </p>
+    </footer>
+
+    <noscript>
+      This explorer needs JavaScript to render the committed TSV evidence.
+      The same results remain available from the campaign links on the
+      <a href="../">documentation home page</a>.
+    </noscript>
+  </body>
+</html>

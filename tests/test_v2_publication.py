@@ -167,6 +167,21 @@ class PublicationBundleTests(unittest.TestCase):
             {"ngtcp2perf": 2160, "picoperf": 2160},
         )
 
+    def test_results_explorer_is_static_complete_and_fixed_treatment_scoped(
+        self,
+    ) -> None:
+        explorer = ROOT / "docs/explorer"
+        page = (explorer / "index.html").read_text(encoding="utf-8")
+        script = (explorer / "app.js").read_text(encoding="utf-8")
+        stylesheet = (explorer / "styles.css").read_text(encoding="utf-8")
+        self.assertIn("not each server’s saturation point", page)
+        self.assertIn("do not claim that C=16 saturates every server", page)
+        self.assertIn("results.length !== 180", script)
+        self.assertIn("comparisons.length !== 1155", script)
+        self.assertIn(f'const DATA_ROOT = `../results/v2/${{CAMPAIGN}}`', script)
+        self.assertIn(".scenario-card", stylesheet)
+        self.assertNotIn("samples.tsv", page + script)
+
 
 if __name__ == "__main__":
     unittest.main()
