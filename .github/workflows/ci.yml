@@ -56,8 +56,9 @@ jobs:
             tests.test_v2_statistical_simulation \
             tests.test_v2_statistics \
             tests.test_v2_suite \
-            tests.test_v2_supervisor_paths \
             tests.test_v2_validity
+      - name: Privileged live-process attestation tests
+        run: sudo "$(command -v python)" -m unittest tests.test_v2_supervisor_paths
       - name: Frozen V2.3 profile and timing plan
         run: tools/quicperfctl suite plan
       - name: Compact result identity and checksums

@@ -201,6 +201,11 @@ class PlanTests(unittest.TestCase):
 
 
 class FilesystemTransactionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        root = mock.patch.object(host_policy.os, "geteuid", return_value=0)
+        root.start()
+        self.addCleanup(root.stop)
+
     def test_verified_write_waits_for_delayed_sysfs_readback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "control"
@@ -442,7 +447,7 @@ class FilesystemTransactionTests(unittest.TestCase):
 
             def coupled_write(path: Path, value: str) -> None:
                 original_write(path, value)
-                if path == governor and value == "powersave":
+                if path.resolve() == governor.resolve() and value == "powersave":
                     epp.write_text("balance_performance\n", encoding="ascii")
 
             with mock.patch.dict(
@@ -477,7 +482,7 @@ class FilesystemTransactionTests(unittest.TestCase):
 
             def coupled_write(path: Path, value: str) -> None:
                 original_write(path, value)
-                if path == no_turbo:
+                if path.resolve() == no_turbo.resolve():
                     boost.write_text("1\n", encoding="ascii")
 
             with mock.patch.dict(
