@@ -1,11 +1,1918 @@
 NAME tquic
-VERSION datagram-t2-50f5a55
+VERSION datagram-t2-50f5a55-quicperf8
 SYSTEM_LIBS ALLOW
 DEPENDS boringssl VERSION main-beddb58-pic
 SOURCE GIT https://github.com/Tencent/tquic.git 50f5a55975fe5b64cce708bbf227dd0f29b59ee5
 GIT_SUBMODULES RECURSIVE
 BUILD_SYSTEM CARGO
-CARGO_BUILD env BORINGSSL_LIB_DIR="${dep:boringssl}/lib" CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo build --release --no-default-features --features ffi --target-dir "${DEPO_BUILD_DIR}/cargo-target"
+CARGO_BUILD_SH <<'EOF'
+set -eu
+source_dir="$DEPO_SOURCE_DIR"
+patch_file="$DEPO_BUILD_DIR/quicperf-dependency.patch"
+settings_patch_file="$DEPO_BUILD_DIR/quicperf-negotiated-settings.patch"
+lifecycle_patch_file="$DEPO_BUILD_DIR/quicperf-lifecycle-capacity.patch"
+buffer_patch_file="$DEPO_BUILD_DIR/quicperf-stream-buffer-accounting.patch"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "50f5a55975fe5b64cce708bbf227dd0f29b59ee5"
+test "$(git -C "$source_dir" rev-parse 'HEAD^{tree}')" = "5cf020fd0a3e71fbb26f892da3f1a2b1cea9f6dd"
+cat > "$patch_file" <<'QUICPERF_DEPENDENCY_PATCH'
+diff --git a/include/tquic.h b/include/tquic.h
+index f0994b9..4b3d6a9 100644
+--- a/include/tquic.h
++++ b/include/tquic.h
+@@ -433,6 +433,12 @@ typedef struct quic_conn_stats_t {
+    * Total number of bytes lost on the connection.
+    */
+   uint64_t lost_bytes;
++  /** Number of DATA_BLOCKED frames serialized. */
++  uint64_t data_blocked_sent;
++  /** Number of STREAM_DATA_BLOCKED frames serialized. */
++  uint64_t stream_data_blocked_sent;
++  /** Number of loss-detection wakeups that selected retransmittable data. */
++  uint64_t recovery_wakeups;
+ } quic_conn_stats_t;
+ 
+ typedef struct http3_methods_t {
+@@ -927,6 +933,12 @@ struct quic_endpoint_t *quic_endpoint_new(struct quic_config_t *config,
+                                           const struct quic_packet_send_methods_t *sender_methods,
+                                           quic_packet_send_context_t sender_ctx);
+ 
++/**
++ * Set caller-owned raw monotonic time for all tquic work on this thread.
++ * The value must be nonzero and monotonic.
++ */
++bool quic_set_now_raw_ns(uint64_t now_raw_ns);
++
+ /**
+  * Destroy a QUIC endpoint.
+  */
+@@ -1137,6 +1149,17 @@ const struct quic_path_stats_t *quic_conn_path_stats(struct quic_conn_t *conn,
+  */
+ const struct quic_conn_stats_t *quic_conn_stats(struct quic_conn_t *conn);
+ 
++/**
++ * Return exact terminal facts learned from peer-originated stream frames.
++ */
++void quic_stream_peer_terminal(const struct quic_conn_t *conn,
++                               uint64_t stream_id,
++                               bool *fin,
++                               bool *reset_stream,
++                               uint64_t *reset_stream_error,
++                               bool *stop_sending,
++                               uint64_t *stop_sending_error);
++
+ /**
+  * Return the trace id of the connection
+  */
+diff --git a/src/congestion_control/bbr.rs b/src/congestion_control/bbr.rs
+index 9b452dc..ba88290 100644
+--- a/src/congestion_control/bbr.rs
++++ b/src/congestion_control/bbr.rs
+@@ -212,7 +212,7 @@ struct AckState {
+ 
+ impl Default for AckState {
+     fn default() -> Self {
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         Self {
+             now,
+             newly_lost_bytes: 0,
+@@ -326,7 +326,7 @@ pub struct Bbr {
+ 
+ impl Bbr {
+     pub fn new(config: BbrConfig) -> Self {
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         let initial_cwnd = config.initial_cwnd;
+ 
+         let mut bbr = Self {
+@@ -369,7 +369,7 @@ impl Bbr {
+     /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.3.1.
+     fn init(&mut self) {
+         self.rtprop = self.config.initial_rtt.unwrap_or(Duration::MAX);
+-        self.rtprop_stamp = Instant::now();
++        self.rtprop_stamp = crate::quicperf_clock::now();
+         self.probe_rtt_done_stamp = None;
+         self.probe_rtt_round_done = false;
+         self.packet_conservation = false;
+@@ -1106,7 +1106,7 @@ mod tests {
+         assert!(bbr.min_pacing_rate.is_none());
+         assert_eq!(bbr.min_pacing_rate(), bbr.pacing_rate());
+ 
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         let mut pkts: Vec<SentPacket> = Vec::new();
+         let rtt = RttEstimator::new(Duration::from_millis(20));
+         let bytes_lost = 0;
+diff --git a/src/congestion_control/bbr3.rs b/src/congestion_control/bbr3.rs
+index 694cb0c..323ad6b 100644
+--- a/src/congestion_control/bbr3.rs
++++ b/src/congestion_control/bbr3.rs
+@@ -296,7 +296,7 @@ struct AckState {
+ 
+ impl Default for AckState {
+     fn default() -> Self {
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         Self {
+             now,
+             newly_lost_bytes: 0,
+@@ -550,7 +550,7 @@ pub struct Bbr3 {
+ 
+ impl Bbr3 {
+     pub fn new(config: Bbr3Config) -> Self {
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         let initial_cwnd = config.initial_cwnd;
+ 
+         let mut bbr3 = Self {
+@@ -670,7 +670,7 @@ impl Bbr3 {
+     // Initialization Steps.
+     // See <https://www.ietf.org/archive/id/draft-cardwell-iccrg-bbr-congestion-control-02.html#name-initialization>.
+     fn init(&mut self) {
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+ 
+         // init windowed max filter - max bw filter
+         self.min_rtt = std::cmp::max(
+@@ -1988,7 +1988,7 @@ mod tests {
+         assert!(bbr3.min_pacing_rate.is_none());
+         assert_eq!(bbr3.min_pacing_rate(), bbr3.pacing_rate());
+ 
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         let mut pkts: Vec<SentPacket> = Vec::new();
+         let rtt = RttEstimator::new(Duration::from_millis(20));
+         let bytes_lost = 0;
+diff --git a/src/congestion_control/congestion_control.rs b/src/congestion_control/congestion_control.rs
+index 9809585..af9cc3b 100644
+--- a/src/congestion_control/congestion_control.rs
++++ b/src/congestion_control/congestion_control.rs
+@@ -242,7 +242,7 @@ mod tests {
+         let cc = build_congestion_controller(&config.recovery);
+         assert_eq!(cc.name(), "BBR");
+         assert_eq!(cc.in_slow_start(), true);
+-        assert_eq!(cc.in_recovery(Instant::now()), false);
++        assert_eq!(cc.in_recovery(crate::quicperf_clock::now()), false);
+         assert_eq!(
+             cc.initial_window(),
+             config.recovery.initial_congestion_window * config.recovery.max_datagram_size as u64
+diff --git a/src/congestion_control/copa.rs b/src/congestion_control/copa.rs
+index c390969..4112ffe 100644
+--- a/src/congestion_control/copa.rs
++++ b/src/congestion_control/copa.rs
+@@ -193,7 +193,7 @@ struct AckState {
+ 
+ impl Default for AckState {
+     fn default() -> Self {
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         Self {
+             now,
+             newly_lost_bytes: 0,
+@@ -293,7 +293,7 @@ impl Copa {
+         Self {
+             config,
+             stats: Default::default(),
+-            init_time: Instant::now(),
++            init_time: crate::quicperf_clock::now(),
+             mode: CompetingMode::Default,
+             slow_start: true,
+             cwnd: initial_cwnd,
+@@ -771,7 +771,7 @@ mod tests {
+         assert!(copa.min_pacing_rate.is_none());
+         assert_eq!(copa.min_pacing_rate(), copa.pacing_rate());
+ 
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         let mut pkts: Vec<SentPacket> = Vec::new();
+         let rtt = RttEstimator::new(Duration::from_millis(20));
+         let bytes_lost = 0;
+diff --git a/src/congestion_control/cubic.rs b/src/congestion_control/cubic.rs
+index f88f091..e4fba0c 100644
+--- a/src/congestion_control/cubic.rs
++++ b/src/congestion_control/cubic.rs
+@@ -581,7 +581,7 @@ mod tests {
+     fn cubic_on_sent() {
+         let cubic_cfg = CubicConfig::default();
+         let mut cubic = Cubic::new(cubic_cfg);
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         let mut pkts: Vec<SentPacket> = Vec::new(); // let mut pkts_part3: Vec<SentPacket> = Vec::new();
+         let bytes_lost = 0;
+         let mut bytes_in_flight = 0;
+@@ -646,7 +646,7 @@ mod tests {
+     fn cubic_ack() {
+         let cubic_cfg = CubicConfig::default();
+         let mut cubic = Cubic::new(cubic_cfg);
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         let mut pkts: Vec<SentPacket> = Vec::new(); // let mut pkts_part3: Vec<SentPacket> = Vec::new();
+         let rtt = RttEstimator::new(Duration::from_millis(20));
+         let bytes_lost = 0;
+@@ -725,7 +725,7 @@ mod tests {
+     fn cubic_in_recovery() {
+         let cubic_cfg = CubicConfig::default();
+         let mut cubic = Cubic::new(cubic_cfg);
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+ 
+         cubic.recovery_epoch_start = Some(now + Duration::from_millis(10));
+         assert_eq!(cubic.in_recovery(now), true);
+diff --git a/src/congestion_control/delivery_rate.rs b/src/congestion_control/delivery_rate.rs
+index 596e3fe..3b7a28d 100644
+--- a/src/congestion_control/delivery_rate.rs
++++ b/src/congestion_control/delivery_rate.rs
+@@ -125,9 +125,9 @@ impl DeliveryRateEstimator {
+         }
+ 
+         self.delivered = self.delivered.saturating_add(packet.sent_size as u64);
+-        // note: Update rate sample after P.time_acked got update. The default Instant::now() is
++        // note: Update rate sample after P.time_acked got update. The default crate::quicperf_clock::now() is
+         // not accurate for estimating ack_elapsed.
+-        self.delivered_time = packet.time_acked.unwrap_or(Instant::now());
++        self.delivered_time = packet.time_acked.unwrap_or(crate::quicperf_clock::now());
+ 
+         // Update info using the newest packet:
+         if self.rate_sample.prior_time.is_none()
+@@ -251,7 +251,7 @@ impl DeliveryRateEstimator {
+ 
+ impl Default for DeliveryRateEstimator {
+     fn default() -> Self {
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         Self {
+             delivered: 0,
+             delivered_time: now,
+@@ -273,7 +273,7 @@ mod tests {
+         let mut rate_estimator = DeliveryRateEstimator::default();
+         let mut bytes_in_flight: u64 = 0;
+         let bytes_lost: u64 = 0;
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         let mut pkt_n1 = SentPacket {
+             pkt_num: 1,
+             frames: Vec::new(),
+@@ -341,7 +341,7 @@ mod tests {
+         rate_estimator.rate_sample.send_elapsed = Duration::from_millis(20);
+         rate_estimator.rate_sample.ack_elapsed = Duration::from_millis(25);
+         rate_estimator.rate_sample.prior_delivered = 1200;
+-        rate_estimator.rate_sample.prior_time = Some(Instant::now());
++        rate_estimator.rate_sample.prior_time = Some(crate::quicperf_clock::now());
+         rate_estimator.delivered = 7200;
+ 
+         rate_estimator.generate_rate_sample();
+@@ -358,7 +358,7 @@ mod tests {
+     #[test]
+     fn delivery_rate_update_rate_sample() {
+         let mut rate_estimator = DeliveryRateEstimator::default();
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         let mut pkts_part1: Vec<SentPacket> = Vec::new();
+         let mut pkts_part2: Vec<SentPacket> = Vec::new();
+         let bytes_lost = 0;
+diff --git a/src/congestion_control/dummy.rs b/src/congestion_control/dummy.rs
+index 5eeb2e1..6f40571 100644
+--- a/src/congestion_control/dummy.rs
++++ b/src/congestion_control/dummy.rs
+@@ -168,7 +168,7 @@ mod tests {
+         assert_eq!(d.minimal_window(), 1200 * 10);
+ 
+         assert_eq!(d.in_slow_start(), false);
+-        assert_eq!(d.in_recovery(Instant::now()), false);
++        assert_eq!(d.in_recovery(crate::quicperf_clock::now()), false);
+         assert_eq!(d.stats().bytes_in_flight, 0);
+         assert_eq!(d.pacing_rate(), None);
+         assert_eq!(d.min_pacing_rate(), None);
+@@ -185,7 +185,7 @@ mod tests {
+ 
+         let rtt = Duration::from_millis(100);
+         let rtt_estimator = RttEstimator::new(rtt);
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+ 
+         // Sent and acked a packet
+         let mut pkt = SentPacket {
+diff --git a/src/congestion_control/pacing.rs b/src/congestion_control/pacing.rs
+index 2b3d29a..ae3e176 100644
+--- a/src/congestion_control/pacing.rs
++++ b/src/congestion_control/pacing.rs
+@@ -87,7 +87,7 @@ impl Pacer {
+             conf.initial_congestion_window
+                 .saturating_mul(conf.max_datagram_size as u64),
+             conf.max_datagram_size as u64,
+-            Instant::now(),
++            crate::quicperf_clock::now(),
+             conf.pacing_granularity,
+         )
+     }
+@@ -171,7 +171,7 @@ mod tests {
+         let srtt = Duration::from_millis(1);
+         let mtu: u64 = 1500;
+         let enabled: bool = true;
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+ 
+         let cwnd: u64 = 20 * mtu;
+         let p = Pacer::new(enabled, srtt, cwnd, mtu, now, PACING_GRANULARITY);
+@@ -201,7 +201,7 @@ mod tests {
+         let mtu: u64 = 1500;
+         let cwnd: u64 = 20 * 1500;
+         let enabled: bool = false;
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         let bytes_to_send: u64 = 1000;
+         let pacing_rate: u64 = 1000000;
+ 
+@@ -222,7 +222,7 @@ mod tests {
+         let mtu: u64 = 1000; // For convenience
+         let cwnd: u64 = 10 * mtu;
+         let enabled: bool = true;
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         let bytes_to_send = mtu;
+         let pacing_rate: u64 = 1000000;
+ 
+diff --git a/src/connection/connection.rs b/src/connection/connection.rs
+index 36c3b8f..d0a60a0 100644
+--- a/src/connection/connection.rs
++++ b/src/connection/connection.rs
+@@ -20,6 +20,7 @@ use core::ops::Range;
+ use std::any::Any;
+ use std::cell::RefCell;
+ use std::cmp;
++use std::collections::HashMap;
+ use std::collections::VecDeque;
+ use std::net::SocketAddr;
+ use std::rc::Rc;
+@@ -134,6 +135,10 @@ pub struct Connection {
+     /// Error received from the peer in a CONNECTION_CLOSE frame.
+     peer_error: Option<ConnectionError>,
+ 
++    /// Exact terminal stream facts observed from peer frames. Entries are
++    /// retained after the transport releases the stream object.
++    peer_stream_terminal: HashMap<u64, PeerStreamTerminal>,
++
+     /// Various connection timers.
+     timers: timer::TimerTable,
+ 
+@@ -281,6 +286,7 @@ impl Connection {
+             recovery_conf: conf.recovery.clone(),
+             local_error: None,
+             peer_error: None,
++            peer_stream_terminal: HashMap::new(),
+             timers: timer::TimerTable::default(),
+             flags: BitFlags::default(),
+             stats: ConnectionStats::default(),
+@@ -331,7 +337,7 @@ impl Connection {
+         if !conf.max_handshake_timeout.is_zero() {
+             conn.timers.set(
+                 Timer::Handshake,
+-                time::Instant::now() + conf.max_handshake_timeout,
++                crate::quicperf_clock::now() + conf.max_handshake_timeout,
+             );
+         }
+ 
+@@ -399,7 +405,7 @@ impl Connection {
+             trace,
+             level,
+             writer,
+-            time::Instant::now(),
++            crate::quicperf_clock::now(),
+         );
+         writer.start().ok();
+ 
+@@ -475,7 +481,7 @@ impl Connection {
+         if buf.is_empty() {
+             return Err(Error::Done);
+         }
+-        let now = time::Instant::now();
++        let now = crate::quicperf_clock::now();
+ 
+         // Check close status of connection
+         if self.is_closing() || self.is_draining() || self.is_closed() {
+@@ -962,6 +968,9 @@ impl Connection {
+             } => {
+                 self.streams
+                     .on_stream_frame_received(stream_id, offset, length, fin, data)?;
++                if fin {
++                    self.peer_stream_terminal.entry(stream_id).or_default().fin = true;
++                }
+             }
+ 
+             Frame::ResetStream {
+@@ -971,6 +980,10 @@ impl Connection {
+             } => {
+                 self.streams
+                     .on_reset_stream_frame_received(stream_id, error_code, final_size)?;
++                self.peer_stream_terminal
++                    .entry(stream_id)
++                    .or_default()
++                    .reset_stream_error = Some(error_code);
+             }
+ 
+             Frame::StopSending {
+@@ -979,6 +992,10 @@ impl Connection {
+             } => {
+                 self.streams
+                     .on_stop_sending_frame_received(stream_id, error_code)?;
++                self.peer_stream_terminal
++                    .entry(stream_id)
++                    .or_default()
++                    .stop_sending_error = Some(error_code);
+             }
+ 
+             Frame::MaxData { max } => {
+@@ -1175,7 +1192,7 @@ impl Connection {
+ 
+                 // An endpoint MUST discard its Handshake keys when the TLS
+                 // handshake is confirmed.
+-                self.drop_space_state(SpaceId::Handshake, time::Instant::now());
++                self.drop_space_state(SpaceId::Handshake, crate::quicperf_clock::now());
+             }
+ 
+             // Try to promote to multipath mode.
+@@ -1449,7 +1466,7 @@ impl Connection {
+         // max_ack_delay.
+         if space.ack_timer.is_none() {
+             let ack_delay = time::Duration::from_millis(self.peer_transport_params.max_ack_delay);
+-            space.ack_timer = Some(time::Instant::now() + ack_delay);
++            space.ack_timer = Some(crate::quicperf_clock::now() + ack_delay);
+             debug!(
+                 "{} set ack timer for space {:?}, timeout {:?} ",
+                 &self.trace_id, space_id, space.ack_timer
+@@ -1660,7 +1677,7 @@ impl Connection {
+         let info = PacketInfo {
+             src: path.local_addr(),
+             dst: path.remote_addr(),
+-            time: time::Instant::now(),
++            time: crate::quicperf_clock::now(),
+         };
+         Ok((done, info))
+     }
+@@ -1690,7 +1707,7 @@ impl Connection {
+         first: bool,
+         has_initial: bool,
+     ) -> Result<(PacketType, bool, usize)> {
+-        let now = time::Instant::now();
++        let now = crate::quicperf_clock::now();
+ 
+         if out.len() < left {
+             return Err(Error::InvalidState("buffer too short".into()));
+@@ -1992,7 +2009,7 @@ impl Connection {
+         let path = self.paths.get_mut(path_id)?;
+         path.recovery.stat_cwnd_limited();
+ 
+-        let now = time::Instant::now();
++        let now = crate::quicperf_clock::now();
+         let r = &mut self.paths.get_mut(path_id)?.recovery;
+ 
+         // Check the congestion window
+@@ -2163,7 +2180,10 @@ impl Connection {
+             || !path.dplpmtud.should_probe()
+             || probe_size > buf.len()
+             || (probe_size as u64) > path.recovery.congestion.congestion_window()
+-            || path.recovery.congestion.in_recovery(time::Instant::now())
++            || path
++                .recovery
++                .congestion
++                .in_recovery(crate::quicperf_clock::now())
+         {
+             return Ok(());
+         }
+@@ -2209,7 +2229,8 @@ impl Connection {
+ 
+         // Create ACK frame if needed.
+         let ack_delay_exp = self.local_transport_params.ack_delay_exponent as u32;
+-        let ack_delay = space.largest_rx_pkt_time.elapsed();
++        let ack_delay =
++            crate::quicperf_clock::now().saturating_duration_since(space.largest_rx_pkt_time);
+         let ack_delay = ack_delay.as_micros() as u64 / 2_u64.pow(ack_delay_exp);
+         let frame = Frame::Ack {
+             ack_delay,
+@@ -2298,7 +2319,7 @@ impl Connection {
+             return Ok(());
+         }
+ 
+-        let now = time::Instant::now();
++        let now = crate::quicperf_clock::now();
+ 
+         // Create MAX_STREAMS frame if needed.
+         for bidi in &[true, false] {
+@@ -2322,6 +2343,7 @@ impl Connection {
+             let frame = frame::Frame::DataBlocked { max: blocked_at };
+ 
+             Connection::write_frame_to_packet(frame, buf, st)?;
++            self.stats.data_blocked_sent = self.stats.data_blocked_sent.saturating_add(1);
+             st.ack_eliciting = true;
+             st.in_flight = true;
+ 
+@@ -2442,6 +2464,8 @@ impl Connection {
+             };
+ 
+             Connection::write_frame_to_packet(frame, buf, st)?;
++            self.stats.stream_data_blocked_sent =
++                self.stats.stream_data_blocked_sent.saturating_add(1);
+             st.ack_eliciting = true;
+             st.in_flight = true;
+ 
+@@ -2506,7 +2530,7 @@ impl Connection {
+                 st.in_flight = true;
+ 
+                 let pto = self.paths.get(path_id)?.recovery.rtt.pto_base();
+-                let draining_timeout = time::Instant::now() + pto * 3;
++                let draining_timeout = crate::quicperf_clock::now() + pto * 3;
+                 self.timers.set(Timer::Draining, draining_timeout);
+             }
+         }
+@@ -3395,7 +3419,7 @@ impl Connection {
+ 
+         // Calculate duration since now.
+         let d = time.map(|v| {
+-            let now = time::Instant::now();
++            let now = crate::quicperf_clock::now();
+             if v <= now {
+                 time::Duration::ZERO
+             } else {
+@@ -3413,7 +3437,6 @@ impl Connection {
+                 continue;
+             }
+             trace!("{} timer {:?} timeout", self.trace_id, timer);
+-
+             let handshake_status = self.handshake_status();
+             self.timers.stop(timer);
+             match timer {
+@@ -3423,14 +3446,19 @@ impl Connection {
+                             if timer > now {
+                                 continue;
+                             }
+-                            let (lost_pkts, lost_bytes) = path.recovery.on_loss_detection_timeout(
+-                                path.space_id,
+-                                &mut self.spaces,
+-                                handshake_status,
+-                                #[cfg(feature = "qlog")]
+-                                self.qlog.as_mut(),
+-                                now,
+-                            );
++                            let (lost_pkts, lost_bytes, recovered_data) =
++                                path.recovery.on_loss_detection_timeout(
++                                    path.space_id,
++                                    &mut self.spaces,
++                                    handshake_status,
++                                    #[cfg(feature = "qlog")]
++                                    self.qlog.as_mut(),
++                                    now,
++                                );
++                            if recovered_data {
++                                self.stats.recovery_wakeups =
++                                    self.stats.recovery_wakeups.saturating_add(1);
++                            }
+                             self.stats.lost_count += lost_pkts;
+                             self.stats.lost_bytes += lost_bytes;
+ 
+@@ -3654,7 +3682,7 @@ impl Connection {
+         self.flags.insert(GotReset);
+         if let Ok(p) = self.paths.get_active_mut() {
+             let pto = p.recovery.rtt.pto_base();
+-            let now = time::Instant::now();
++            let now = crate::quicperf_clock::now();
+             self.timers.set(Timer::Draining, now + pto * 3);
+         }
+     }
+@@ -3664,6 +3692,14 @@ impl Connection {
+         self.peer_error.as_ref()
+     }
+ 
++    /// Return exact peer-observed terminal facts retained for a stream.
++    pub fn peer_stream_terminal(&self, stream_id: u64) -> PeerStreamTerminal {
++        self.peer_stream_terminal
++            .get(&stream_id)
++            .copied()
++            .unwrap_or_default()
++    }
++
+     /// Returns the local error, if any.
+     pub fn local_error(&self) -> Option<&ConnectionError> {
+         self.local_error.as_ref()
+@@ -4307,7 +4343,8 @@ impl Connection {
+         // Calculate expiration time if expiration_time parameter is not 0.
+         let mut expire_at: Option<time::Instant> = None;
+         if expiration_time != 0 {
+-            expire_at = Some(time::Instant::now() + time::Duration::from_millis(expiration_time));
++            expire_at =
++                Some(crate::quicperf_clock::now() + time::Duration::from_millis(expiration_time));
+         }
+ 
+         match self.datagrams.write(priority, buf, expire_at) {
+@@ -4353,7 +4390,8 @@ impl Connection {
+         cipher: Option<tls::Algorithm>,
+     ) {
+         let ev_data = params.to_qlog(owner, cipher);
+-        qlog.add_event_data(time::Instant::now(), ev_data).ok();
++        qlog.add_event_data(crate::quicperf_clock::now(), ev_data)
++            .ok();
+     }
+ 
+     /// Write a QuicPacketReceived event to the qlog.
+@@ -4389,7 +4427,8 @@ impl Connection {
+             datagram_id: None,
+             trigger: None,
+         };
+-        qlog.add_event_data(time::Instant::now(), ev_data).ok();
++        qlog.add_event_data(crate::quicperf_clock::now(), ev_data)
++            .ok();
+     }
+ 
+     /// Write a QuicPacketSent event to the qlog.
+@@ -4414,7 +4453,7 @@ impl Connection {
+             payload_length: Some(payload_len as u64),
+             data: None,
+         };
+-        let now = time::Instant::now();
++        let now = crate::quicperf_clock::now();
+ 
+         let ev_data = events::EventData::QuicPacketSent {
+             header: qlog_pkt_hdr,
+@@ -4447,7 +4486,8 @@ impl Connection {
+             to: Some(events::DataRecipient::Dropped),
+             raw: None,
+         };
+-        qlog.add_event_data(time::Instant::now(), ev_data).ok();
++        qlog.add_event_data(crate::quicperf_clock::now(), ev_data)
++            .ok();
+     }
+ 
+     /// Write a QuicStreamDataMoved event to the qlog.
+@@ -4466,7 +4506,8 @@ impl Connection {
+             to: Some(qlog::events::DataRecipient::Application),
+             raw: None,
+         };
+-        qlog.add_event_data(time::Instant::now(), ev_data).ok();
++        qlog.add_event_data(crate::quicperf_clock::now(), ev_data)
++            .ok();
+     }
+ 
+     /// Write a QuicStreamDataMoved event to the qlog.
+@@ -4485,7 +4526,8 @@ impl Connection {
+             to: Some(qlog::events::DataRecipient::Transport),
+             raw: None,
+         };
+-        qlog.add_event_data(time::Instant::now(), ev_data).ok();
++        qlog.add_event_data(crate::quicperf_clock::now(), ev_data)
++            .ok();
+     }
+ 
+     /// Write a QuicDatagramDataMoved event to the qlog.
+@@ -4497,7 +4539,8 @@ impl Connection {
+             to: Some(qlog::events::DataRecipient::Transport),
+             raw: None,
+         };
+-        qlog.add_event_data(time::Instant::now(), ev_data).ok();
++        qlog.add_event_data(crate::quicperf_clock::now(), ev_data)
++            .ok();
+     }
+ 
+     /// Write a QuicDatagramDataMoved event to the qlog.
+@@ -4509,7 +4552,8 @@ impl Connection {
+             to: Some(qlog::events::DataRecipient::Application),
+             raw: None,
+         };
+-        qlog.add_event_data(time::Instant::now(), ev_data).ok();
++        qlog.add_event_data(crate::quicperf_clock::now(), ev_data)
++            .ok();
+     }
+ }
+ 
+@@ -4730,6 +4774,23 @@ pub struct ConnectionStats {
+ 
+     /// Total number of bytes lost on the connection.
+     pub lost_bytes: u64,
++
++    /// Number of DATA_BLOCKED frames serialized.
++    pub data_blocked_sent: u64,
++
++    /// Number of STREAM_DATA_BLOCKED frames serialized.
++    pub stream_data_blocked_sent: u64,
++
++    /// Number of loss-detection wakeups that selected retransmittable data.
++    pub recovery_wakeups: u64,
++}
++
++/// Exact terminal facts learned from peer-originated stream frames.
++#[derive(Clone, Copy, Default)]
++pub struct PeerStreamTerminal {
++    pub fin: bool,
++    pub reset_stream_error: Option<u64>,
++    pub stop_sending_error: Option<u64>,
+ }
+ 
+ /// FrameWriteStatus is used to collect various states during writing frames
+@@ -5117,7 +5178,7 @@ pub(crate) mod tests {
+             PacketInfo {
+                 src: if is_server { server_addr } else { client_addr },
+                 dst: if is_server { client_addr } else { server_addr },
+-                time: time::Instant::now(),
++                time: crate::quicperf_clock::now(),
+             }
+         }
+ 
+@@ -5815,7 +5876,9 @@ pub(crate) mod tests {
+         // Server retransmit Handshake but lost again
+         for i in 0..5 {
+             let dur = test_pair.server.timeout().unwrap();
+-            test_pair.server.on_timeout(time::Instant::now() + dur);
++            test_pair
++                .server
++                .on_timeout(crate::quicperf_clock::now() + dur);
+             let _ = TestPair::conn_packets_out(&mut test_pair.server)?;
+         }
+ 
+@@ -5832,7 +5895,9 @@ pub(crate) mod tests {
+         // client's address. To prevent this deadlock, clients MUST send a packet on a
+         // Probe Timeout (PTO).
+         let dur = test_pair.client.timeout().unwrap();
+-        test_pair.client.on_timeout(time::Instant::now() + dur);
++        test_pair
++            .client
++            .on_timeout(crate::quicperf_clock::now() + dur);
+         let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+         assert!(!packets.is_empty());
+ 
+@@ -5843,7 +5908,9 @@ pub(crate) mod tests {
+             assert!(path.anti_ampl_limit > 0);
+         }
+         let dur = test_pair.server.timeout().unwrap();
+-        test_pair.server.on_timeout(time::Instant::now() + dur);
++        test_pair
++            .server
++            .on_timeout(crate::quicperf_clock::now() + dur);
+ 
+         assert_eq!(test_pair.handshake(), Ok(()));
+         assert_eq!(test_pair.client.is_established(), true);
+@@ -5910,14 +5977,14 @@ pub(crate) mod tests {
+         let _ = TestPair::conn_packets_out(&mut test_pair.server)?;
+ 
+         // Fake timing out server's Handshake timer.
+-        let now = time::Instant::now() + time::Duration::from_millis(SERVER_TIMEOUT);
++        let now = crate::quicperf_clock::now() + time::Duration::from_millis(SERVER_TIMEOUT);
+         test_pair.server.on_timeout(now);
+         assert_eq!(test_pair.server.is_established(), false);
+         assert_eq!(test_pair.server.is_closed(), true);
+         assert_eq!(test_pair.server.is_handshake_timeout(), true);
+ 
+         // Fake timing out client's Handshake timer.
+-        let now = time::Instant::now() + time::Duration::from_millis(CLIENT_TIMEOUT);
++        let now = crate::quicperf_clock::now() + time::Duration::from_millis(CLIENT_TIMEOUT);
+         test_pair.client.on_timeout(now);
+         assert_eq!(test_pair.client.is_established(), false);
+         assert_eq!(test_pair.client.is_closed(), true);
+@@ -6387,7 +6454,8 @@ pub(crate) mod tests {
+ 
+         // Advance ticks until PATH_CHALLENGE timeout.
+         assert!(test_pair.client.timeout().is_some());
+-        let now = time::Instant::now() + time::Duration::from_millis(path::INITIAL_CHAL_TIMEOUT);
++        let now =
++            crate::quicperf_clock::now() + time::Duration::from_millis(path::INITIAL_CHAL_TIMEOUT);
+         test_pair.client.on_timeout(now);
+ 
+         // Client send PATH_CHALLENGE again.
+diff --git a/src/connection/datagram.rs b/src/connection/datagram.rs
+index 142e45e..75bdeb4 100644
+--- a/src/connection/datagram.rs
++++ b/src/connection/datagram.rs
+@@ -123,7 +123,7 @@ impl DatagramMap {
+         while let Some(front) = queue.front() {
+             if front
+                 .expire_time
+-                .map(|expire_time| Instant::now() >= expire_time)
++                .map(|expire_time| crate::quicperf_clock::now() >= expire_time)
+                 .unwrap_or(false)
+             {
+                 queue.pop_front();
+diff --git a/src/connection/flowcontrol.rs b/src/connection/flowcontrol.rs
+index 0739bc9..1bccd7e 100644
+--- a/src/connection/flowcontrol.rs
++++ b/src/connection/flowcontrol.rs
+@@ -184,7 +184,7 @@ mod tests {
+             assert_eq!(fc.max_data_next(), max_data_next);
+         }
+ 
+-        fc.update_max_data(Instant::now());
++        fc.update_max_data(crate::quicperf_clock::now());
+         assert_eq!(fc.max_data(), 151);
+     }
+ 
+@@ -192,7 +192,7 @@ mod tests {
+     fn fc_autotune_window() {
+         let window = 10;
+         let max_window = 30;
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         let srtt = Duration::from_millis(100);
+         let mut fc = FlowControl::new(window, max_window);
+ 
+diff --git a/src/connection/path.rs b/src/connection/path.rs
+index 71054b5..73e1e85 100644
+--- a/src/connection/path.rs
++++ b/src/connection/path.rs
+@@ -202,7 +202,7 @@ impl Path {
+                 // Use the delay between sending a PATH_CHALLENGE and receiving a PATH_RESPONSE
+                 // to set the initial RTT for the new path. This delay should not be considered
+                 // an RTT sample.
+-                let initial_rtt = Instant::now().duration_since(*sent_time);
++                let initial_rtt = crate::quicperf_clock::now().duration_since(*sent_time);
+                 self.recovery.rtt.try_set_init_rtt(initial_rtt);
+                 false
+             } else {
+@@ -768,7 +768,7 @@ mod tests {
+ 
+         // Fake sending of PATH_CHALLENGE
+         let data = rand::random::<[u8; 8]>();
+-        let now = time::Instant::now();
++        let now = crate::quicperf_clock::now();
+         path_mgr.on_path_chal_sent(pid, data, 100, now)?;
+         assert_eq!(path_mgr.get_mut(pid)?.path_chal_initiated(), false);
+         assert_eq!(path_mgr.get_mut(pid)?.validated(), false);
+@@ -869,7 +869,7 @@ mod tests {
+ 
+         // Fake sending of PATH_CHALLENGE.
+         let data = rand::random::<[u8; 8]>();
+-        let now = time::Instant::now();
++        let now = crate::quicperf_clock::now();
+         path_mgr.on_path_chal_sent(pid, data, 1300, now)?;
+         assert_eq!(path_mgr.get_mut(pid)?.path_chal_initiated(), false);
+         assert_eq!(path_mgr.get_mut(pid)?.validated(), false);
+@@ -953,7 +953,7 @@ mod tests {
+             .ok_or(Error::InternalError)?;
+ 
+         // Fake sending of PATH_CHALLENGE on the first path.
+-        let now = time::Instant::now();
++        let now = crate::quicperf_clock::now();
+         let sent_time1 = now;
+         let data = rand::random::<[u8; 8]>();
+         path_mgr.on_path_chal_sent(pid1, data, 1300, sent_time1)?;
+diff --git a/src/connection/recovery.rs b/src/connection/recovery.rs
+index ce2f53e..b5e1ba3 100644
+--- a/src/connection/recovery.rs
++++ b/src/connection/recovery.rs
+@@ -600,11 +600,11 @@ impl Recovery {
+         handshake_status: HandshakeStatus,
+         #[cfg(feature = "qlog")] qlog: Option<&mut qlog::QlogWriter>,
+         now: Instant,
+-    ) -> (u64, u64) {
++    ) -> (u64, u64, bool) {
+         let (earliest_loss_time, sid) = self.get_loss_time_and_space(space_id, spaces);
+         let space = match spaces.get_mut(sid) {
+             Some(space) => space,
+-            None => return (0, 0),
++            None => return (0, 0, false),
+         };
+ 
+         // Loss timer mode
+@@ -617,8 +617,12 @@ impl Recovery {
+                 now,
+             );
+             self.drain_sent_packets(space, now, self.rtt.smoothed_rtt());
++            let recovered_data = space
++                .lost
++                .iter()
++                .any(|frame| matches!(frame, Frame::Stream { .. } | Frame::Crypto { .. }));
+             self.set_loss_detection_timer(space_id, spaces, handshake_status, now);
+-            return (lost_packets, lost_bytes);
++            return (lost_packets, lost_bytes, recovered_data);
+         }
+ 
+         // PTO timer mode
+@@ -639,13 +643,13 @@ impl Recovery {
+         };
+         let space = match spaces.get_mut(sid) {
+             Some(space) => space,
+-            None => return (0, 0),
++            None => return (0, 0, false),
+         };
+         self.pto_count += 1;
+ 
+         space.loss_probes = match sid {
+             Initial | Handshake => 1,
+-            _ => cmp::min(self.pto_count, MAX_PTO_PROBES_COUNT),
++            _ => MAX_PTO_PROBES_COUNT,
+         };
+ 
+         // An endpoint SHOULD include new data in packets that are sent on PTO
+@@ -664,7 +668,9 @@ impl Recovery {
+             })
+             .take(space.loss_probes);
+ 
++        let mut recovered_data = false;
+         for unacked in unacked_iter {
++            recovered_data = true;
+             // A PTO timer expiration event does not indicate packet loss and
+             // MUST NOT cause prior unacknowledged packets to be marked as lost.
+             space.lost.extend_from_slice(&unacked.frames);
+@@ -674,7 +680,7 @@ impl Recovery {
+         }
+ 
+         self.set_loss_detection_timer(space_id, spaces, handshake_status, now);
+-        (0, 0)
++        (0, 0, recovered_data)
+     }
+ 
+     /// Return the min loss time and the corresponding space
+@@ -876,7 +882,7 @@ impl Recovery {
+                 "{} sending is limited by pacer, pacing timer {:?}",
+                 self.trace_id,
+                 self.pacer_timer
+-                    .map(|t| t.saturating_duration_since(Instant::now()))
++                    .map(|t| t.saturating_duration_since(crate::quicperf_clock::now()))
+             );
+             return false;
+         }
+@@ -885,7 +891,7 @@ impl Recovery {
+     }
+ 
+     fn can_pacing(&mut self) -> bool {
+-        let now = time::Instant::now();
++        let now = crate::quicperf_clock::now();
+         let cwnd = self.congestion.congestion_window();
+         let srtt = self.rtt.smoothed_rtt() as Duration;
+ 
+@@ -952,7 +958,7 @@ impl Recovery {
+     /// Update statistics for the congestion window limited event
+     pub(crate) fn stat_cwnd_limited(&mut self) {
+         let is_cwnd_limited = self.bytes_in_flight >= self.congestion.congestion_window() as usize;
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         if let Some(last_cwnd_limited_time) = self.last_cwnd_limited_time {
+             // Update duration timely, in case it stays in cwnd limited all the time.
+             let duration = now.saturating_duration_since(last_cwnd_limited_time);
+@@ -1053,7 +1059,8 @@ impl Recovery {
+             packets_in_flight: None,
+             pacing_rate,
+         };
+-        qlog.add_event_data(Instant::now(), ev_data).ok();
++        qlog.add_event_data(crate::quicperf_clock::now(), ev_data)
++            .ok();
+     }
+ 
+     /// Write a qlog RecoveryPacketLost event.
+@@ -1073,7 +1080,8 @@ impl Recovery {
+             is_mtu_probe_packet: None,
+             trigger: None,
+         };
+-        qlog.add_event_data(Instant::now(), ev_data).ok();
++        qlog.add_event_data(crate::quicperf_clock::now(), ev_data)
++            .ok();
+     }
+ }
+ 
+@@ -1155,7 +1163,7 @@ mod tests {
+             peer_verified_address: true,
+             completed: false,
+         };
+-        let mut now = Instant::now();
++        let mut now = crate::quicperf_clock::now();
+ 
+         // Fake sending of packet 0
+         let sent_pkt0 = new_test_sent_packet(0, 1000, now);
+@@ -1201,7 +1209,7 @@ mod tests {
+ 
+         // Advance ticks until loss timeout
+         now = recovery.loss_detection_timer().unwrap();
+-        let (lost_pkts, lost_bytes) = recovery.on_loss_detection_timeout(
++        let (lost_pkts, lost_bytes, _) = recovery.on_loss_detection_timeout(
+             SpaceId::Handshake,
+             &mut spaces,
+             status,
+@@ -1228,7 +1236,7 @@ mod tests {
+             peer_verified_address: true,
+             completed: false,
+         };
+-        let mut now = Instant::now();
++        let mut now = crate::quicperf_clock::now();
+ 
+         // Fake sending of packet 0
+         let sent_pkt0 = new_test_sent_packet(0, 1000, now);
+@@ -1315,7 +1323,7 @@ mod tests {
+             peer_verified_address: true,
+             completed: false,
+         };
+-        let mut now = Instant::now();
++        let mut now = crate::quicperf_clock::now();
+ 
+         // Fake sending of packet 0
+         let sent_pkt0 = new_test_sent_packet(0, 1000, now);
+@@ -1352,7 +1360,7 @@ mod tests {
+ 
+         // Advance ticks until pto timeout
+         now = recovery.loss_detection_timer().unwrap();
+-        let (lost_pkts, lost_bytes) = recovery.on_loss_detection_timeout(
++        let (lost_pkts, lost_bytes, _) = recovery.on_loss_detection_timeout(
+             SpaceId::Handshake,
+             &mut spaces,
+             status,
+@@ -1378,7 +1386,7 @@ mod tests {
+             peer_verified_address: true,
+             completed: false,
+         };
+-        let mut now = Instant::now();
++        let mut now = crate::quicperf_clock::now();
+ 
+         // Fake sending of packet 0 on Handshake space
+         let sent_pkt0 = new_test_sent_packet(0, 1000, now);
+@@ -1486,7 +1494,7 @@ mod tests {
+             peer_verified_address: true,
+             completed: false,
+         };
+-        let mut now = Instant::now();
++        let mut now = crate::quicperf_clock::now();
+ 
+         // Fake sending of packets on Data space.
+         for pkt_num in 100..1000 as u64 {
+@@ -1590,7 +1598,7 @@ mod tests {
+             peer_verified_address: true,
+             completed: false,
+         };
+-        let mut now = Instant::now();
++        let mut now = crate::quicperf_clock::now();
+         let cwnd_before_ack = recovery.congestion.congestion_window();
+ 
+         // Fake sending of packet 0
+diff --git a/src/connection/space.rs b/src/connection/space.rs
+index 37bb63f..66d2c8a 100644
+--- a/src/connection/space.rs
++++ b/src/connection/space.rs
+@@ -154,7 +154,7 @@ impl PacketNumSpace {
+             largest_rx_pkt_num: 0,
+             first_pkt_num_recv: None,
+             first_pkt_num_sent: None,
+-            largest_rx_pkt_time: Instant::now(),
++            largest_rx_pkt_time: crate::quicperf_clock::now(),
+             largest_rx_non_probing_pkt_num: 0,
+             largest_rx_ack_eliciting_pkt_num: 0,
+             recv_pkt_num_need_ack: RangeSet::new(crate::MAX_ACK_RANGES),
+@@ -392,7 +392,7 @@ impl Default for SentPacket {
+             pkt_type: packet::PacketType::OneRTT,
+             pkt_num: 0,
+             frames: vec![],
+-            time_sent: Instant::now(),
++            time_sent: crate::quicperf_clock::now(),
+             time_acked: None,
+             time_lost: None,
+             ack_eliciting: false,
+@@ -586,7 +586,7 @@ mod tests {
+                 frame::Frame::Ping { pmtu_probe: None },
+                 frame::Frame::Paddings { len: 200 },
+             ],
+-            time_sent: Instant::now(),
++            time_sent: crate::quicperf_clock::now(),
+             time_acked: None,
+             time_lost: None,
+             ack_eliciting: true,
+diff --git a/src/connection/stream.rs b/src/connection/stream.rs
+index 08588b2..9ffb3e5 100644
+--- a/src/connection/stream.rs
++++ b/src/connection/stream.rs
+@@ -2919,7 +2919,7 @@ impl RangeBuf {
+             data: buf,
+             off,
+             fin,
+-            time: Instant::now(),
++            time: crate::quicperf_clock::now(),
+         }
+     }
+ 
+diff --git a/src/connection/timer.rs b/src/connection/timer.rs
+index 8169e1f..198372c 100644
+--- a/src/connection/timer.rs
++++ b/src/connection/timer.rs
+@@ -94,7 +94,7 @@ mod tests {
+         assert_eq!(timers.next_timeout(), None);
+ 
+         // Set timers
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         let loss_time = now.add(Duration::from_millis(200));
+         let idle_time = now.add(Duration::from_millis(3000));
+         timers.set(Timer::LossDetection, loss_time);
+@@ -116,7 +116,7 @@ mod tests {
+     #[test]
+     fn timer_expiration() {
+         let mut timers = TimerTable::default();
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         let loss_time = now.add(Duration::from_millis(200));
+         let idle_time = now.add(Duration::from_millis(3000));
+         timers.set(Timer::LossDetection, loss_time);
+diff --git a/src/endpoint.rs b/src/endpoint.rs
+index 4a42882..81bf777 100644
+--- a/src/endpoint.rs
++++ b/src/endpoint.rs
+@@ -363,7 +363,7 @@ impl Endpoint {
+         let pkt_info = PacketInfo {
+             src: local,
+             dst: remote,
+-            time: Instant::now(),
++            time: crate::quicperf_clock::now(),
+         };
+ 
+         trace!(
+@@ -404,7 +404,7 @@ impl Endpoint {
+         let pkt_info = PacketInfo {
+             src: local,
+             dst: remote,
+-            time: Instant::now(),
++            time: crate::quicperf_clock::now(),
+         };
+ 
+         trace!(
+@@ -453,7 +453,7 @@ impl Endpoint {
+         let pkt_info = PacketInfo {
+             src: local,
+             dst: remote,
+-            time: Instant::now(),
++            time: crate::quicperf_clock::now(),
+         };
+ 
+         trace!(
+@@ -475,7 +475,7 @@ impl Endpoint {
+             return Some(crate::TIMER_GRANULARITY);
+         }
+ 
+-        self.timers.time_remaining(Instant::now())
++        self.timers.time_remaining(crate::quicperf_clock::now())
+     }
+ 
+     /// Process timeout events on the endpoint.
+@@ -620,7 +620,7 @@ impl Endpoint {
+ 
+         // Try to update the timer of the connection
+         if let Some(t) = conn.timeout() {
+-            self.timers.add(idx, t, Instant::now());
++            self.timers.add(idx, t, crate::quicperf_clock::now());
+         } else {
+             self.timers.del(&idx);
+         }
+@@ -755,7 +755,7 @@ impl Endpoint {
+         for idx in &sent {
+             if let Some(conn) = self.conns.get_mut(*idx) {
+                 if let Some(t) = conn.timeout() {
+-                    self.timers.add(*idx, t, Instant::now());
++                    self.timers.add(*idx, t, crate::quicperf_clock::now());
+                 } else {
+                     self.timers.del(idx);
+                 }
+@@ -1272,7 +1272,7 @@ mod tests {
+                 // Process timeout events
+                 if events.is_empty() {
+                     trace!("{} event loop: process timeout events", e.trace_id());
+-                    e.on_timeout(Instant::now());
++                    e.on_timeout(crate::quicperf_clock::now());
+                     if let Err(err) = e.process_connections() {
+                         trace!(
+                             "{} event loop: process_connections(): {:?}",
+@@ -1324,7 +1324,7 @@ mod tests {
+                 let pkt_info = PacketInfo {
+                     src: remote,
+                     dst: s.socket.local_addr().unwrap(),
+-                    time: Instant::now(),
++                    time: crate::quicperf_clock::now(),
+                 };
+                 match e.recv(pkt_buf, &pkt_info) {
+                     Ok(_) => {}
+@@ -1489,7 +1489,7 @@ mod tests {
+                 return pkts;
+             }
+ 
+-            let now = Instant::now();
++            let now = crate::quicperf_clock::now();
+             let delay = Duration::from_millis(self.packet_delay as u64);
+             let count = pkts.len();
+             for i in 0..count {
+diff --git a/src/ffi.rs b/src/ffi.rs
+index 8f847e6..aa35e9b 100644
+--- a/src/ffi.rs
++++ b/src/ffi.rs
+@@ -886,6 +886,13 @@ pub extern "C" fn quic_endpoint_new(
+     Box::into_raw(Box::new(e))
+ }
+ 
++/// Set the caller-owned raw monotonic time used by all tquic transport work
++/// on the current thread. Time must be nonzero and monotonic.
++#[no_mangle]
++pub extern "C" fn quic_set_now_raw_ns(now_raw_ns: u64) -> bool {
++    crate::quicperf_clock::set_raw_ns(now_raw_ns)
++}
++
+ /// Destroy a QUIC endpoint.
+ #[no_mangle]
+ pub extern "C" fn quic_endpoint_free(endpoint: *mut Endpoint) {
+@@ -998,7 +1005,7 @@ pub extern "C" fn quic_endpoint_timeout(endpoint: &Endpoint) -> u64 {
+ /// Process timeout events on the endpoint.
+ #[no_mangle]
+ pub extern "C" fn quic_endpoint_on_timeout(endpoint: &mut Endpoint) {
+-    let now = Instant::now();
++    let now = crate::quicperf_clock::now();
+     endpoint.on_timeout(now);
+ }
+ 
+@@ -1312,6 +1319,25 @@ pub extern "C" fn quic_conn_stats(conn: &mut Connection) -> &ConnectionStats {
+     conn.stats()
+ }
+ 
++/// Return exact terminal facts learned from peer-originated stream frames.
++#[no_mangle]
++pub extern "C" fn quic_stream_peer_terminal(
++    conn: &Connection,
++    stream_id: u64,
++    fin: &mut bool,
++    reset_stream: &mut bool,
++    reset_stream_error: &mut u64,
++    stop_sending: &mut bool,
++    stop_sending_error: &mut u64,
++) {
++    let terminal = conn.peer_stream_terminal(stream_id);
++    *fin = terminal.fin;
++    *reset_stream = terminal.reset_stream_error.is_some();
++    *reset_stream_error = terminal.reset_stream_error.unwrap_or_default();
++    *stop_sending = terminal.stop_sending_error.is_some();
++    *stop_sending_error = terminal.stop_sending_error.unwrap_or_default();
++}
++
+ /// Return the trace id of the connection
+ #[no_mangle]
+ pub extern "C" fn quic_conn_trace_id(
+@@ -1498,7 +1524,13 @@ pub extern "C" fn quic_conn_close(
+     reason: *const u8,
+     reason_len: size_t,
+ ) -> c_int {
+-    let reason = unsafe { slice::from_raw_parts(reason, reason_len) };
++    let reason = if reason_len == 0 {
++        &[]
++    } else if reason.is_null() {
++        return -1;
++    } else {
++        unsafe { slice::from_raw_parts(reason, reason_len) }
++    };
+     match conn.close(app, err, reason) {
+         Ok(_) => 0,
+         Err(e) => e.to_errno() as c_int,
+@@ -2128,7 +2160,7 @@ impl From<&PacketInfo<'_>> for crate::PacketInfo {
+         crate::PacketInfo {
+             src: sock_addr_from_c(info.src, info.src_len),
+             dst: sock_addr_from_c(info.dst, info.dst_len),
+-            time: Instant::now(),
++            time: crate::quicperf_clock::now(),
+         }
+     }
+ }
+diff --git a/src/lib.rs b/src/lib.rs
+index 902c0f5..1f5cfc0 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1311,6 +1311,7 @@ pub mod endpoint;
+ pub mod error;
+ mod frame;
+ mod packet;
++mod quicperf_clock;
+ mod ranges;
+ #[doc(hidden)]
+ pub mod timer_queue;
+diff --git a/src/qlog/qlog.rs b/src/qlog/qlog.rs
+index b95f7ef..276e6be 100644
+--- a/src/qlog/qlog.rs
++++ b/src/qlog/qlog.rs
+@@ -322,7 +322,7 @@ mod tests {
+             new_test_trace_seq(),
+             EventImportance::Base,
+             Box::new(writer),
+-            std::time::Instant::now(),
++            crate::quicperf_clock::now(),
+         );
+ 
+         // Add an event before the QlogWriter is started
+@@ -347,7 +347,7 @@ mod tests {
+             frames: vec![QuicFrame::Ping],
+         };
+         assert_eq!(
+-            qlog_writer.add_event_data(Instant::now(), event2),
++            qlog_writer.add_event_data(crate::quicperf_clock::now(), event2),
+             Err(Error::Done)
+         );
+ 
+diff --git a/src/quicperf_clock.rs b/src/quicperf_clock.rs
+new file mode 100644
+index 0000000..3e38b9d
+--- /dev/null
++++ b/src/quicperf_clock.rs
+@@ -0,0 +1,90 @@
++// Copyright (c) 2023 The TQUIC Authors.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++//! Quicperf caller-controlled monotonic clock.
++
++use std::cell::RefCell;
++use std::sync::OnceLock;
++use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
++
++const SYNTHETIC_UNIX_EPOCH_SECONDS: u64 = 1_700_000_000;
++static OPAQUE_EPOCH: OnceLock<Instant> = OnceLock::new();
++static RAW_EPOCH_NS: OnceLock<u64> = OnceLock::new();
++
++struct Clock {
++    opaque_epoch: Instant,
++    last_raw_ns: Option<u64>,
++    current: Instant,
++}
++
++impl Clock {
++    fn new() -> Self {
++        // This opaque epoch is created before the worker enters READY. All
++        // subsequent transport time is derived from caller-supplied raw time.
++        let opaque_epoch = *OPAQUE_EPOCH.get_or_init(Instant::now);
++        Self {
++            opaque_epoch,
++            last_raw_ns: None,
++            current: opaque_epoch,
++        }
++    }
++
++    fn set_raw_ns(&mut self, raw_ns: u64) -> bool {
++        if raw_ns == 0 || self.last_raw_ns.is_some_and(|last| raw_ns < last) {
++            return false;
++        }
++
++        // Every endpoint shard must map raw time to the same opaque Instant
++        // even when its caller-owned event loop moves between worker threads.
++        let raw_epoch_ns = *RAW_EPOCH_NS.get_or_init(|| raw_ns);
++        if raw_ns < raw_epoch_ns {
++            return false;
++        }
++        let Some(current) = self
++            .opaque_epoch
++            .checked_add(Duration::from_nanos(raw_ns - raw_epoch_ns))
++        else {
++            return false;
++        };
++        self.current = current;
++        self.last_raw_ns = Some(raw_ns);
++        true
++    }
++}
++
++thread_local! {
++    static CLOCK: RefCell<Clock> = RefCell::new(Clock::new());
++}
++
++pub(crate) fn set_raw_ns(raw_ns: u64) -> bool {
++    CLOCK.with(|clock| clock.borrow_mut().set_raw_ns(raw_ns))
++}
++
++pub(crate) fn now() -> Instant {
++    CLOCK.with(|clock| clock.borrow().current)
++}
++
++pub(crate) fn system_time() -> SystemTime {
++    CLOCK.with(|clock| {
++        let clock = clock.borrow();
++        let elapsed_ns = clock
++            .last_raw_ns
++            .zip(RAW_EPOCH_NS.get().copied())
++            .map_or(0, |(now, epoch)| now - epoch);
++        UNIX_EPOCH
++            .checked_add(Duration::from_secs(SYNTHETIC_UNIX_EPOCH_SECONDS))
++            .and_then(|epoch| epoch.checked_add(Duration::from_nanos(elapsed_ns)))
++            .expect("caller time already passed the stricter Instant bound")
++    })
++}
+diff --git a/src/timer_queue.rs b/src/timer_queue.rs
+index 05a4b86..b04d1f9 100644
+--- a/src/timer_queue.rs
++++ b/src/timer_queue.rs
+@@ -101,7 +101,7 @@ mod tests {
+         let mut tq = TimerQueue::with_capacity(10);
+         assert!(tq.is_empty());
+ 
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         // Add a new timer.
+         tq.add(0, Duration::from_millis(100), now);
+         assert_eq!(tq.len(), 1);
+@@ -119,7 +119,7 @@ mod tests {
+     fn del() {
+         let mut tq = TimerQueue::default();
+ 
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         // Add a new timer.
+         tq.add(0, Duration::from_millis(100), now);
+         assert_eq!(tq.len(), 1);
+@@ -137,7 +137,7 @@ mod tests {
+     fn expired() {
+         let mut tq = TimerQueue::default();
+ 
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         tq.add(0, Duration::from_millis(100), now);
+         tq.add(1, Duration::from_millis(200), now);
+         tq.add(2, Duration::from_millis(300), now);
+@@ -165,7 +165,7 @@ mod tests {
+     fn time_remaining() {
+         let mut tq = TimerQueue::default();
+ 
+-        let now = Instant::now();
++        let now = crate::quicperf_clock::now();
+         assert_eq!(tq.time_remaining(now), None);
+ 
+         tq.add(0, Duration::from_millis(100), now);
+diff --git a/src/token.rs b/src/token.rs
+index 7909ea5..03bc772 100644
+--- a/src/token.rs
++++ b/src/token.rs
+@@ -70,7 +70,7 @@ impl AddressToken {
+     ) -> AddressToken {
+         AddressToken {
+             token_type: RetryToken,
+-            issued: time::SystemTime::now(),
++            issued: crate::quicperf_clock::system_time(),
+             address,
+             odcid: Some(odcid),
+             rscid: Some(rscid),
+@@ -81,7 +81,7 @@ impl AddressToken {
+     pub fn new_resume_token(address: SocketAddr) -> AddressToken {
+         AddressToken {
+             token_type: ResumeToken,
+-            issued: time::SystemTime::now(),
++            issued: crate::quicperf_clock::system_time(),
+             address,
+             odcid: None,
+             rscid: None,
+@@ -195,13 +195,11 @@ impl AddressToken {
+             None => return Err(Error::InvalidToken),
+         };
+ 
+-        if let Ok(duration) = issued.elapsed() {
+-            if duration > lifetime {
+-                // token expired
+-                return Err(Error::InvalidToken);
+-            }
+-        } else {
+-            // token timestamp invalid (issued > now)
++        let duration = crate::quicperf_clock::system_time()
++            .duration_since(issued)
++            .map_err(|_| Error::InvalidToken)?;
++        if duration > lifetime {
++            // token expired
+             return Err(Error::InvalidToken);
+         }
+ 
+
+QUICPERF_DEPENDENCY_PATCH
+cat > "$settings_patch_file" <<'QUICPERF_NEGOTIATED_SETTINGS_PATCH'
+diff --git a/include/tquic.h b/include/tquic.h
+index 4b3d6a9..04737ce 100644
+--- a/include/tquic.h
++++ b/include/tquic.h
+@@ -441,6 +441,31 @@ typedef struct quic_conn_stats_t {
+   uint64_t recovery_wakeups;
+ } quic_conn_stats_t;
+ 
++/** Post-handshake transport and TLS state retained by a QUIC connection. */
++typedef struct quic_conn_negotiated_t {
++  uint32_t quic_version;
++  uint16_t tls_version;
++  uint16_t tls_cipher_suite;
++  uint16_t tls_key_exchange_group;
++  uint16_t tls_peer_signature_algorithm;
++  uint8_t tls_peer_certificate_present;
++  uint8_t tls_peer_certificate_verified;
++  uint8_t disable_active_migration;
++  uint64_t max_idle_timeout;
++  uint64_t max_udp_payload_size;
++  uint64_t initial_max_data;
++  uint64_t initial_max_stream_data_bidi_local;
++  uint64_t initial_max_stream_data_bidi_remote;
++  uint64_t initial_max_stream_data_uni;
++  uint64_t initial_max_streams_bidi;
++  uint64_t initial_max_streams_uni;
++  uint64_t ack_delay_exponent;
++  uint64_t max_ack_delay;
++  uint64_t active_connection_id_limit;
++  uint64_t max_datagram_frame_size;
++  size_t destination_connection_id_len;
++} quic_conn_negotiated_t;
++
+ typedef struct http3_methods_t {
+   /**
+    * Called when the stream got headers.
+@@ -694,6 +719,9 @@ void quic_config_set_max_pto(struct quic_config_t *config, uint64_t v);
+  */
+ void quic_config_set_active_connection_id_limit(struct quic_config_t *config, uint64_t v);
+ 
++/** Set the `disable_active_migration` transport parameter. */
++void quic_config_set_disable_active_migration(struct quic_config_t *config, bool disabled);
++
+ /**
+  * Set the `enable_multipath` transport parameter.
+  * The default value is false. (Experimental)
+@@ -1028,6 +1056,9 @@ bool quic_conn_is_server(struct quic_conn_t *conn);
+  */
+ bool quic_conn_is_established(struct quic_conn_t *conn);
+ 
++/** Return post-handshake peer transport parameters and negotiated TLS state. */
++bool quic_conn_negotiated(struct quic_conn_t *conn, struct quic_conn_negotiated_t *out);
++
+ /**
+  * Check whether the connection is created by a resumed handshake.
+  */
+diff --git a/src/connection/connection.rs b/src/connection/connection.rs
+index d0a60a0..3d6b949 100644
+--- a/src/connection/connection.rs
++++ b/src/connection/connection.rs
+@@ -3596,6 +3596,46 @@ impl Connection {
+         self.tls_session.alpn_protocol()
+     }
+ 
++    /// Return the negotiated QUIC version.
++    pub fn version(&self) -> u32 {
++        self.version
++    }
++
++    /// Return the peer's decoded transport parameters.
++    pub fn peer_transport_params(&self) -> &TransportParams {
++        &self.peer_transport_params
++    }
++
++    /// Return the negotiated TLS protocol version.
++    pub fn tls_version(&self) -> u16 {
++        self.tls_session.version()
++    }
++
++    /// Return the negotiated TLS cipher.
++    pub fn tls_cipher(&self) -> Option<crate::tls::Algorithm> {
++        self.tls_session.cipher()
++    }
++
++    /// Return the negotiated TLS group identifier.
++    pub fn tls_curve_id(&self) -> u16 {
++        self.tls_session.curve_id()
++    }
++
++    /// Return the signature algorithm identifier used by the peer.
++    pub fn tls_peer_sign_algor_id(&self) -> u16 {
++        self.tls_session.peer_sign_algor_id()
++    }
++
++    /// Return whether a present peer certificate passed verification.
++    pub fn tls_peer_cert_verified(&self) -> bool {
++        self.tls_session.peer_cert_verified()
++    }
++
++    /// Return whether the peer supplied a certificate.
++    pub fn tls_peer_cert_present(&self) -> bool {
++        self.tls_session.peer_cert().is_some()
++    }
++
+     /// Return the server name in the TLS SNI extension.
+     pub fn server_name(&self) -> Option<&str> {
+         self.tls_session.server_name()
+diff --git a/src/ffi.rs b/src/ffi.rs
+index aa35e9b..4e32194 100644
+--- a/src/ffi.rs
++++ b/src/ffi.rs
+@@ -143,6 +143,33 @@ pub enum CertCompressionAlgorithm {
+     Zstd = 3,
+ }
+ 
++/// Post-handshake transport and TLS state retained by a QUIC connection.
++#[repr(C)]
++#[derive(Clone, Copy, Default)]
++pub struct QuicConnNegotiated {
++    pub quic_version: u32,
++    pub tls_version: u16,
++    pub tls_cipher_suite: u16,
++    pub tls_key_exchange_group: u16,
++    pub tls_peer_signature_algorithm: u16,
++    pub tls_peer_certificate_present: u8,
++    pub tls_peer_certificate_verified: u8,
++    pub disable_active_migration: u8,
++    pub max_idle_timeout: u64,
++    pub max_udp_payload_size: u64,
++    pub initial_max_data: u64,
++    pub initial_max_stream_data_bidi_local: u64,
++    pub initial_max_stream_data_bidi_remote: u64,
++    pub initial_max_stream_data_uni: u64,
++    pub initial_max_streams_bidi: u64,
++    pub initial_max_streams_uni: u64,
++    pub ack_delay_exponent: u64,
++    pub max_ack_delay: u64,
++    pub active_connection_id_limit: u64,
++    pub max_datagram_frame_size: u64,
++    pub destination_connection_id_len: size_t,
++}
++
+ /// Check whether the protocol version is supported.
+ #[no_mangle]
+ pub extern "C" fn quic_version_is_supported(version: u32) -> bool {
+@@ -426,6 +453,12 @@ pub extern "C" fn quic_config_set_active_connection_id_limit(config: &mut Config
+     config.set_active_connection_id_limit(v);
+ }
+ 
++/// Set the `disable_active_migration` transport parameter.
++#[no_mangle]
++pub extern "C" fn quic_config_set_disable_active_migration(config: &mut Config, disabled: bool) {
++    config.set_disable_active_migration(disabled);
++}
++
+ /// Set the `enable_multipath` transport parameter.
+ /// The default value is false. (Experimental)
+ #[no_mangle]
+@@ -1068,6 +1101,52 @@ pub extern "C" fn quic_conn_is_established(conn: &mut Connection) -> bool {
+     conn.is_established()
+ }
+ 
++/// Return post-handshake peer transport parameters and negotiated TLS state.
++#[no_mangle]
++pub extern "C" fn quic_conn_negotiated(
++    conn: &mut Connection,
++    out: &mut QuicConnNegotiated,
++) -> bool {
++    if !conn.is_established() {
++        return false;
++    }
++    let Some(cipher) = conn.tls_cipher() else {
++        return false;
++    };
++    let Ok(dcid) = conn.dcid() else {
++        return false;
++    };
++    let peer = conn.peer_transport_params();
++    *out = QuicConnNegotiated {
++        quic_version: conn.version(),
++        tls_version: conn.tls_version(),
++        tls_cipher_suite: match cipher {
++            crate::tls::Algorithm::Aes128Gcm => 0x1301,
++            crate::tls::Algorithm::Aes256Gcm => 0x1302,
++            crate::tls::Algorithm::ChaCha20Poly1305 => 0x1303,
++        },
++        tls_key_exchange_group: conn.tls_curve_id(),
++        tls_peer_signature_algorithm: conn.tls_peer_sign_algor_id(),
++        tls_peer_certificate_present: u8::from(conn.tls_peer_cert_present()),
++        tls_peer_certificate_verified: u8::from(conn.tls_peer_cert_verified()),
++        disable_active_migration: u8::from(peer.disable_active_migration),
++        max_idle_timeout: peer.max_idle_timeout,
++        max_udp_payload_size: peer.max_udp_payload_size,
++        initial_max_data: peer.initial_max_data,
++        initial_max_stream_data_bidi_local: peer.initial_max_stream_data_bidi_local,
++        initial_max_stream_data_bidi_remote: peer.initial_max_stream_data_bidi_remote,
++        initial_max_stream_data_uni: peer.initial_max_stream_data_uni,
++        initial_max_streams_bidi: peer.initial_max_streams_bidi,
++        initial_max_streams_uni: peer.initial_max_streams_uni,
++        ack_delay_exponent: peer.ack_delay_exponent,
++        max_ack_delay: peer.max_ack_delay,
++        active_connection_id_limit: peer.active_conn_id_limit,
++        max_datagram_frame_size: peer.max_datagram_frame_size,
++        destination_connection_id_len: dcid.len(),
++    };
++    true
++}
++
+ /// Check whether the connection is created by a resumed handshake.
+ #[no_mangle]
+ pub extern "C" fn quic_conn_is_resumed(conn: &mut Connection) -> bool {
+diff --git a/src/lib.rs b/src/lib.rs
+index 1f5cfc0..360f4e8 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -631,6 +631,11 @@ impl Config {
+         }
+     }
+ 
++    /// Set the `disable_active_migration` transport parameter.
++    pub fn set_disable_active_migration(&mut self, disabled: bool) {
++        self.local_transport_params.disable_active_migration = disabled;
++    }
++
+     /// Set the `enable_multipath` transport parameter.
+     /// The default value is false. (Experimental)
+     pub fn enable_multipath(&mut self, v: bool) {
+diff --git a/src/tls/boringssl/tls.rs b/src/tls/boringssl/tls.rs
+index 992ee79..a3c8f86 100644
+--- a/src/tls/boringssl/tls.rs
++++ b/src/tls/boringssl/tls.rs
+@@ -758,6 +758,26 @@ impl Session {
+         get_cipher_from_ptr(cipher.ok()?).ok()
+     }
+ 
++    /// Return the negotiated TLS protocol version.
++    pub fn version(&self) -> u16 {
++        unsafe { SSL_version(self.as_ptr()) as u16 }
++    }
++
++    /// Return the negotiated group identifier.
++    pub fn curve_id(&self) -> u16 {
++        unsafe { SSL_get_curve_id(self.as_ptr()) }
++    }
++
++    /// Return the signature algorithm identifier used by the peer.
++    pub fn peer_sign_algor_id(&self) -> u16 {
++        unsafe { SSL_get_peer_signature_algorithm(self.as_ptr()) }
++    }
++
++    /// Return whether a present peer certificate passed verification.
++    pub fn peer_cert_verified(&self) -> bool {
++        self.peer_cert().is_some() && unsafe { SSL_get_verify_result(self.as_ptr()) == 0 }
++    }
++
+     /// Return a human-readable name for the curve used by ssl.
+     pub fn curve(&self) -> Option<String> {
+         let curve = unsafe {
+@@ -1713,6 +1733,12 @@ extern "C" {
+     /// Return current cipher suite.
+     fn SSL_get_current_cipher(ssl: *const Ssl) -> *const SslCipher;
+ 
++    /// Return negotiated TLS protocol version.
++    fn SSL_version(ssl: *const Ssl) -> c_int;
++
++    /// Return the certificate verification result.
++    fn SSL_get_verify_result(ssl: *const Ssl) -> c_long;
++
+     /// Return the id of the current cipher suite.
+     fn SSL_get_curve_id(ssl: *const Ssl) -> u16;
+ 
+diff --git a/src/tls/tls.rs b/src/tls/tls.rs
+index 136f512..ffdcb78 100644
+--- a/src/tls/tls.rs
++++ b/src/tls/tls.rs
+@@ -588,6 +588,22 @@ impl TlsSession {
+         self.session.cipher()
+     }
+ 
++    pub fn version(&self) -> u16 {
++        self.session.version()
++    }
++
++    pub fn curve_id(&self) -> u16 {
++        self.session.curve_id()
++    }
++
++    pub fn peer_sign_algor_id(&self) -> u16 {
++        self.session.peer_sign_algor_id()
++    }
++
++    pub fn peer_cert_verified(&self) -> bool {
++        self.session.peer_cert_verified()
++    }
++
+     pub fn curve(&self) -> Option<String> {
+         self.session.curve()
+     }
+QUICPERF_NEGOTIATED_SETTINGS_PATCH
+cat > "$lifecycle_patch_file" <<'QUICPERF_LIFECYCLE_PATCH'
+diff --git a/src/endpoint.rs b/src/endpoint.rs
+index 81bf777..795f42a 100644
+--- a/src/endpoint.rs
++++ b/src/endpoint.rs
+@@ -238,6 +238,12 @@ impl Endpoint {
+         // Try to create a new connection for server
+         if hdr.pkt_type == PacketType::Initial && !self.closed {
+             // Check max concurrent connections limit
+-            if self.conns.len() >= self.config.max_concurrent_conns as usize {
++            let active_conns = self
++                .conns
++                .conns
++                .values()
++                .filter(|conn| !conn.is_draining() && !conn.is_closed())
++                .count();
++            if active_conns >= self.config.max_concurrent_conns as usize {
+                 return Ok(());
+             }
+QUICPERF_LIFECYCLE_PATCH
+cat > "$buffer_patch_file" <<'QUICPERF_STREAM_BUFFER_PATCH'
+diff --git a/include/tquic.h b/include/tquic.h
+--- a/include/tquic.h
++++ b/include/tquic.h
+@@ -1402,6 +1402,11 @@ int quic_stream_set_priority(struct quic_conn_t *conn,
+  */
+ ssize_t quic_stream_capacity(struct quic_conn_t *conn, uint64_t stream_id);
+QUICPERF_EMPTY_CONTEXT
++/**
++ * Return aggregate bytes retained in stream send buffers awaiting acknowledgement.
++ */
++uint64_t quic_conn_stream_send_buffered(const struct quic_conn_t *conn);
++
+ /**
+  * Return true if all the data has been read from the stream.
+  */
+diff --git a/src/connection/connection.rs b/src/connection/connection.rs
+--- a/src/connection/connection.rs
++++ b/src/connection/connection.rs
+@@ -4112,6 +4112,11 @@ impl Connection {
+         self.streams.stream_capacity(stream_id)
+     }
+QUICPERF_EMPTY_CONTEXT
++    /// Return aggregate stream data not yet contiguously acknowledged.
++    pub fn stream_send_buffered(&self) -> usize {
++        self.streams.send_buffered()
++    }
++
+     /// Return true if the stream has enough send capacity.
+     pub fn stream_writable(&mut self, stream_id: u64, len: usize) -> Result<bool> {
+         self.streams.stream_writable(stream_id, len)
+diff --git a/src/connection/stream.rs b/src/connection/stream.rs
+--- a/src/connection/stream.rs
++++ b/src/connection/stream.rs
+@@ -509,7 +509,14 @@ impl StreamMap {
+             None => Err(Error::StreamStateError),
+         }
+     }
+QUICPERF_EMPTY_CONTEXT
++    /// Return aggregate stream data not yet contiguously acknowledged.
++    pub fn send_buffered(&self) -> usize {
++        self.streams
++            .values()
++            .fold(0, |total, stream| total.saturating_add(stream.send.unacked_len))
++    }
++
+     /// Return true if the stream has more than `len` bytes of send-side capacity.
+     pub fn stream_writable(&mut self, stream_id: u64, len: usize) -> Result<bool> {
+         if self.stream_capacity(stream_id)? >= len {
+@@ -5414,23 +5421,27 @@ mod tests {
+         );
+         assert_eq!(stream.send.write(Bytes::from_static(b"Over"), false), Ok(4));
+         assert_eq!(stream.send.write(Bytes::from_static(b"QUIC"), true), Ok(4));
++        assert_eq!(map.send_buffered(), 18);
+QUICPERF_EMPTY_CONTEXT
+         // Ack the first block of data of stream 0
+         map.on_stream_frame_acked(0, 0, 10);
+         let stream = map.get(0).unwrap();
+         assert_eq!(stream.send.ack_off(), 10);
+         assert_eq!(stream.send.unacked_len, 8);
++        assert_eq!(map.send_buffered(), 8);
+         // Ack the third block of data of stream 0
+         map.on_stream_frame_acked(0, 14, 4);
+         let stream = map.get(0).unwrap();
+         assert_eq!(stream.send.ack_off(), 10);
+         assert_eq!(stream.send.unacked_len, 8);
++        assert_eq!(map.send_buffered(), 8);
+         assert!(!stream.send.is_complete());
+         // Ack the second block of data of stream 0
+         map.on_stream_frame_acked(0, 10, 4);
+         let stream = map.get_mut(0).unwrap();
+         assert_eq!(stream.send.ack_off(), 18);
+         assert_eq!(stream.send.unacked_len, 0);
++        assert_eq!(map.send_buffered(), 0);
+         // All stream data has been acked, the stream's send-side should be complete.
+         assert!(stream.send.is_complete());
+QUICPERF_EMPTY_CONTEXT
+diff --git a/src/ffi.rs b/src/ffi.rs
+--- a/src/ffi.rs
++++ b/src/ffi.rs
+@@ -1696,6 +1696,12 @@ pub extern "C" fn quic_stream_capacity(conn: &mut Connection, stream_id: u64) ->
+     }
+ }
+QUICPERF_EMPTY_CONTEXT
++/// Return aggregate bytes retained in stream send buffers awaiting acknowledgement.
++#[no_mangle]
++pub extern "C" fn quic_conn_stream_send_buffered(conn: &Connection) -> u64 {
++    u64::try_from(conn.stream_send_buffered()).unwrap_or(u64::MAX)
++}
++
+ /// Return true if all the data has been read from the stream.
+ #[no_mangle]
+ pub extern "C" fn quic_stream_finished(conn: &mut Connection, stream_id: u64) -> bool {
+QUICPERF_STREAM_BUFFER_PATCH
+sed -i 's/^QUICPERF_EMPTY_CONTEXT$/ /' "$buffer_patch_file"
+for current_patch in "$patch_file" "$settings_patch_file" "$lifecycle_patch_file" "$buffer_patch_file"; do
+  if git -C "$source_dir" apply --check "$current_patch"; then
+    git -C "$source_dir" apply "$current_patch"
+  elif git -C "$source_dir" apply --reverse --check "$current_patch"; then
+    :
+  else
+    echo "quicperf dependency patch does not match pinned source: $current_patch" >&2
+    exit 1
+  fi
+done
+source_index="$DEPO_BUILD_DIR/quicperf-source.index"
+rm -f "$source_index"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" read-tree HEAD
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$settings_patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$lifecycle_patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$buffer_patch_file"
+test "$(GIT_INDEX_FILE="$source_index" git -C "$source_dir" write-tree)" = "7f0fe6865bf8e2a6c87b098b3591d1c62972567e"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" diff --quiet --no-ext-diff -- .
+env BORINGSSL_LIB_DIR="${dep:boringssl}/lib" CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo build --release --no-default-features --features ffi --target-dir "$DEPO_BUILD_DIR/cargo-target"
+EOF
 STAGE_FILE BUILD cargo-target/release/libtquic.a lib/libtquic.a
 STAGE_TREE SOURCE include include
 TARGET tquic::tquic STATIC lib/libtquic.a INTERFACE include

@@ -1,9 +1,9 @@
 NAME mvfst
-VERSION main-155afab-quicperf4
+VERSION main-155afab-quicperf7
 SYSTEM_LIBS ALLOW
 DEPENDS boost VERSION 1.91.0-quicperf3
-DEPENDS fizz VERSION main-44ca082-quicperf8
-DEPENDS folly VERSION main-5e1874-quicperf8
+DEPENDS fizz VERSION main-44ca082-quicperf9
+DEPENDS folly VERSION main-5e1874-quicperf9
 DEPENDS fmt VERSION 12.1.0-quicperf2
 DEPENDS gflags VERSION 2.3.0-quicperf2
 DEPENDS glog VERSION 0.7.1-quicperf2
@@ -18,6 +18,348 @@ CMAKE_DEFINE BUILD_SHARED_LIBS=OFF
 CMAKE_DEFINE BUILD_TESTS=OFF
 CMAKE_DEFINE BUILD_SAMPLES=OFF
 CMAKE_DEFINE BUILD_TOOLS=OFF
+CMAKE_BUILD_SH <<'EOF'
+set -eu
+source_dir="$DEPO_SOURCE_DIR"
+patch_file="$DEPO_BUILD_DIR/quicperf-dependency.patch"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "155afab7b4f0d0bd4cc8adf45ac24ed55569ad78"
+test "$(git -C "$source_dir" rev-parse 'HEAD^{tree}')" = "b91ad3bfc1eb8acdce63571f8d5662ad7b590953"
+cat > "$patch_file" <<'QUICPERF_DEPENDENCY_PATCH'
+diff --git a/quic/QuicConstants.h b/quic/QuicConstants.h
+index 4db62267..37249e0c 100644
+--- a/quic/QuicConstants.h
++++ b/quic/QuicConstants.h
+@@ -17,6 +17,7 @@
+ #include <chrono>
+ #include <cmath>
+ #include <cstdint>
++#include <limits>
+ #include <memory>
+ #include <optional>
+ #include <ostream>
+@@ -44,8 +45,42 @@ using SystemClock = folly::chrono::SystemClock;
+ 
+ namespace quic {
+ 
+-using Clock = std::chrono::steady_clock;
+-using TimePoint = std::chrono::time_point<Clock>;
++// quicperf drives mvfst with the monotonic timestamp supplied by its common
++// C++ event loop. Inheriting steady_clock deliberately preserves mvfst's
++// public time_point ABI while replacing only the now() source.
++class Clock final : public std::chrono::steady_clock {
++ public:
++  static time_point now() noexcept {
++    if (!injectedNowSet_) std::terminate();
++    return time_point(std::chrono::duration_cast<duration>(
++        std::chrono::nanoseconds(injectedNowRawNanoseconds_)));
++  }
++
++  static bool setNowRawNanoseconds(uint64_t nowRawNanoseconds) noexcept {
++    if (nowRawNanoseconds == 0 ||
++        nowRawNanoseconds >
++            static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
++        (injectedNowSet_ && nowRawNanoseconds <
++             static_cast<uint64_t>(injectedNowRawNanoseconds_))) {
++      return false;
++    }
++    injectedNowRawNanoseconds_ = nowRawNanoseconds;
++    injectedNowSet_ = true;
++    return true;
++  }
++
++  static void resetInjectedNow() noexcept {
++    injectedNowRawNanoseconds_ = 0;
++    injectedNowSet_ = false;
++  }
++
++  static bool hasInjectedNow() noexcept { return injectedNowSet_; }
++
++ private:
++  inline static thread_local int64_t injectedNowRawNanoseconds_{0};
++  inline static thread_local bool injectedNowSet_{false};
++};
++using TimePoint = Clock::time_point;
+ using DurationRep = std::chrono::microseconds::rep;
+ using PathIdType = uint32_t;
+ using namespace std::chrono_literals;
+diff --git a/quic/api/QuicTransportBaseLite.cpp b/quic/api/QuicTransportBaseLite.cpp
+index 57bbda29..5a8923bc 100644
+--- a/quic/api/QuicTransportBaseLite.cpp
++++ b/quic/api/QuicTransportBaseLite.cpp
+@@ -3465,6 +3465,10 @@ QuicSocketLite::TransportInfo QuicTransportBaseLite::getTransportInfo() const {
+       conn_->lossState.totalNewStreamBytesSent;
+   transportInfo.ptoCount = conn_->lossState.ptoCount;
+   transportInfo.totalPTOCount = conn_->lossState.totalPTOCount;
++  transportInfo.dataBlockedFramesSent =
++      conn_->numDataBlockedFramesSent;
++  transportInfo.streamDataBlockedFramesSent =
++      conn_->numStreamDataBlockedFramesSent;
+   transportInfo.largestPacketAckedByPeer =
+       conn_->ackStates.appDataAckState.largestAckedByPeer;
+   transportInfo.largestPacketSent = conn_->lossState.largestSent;
+diff --git a/quic/api/QuicTransportFunctions.cpp b/quic/api/QuicTransportFunctions.cpp
+index 3a19f711..c0d25de9 100644
+--- a/quic/api/QuicTransportFunctions.cpp
++++ b/quic/api/QuicTransportFunctions.cpp
+@@ -953,6 +953,7 @@ void updateConnection(
+                    << conn;
+         retransmittable = true;
+         conn.pendingEvents.sendDataBlocked = false;
++        ++conn.numDataBlockedFramesSent;
+         break;
+       }
+       case QuicWriteFrame::Type::MaxStreamDataFrame: {
+@@ -981,6 +982,7 @@ void updateConnection(
+                    << " " << conn;
+         retransmittable = true;
+         conn.streamManager->removeBlocked(streamBlockedFrame.streamId);
++        ++conn.numStreamDataBlockedFramesSent;
+         break;
+       }
+       case QuicWriteFrame::Type::PingFrame:
+diff --git a/quic/api/TransportInfo.h b/quic/api/TransportInfo.h
+index 2422062e..54c96f77 100644
+--- a/quic/api/TransportInfo.h
++++ b/quic/api/TransportInfo.h
+@@ -62,6 +62,8 @@ struct TransportInfo {
+   uint64_t totalNewStreamBytesSent{0};
+   uint32_t ptoCount{0};
+   uint32_t totalPTOCount{0};
++  uint64_t dataBlockedFramesSent{0};
++  uint64_t streamDataBlockedFramesSent{0};
+   Optional<uint64_t> largestPacketAckedByPeer;
+   Optional<uint64_t> largestPacketSent;
+   bool usedZeroRtt{false};
+diff --git a/quic/state/StateData.h b/quic/state/StateData.h
+index 180a840d..e9b642b7 100644
+--- a/quic/state/StateData.h
++++ b/quic/state/StateData.h
+@@ -382,6 +382,10 @@ struct QuicConnectionStateBase {
+   // Write cipher for packets with handshake keys.
+   std::unique_ptr<Aead> handshakeWriteCipher;
+ 
++  // Cumulative counters incremented only after blocked frames are serialized.
++  uint64_t numDataBlockedFramesSent{0};
++  uint64_t numStreamDataBlockedFramesSent{0};
++
+   // Time at which the connection started.
+   // TODO(bschlinker): For clients, this should be set when connect starts.
+   TimePoint connectionTime;
+diff --git a/quic/api/QuicTransportBaseLite.cpp b/quic/api/QuicTransportBaseLite.cpp
+index 57bbda29..df97700b 100644
+--- a/quic/api/QuicTransportBaseLite.cpp
++++ b/quic/api/QuicTransportBaseLite.cpp
+@@ -3143,7 +3143,8 @@ void QuicTransportBaseLite::setTransportSettings(
+   }
+   setCongestionControl(conn_->transportSettings.defaultCongestionController);
+   if (conn_->transportSettings.datagramConfig.enabled) {
+-    conn_->datagramState.maxReadFrameSize = kMaxDatagramFrameSize;
++    conn_->datagramState.maxReadFrameSize =
++        conn_->transportSettings.datagramConfig.maxReadFrameSize;
+     conn_->datagramState.maxReadBufferSize =
+         conn_->transportSettings.datagramConfig.readBufSize;
+     conn_->datagramState.maxWriteBufferSize =
+diff --git a/quic/fizz/client/handshake/FizzClientHandshake.cpp b/quic/fizz/client/handshake/FizzClientHandshake.cpp
+index c053156a..e4c7c8cc 100644
+--- a/quic/fizz/client/handshake/FizzClientHandshake.cpp
++++ b/quic/fizz/client/handshake/FizzClientHandshake.cpp
+@@ -337,6 +337,12 @@ Handshake::TLSSummary FizzClientHandshake::getTLSSummary() const {
+   if (state_.alpn().has_value()) {
+     summary.alpn = state_.alpn().value();
+   }
++  if (state_.version().has_value()) {
++    summary.tlsVersion = fizz::toString(state_.version().value());
++  }
++  if (state_.cipher().has_value()) {
++    summary.cipherSuite = fizz::toString(state_.cipher().value());
++  }
+   if (state_.group().has_value()) {
+     summary.namedGroup =
+         fmt::format("{}", fizz::toString(state_.group().value()));
+diff --git a/quic/handshake/HandshakeLayer.h b/quic/handshake/HandshakeLayer.h
+index 8cb5741a..ebf0a117 100644
+--- a/quic/handshake/HandshakeLayer.h
++++ b/quic/handshake/HandshakeLayer.h
+@@ -58,6 +58,8 @@ class Handshake {
+ 
+   struct TLSSummary {
+     std::string alpn;
++    std::string tlsVersion;
++    std::string cipherSuite;
+     std::string namedGroup;
+     std::string pskType;
+     std::string echStatus;
+diff --git a/quic/server/handshake/ServerHandshake.cpp b/quic/server/handshake/ServerHandshake.cpp
+index ad08cc9e..a0e4db80 100644
+--- a/quic/server/handshake/ServerHandshake.cpp
++++ b/quic/server/handshake/ServerHandshake.cpp
+@@ -352,6 +352,12 @@ Handshake::TLSSummary ServerHandshake::getTLSSummary() const {
+   if (state_.alpn().has_value()) {
+     summary.alpn = state_.alpn().value();
+   }
++  if (state_.version().has_value()) {
++    summary.tlsVersion = fizz::toString(state_.version().value());
++  }
++  if (state_.cipher().has_value()) {
++    summary.cipherSuite = fizz::toString(state_.cipher().value());
++  }
+   if (state_.group().has_value()) {
+     summary.namedGroup =
+         fmt::format("{}", fizz::toString(state_.group().value()));
+diff --git a/quic/state/TransportSettings.h b/quic/state/TransportSettings.h
+index 60fd444d..e625d86e 100644
+--- a/quic/state/TransportSettings.h
++++ b/quic/state/TransportSettings.h
+@@ -138,6 +138,7 @@ struct DatagramConfig {
+   // Mode for tracking DATAGRAM-only packets in bytes-in-flight
+   CongestionControlMode trackingMode{CongestionControlMode::Constrained};
+   uint32_t readBufSize{kDefaultMaxDatagramsBuffered};
++  uint32_t maxReadFrameSize{kMaxDatagramFrameSize};
+   uint32_t writeBufSize{kDefaultMaxDatagramsBuffered};
+   // Schedule datagrams via PriorityQueue with streams instead of separately
+   bool scheduleDatagramsWithStreams{false};
+diff --git a/quic/client/QuicClientTransportLite.cpp b/quic/client/QuicClientTransportLite.cpp
+index a3e93c260..2885d45ec 100644
+--- a/quic/client/QuicClientTransportLite.cpp
++++ b/quic/client/QuicClientTransportLite.cpp
+@@ -790,8 +790,9 @@ quic::Expected<void, QuicError> QuicClientTransportLite::processUdpPacketData(
+         MVVLOG(4) << errMsg << " " << *this;
+         // we want to deliver app callbacks with the peer supplied error,
+         // but send a NO_ERROR to the peer.
+-        conn_->peerConnectionError =
+-            QuicError(QuicErrorCode(connFrame.errorCode), std::move(errMsg));
++        conn_->peerConnectionError = QuicError(
++            QuicErrorCode(connFrame.errorCode),
++            std::string(connFrame.reasonPhrase));
+         // We don't return an error here, as receiving a close triggers the
+         // peer connection error path instead of the local error path.
+         return {};
+diff --git a/quic/server/state/ServerStateMachine.cpp b/quic/server/state/ServerStateMachine.cpp
+index bdd514699..628f2a955 100644
+--- a/quic/server/state/ServerStateMachine.cpp
++++ b/quic/server/state/ServerStateMachine.cpp
+@@ -1601,8 +1601,9 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
+           MVVLOG(4) << errMsg << " " << conn;
+           // we want to deliver app callbacks with the peer supplied error,
+           // but send a NO_ERROR to the peer.
+-          conn.peerConnectionError =
+-              QuicError(QuicErrorCode(connFrame.errorCode), std::move(errMsg));
++          conn.peerConnectionError = QuicError(
++              QuicErrorCode(connFrame.errorCode),
++              std::string(connFrame.reasonPhrase));
+           if (getSendConnFlowControlBytesWire(conn) == 0 &&
+               conn.flowControlState.sumCurStreamBufferLen) {
+             MVVLOG(2) << "Client gives up a flow control blocked connection";
+@@ -1936,8 +1936,9 @@ quic::Expected<void, QuicError> onServerReadDataFromClosed(
+         MVVLOG(4) << errMsg << " " << conn;
+         // we want to deliver app callbacks with the peer supplied error,
+         // but send a NO_ERROR to the peer.
+-        conn.peerConnectionError =
+-            QuicError(QuicErrorCode(connFrame.errorCode), std::move(errMsg));
++        conn.peerConnectionError = QuicError(
++            QuicErrorCode(connFrame.errorCode),
++            std::string(connFrame.reasonPhrase));
+         break;
+       }
+       default:
+
+QUICPERF_DEPENDENCY_PATCH
+if git -C "$source_dir" apply --check "$patch_file"; then
+  git -C "$source_dir" apply "$patch_file"
+elif git -C "$source_dir" apply --reverse --check "$patch_file"; then
+  :
+else
+  echo "quicperf dependency patch does not match pinned source" >&2
+  exit 1
+fi
+treatment_patch="$DEPO_BUILD_DIR/quicperf-treatment.patch"
+cat > "$treatment_patch" <<'QUICPERF_TREATMENT_PATCH'
+diff --git a/quic/api/QuicTransportBaseLite.cpp b/quic/api/QuicTransportBaseLite.cpp
+index 8cb026ae90b62c699506b5b88c5f1f6a68d67c20..af7a59f29e081489ff80f000b3df3b54bb07632d 100644
+--- a/quic/api/QuicTransportBaseLite.cpp
++++ b/quic/api/QuicTransportBaseLite.cpp
+@@ -3552,6 +3552,8 @@ void QuicTransportBaseLite::updateCongestionControlSettings(
+   conn_->transportSettings.defaultCongestionController =
+       transportSettings.defaultCongestionController;
+   conn_->transportSettings.initCwndInMss = transportSettings.initCwndInMss;
++  conn_->transportSettings.initCwndInBytes =
++      transportSettings.initCwndInBytes;
+   conn_->transportSettings.minCwndInMss = transportSettings.minCwndInMss;
+   conn_->transportSettings.maxCwndInMss = transportSettings.maxCwndInMss;
+   conn_->transportSettings.limitedCwndInMss =
+diff --git a/quic/congestion_control/CongestionControllerFactory.cpp b/quic/congestion_control/CongestionControllerFactory.cpp
+index e932a52df5525317ae00184afd3a502c9ecb774a..3b1b14dbba51a7bf6b5f5eb6e90e03305a182c4e 100644
+--- a/quic/congestion_control/CongestionControllerFactory.cpp
++++ b/quic/congestion_control/CongestionControllerFactory.cpp
+@@ -36,7 +36,8 @@ DefaultCongestionControllerFactory::makeCongestionController(
+       congestionController = std::make_unique<NewReno>(conn);
+       break;
+     case CongestionControlType::Cubic:
+-      congestionController = std::make_unique<Cubic>(conn);
++      congestionController = std::make_unique<Cubic>(
++          conn, conn.transportSettings.initCwndInBytes);
+       break;
+     case CongestionControlType::Copa:
+       congestionController = std::make_unique<Copa>(conn);
+diff --git a/quic/state/QuicStreamManager.cpp b/quic/state/QuicStreamManager.cpp
+index 42dcd7f5e553f5b64f3a1b34fd9940e16c8ccd3a..97dee6ddfa63da5ab632d1f3bfd56a5c0b302315 100644
+--- a/quic/state/QuicStreamManager.cpp
++++ b/quic/state/QuicStreamManager.cpp
+@@ -1012,7 +1012,10 @@ quic::Expected<void, QuicError> QuicStreamManager::removeClosedStream(
+     uint64_t initialStreamLimit = isUnidirectionalStream(streamId)
+         ? transportSettings_->advertisedInitialMaxStreamsUni
+         : transportSettings_->advertisedInitialMaxStreamsBidi;
+-    uint64_t streamWindow = initialStreamLimit / streamLimitWindowingFraction_;
++    uint64_t streamWindow = transportSettings_->streamCreditReplenishBelow;
++    if (streamWindow == 0) {
++      streamWindow = initialStreamLimit / streamLimitWindowingFraction_;
++    }
+QUICPERF_CONTEXT_BLANK
+     uint64_t openableRemoteStreams = isUnidirectionalStream(streamId)
+         ? openableRemoteUnidirectionalStreams()
+diff --git a/quic/state/TransportSettings.h b/quic/state/TransportSettings.h
+index b788950bd9dee82d33e270f7cbe168036319fc9e..6bce26560cee430264e12599ecc8ad59a6c432f3 100644
+--- a/quic/state/TransportSettings.h
++++ b/quic/state/TransportSettings.h
+@@ -187,6 +187,9 @@ struct TransportSettings {
+       kDefaultStreamFlowControlWindow};
+   uint64_t advertisedInitialMaxStreamsBidi{kDefaultMaxStreamsBidirectional};
+   uint64_t advertisedInitialMaxStreamsUni{kDefaultMaxStreamsUnidirectional};
++  // Send MAX_STREAMS when this many peer-opened streams have closed. Zero
++  // retains mvfst's fraction-based default.
++  uint64_t streamCreditReplenishBelow{0};
+   // Maximum number of packets to buffer while cipher is unavailable.
+   uint32_t maxPacketsToBuffer{kDefaultMaxBufferedPackets};
+   // Idle timeout to advertise to the peer.
+@@ -256,6 +259,9 @@ struct TransportSettings {
+   uint32_t maxBatchSize{kDefaultQuicMaxBatchSize};
+   // Initial congestion window in MSS
+   uint64_t initCwndInMss{kInitCwndInMss};
++  // Exact initial congestion window in bytes. Zero retains the MSS-derived
++  // default.
++  uint64_t initCwndInBytes{0};
+   // Minimum congestion window in MSS
+   uint64_t minCwndInMss{kMinCwndInMss};
+   // Maximum congestion window in MSS
+QUICPERF_TREATMENT_PATCH
+sed -i 's/^QUICPERF_CONTEXT_BLANK$/ /' "$treatment_patch"
+if git -C "$source_dir" apply --check "$treatment_patch"; then
+  git -C "$source_dir" apply "$treatment_patch"
+elif git -C "$source_dir" apply --reverse --check "$treatment_patch"; then
+  :
+else
+  echo "quicperf treatment patch does not match pinned source" >&2
+  exit 1
+fi
+source_index="$DEPO_BUILD_DIR/quicperf-source.index"
+rm -f "$source_index"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" read-tree HEAD
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$treatment_patch"
+test "$(GIT_INDEX_FILE="$source_index" git -C "$source_dir" write-tree)" = "59aa0e7be281d9b9c60be717fcdd32b91fb191cf"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" diff --quiet --no-ext-diff -- .
+cmake --build "$DEPO_BUILD_DIR" --parallel "$(nproc)"
+EOF
 CMAKE_INSTALL_SH <<'EOF'
 cmake --install "${DEPO_BUILD_DIR}" --prefix "${DEPO_PREFIX}"
 mkdir -p "${DEPO_BUILD_DIR}/cmake-install-config"

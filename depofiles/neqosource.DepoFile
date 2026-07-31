@@ -1,0 +1,849 @@
+NAME neqosource
+VERSION quicperf-c-abi-f21a27d-quicperf11
+SYSTEM_LIBS ALLOW
+SOURCE GIT https://github.com/victorstewart/neqo.git f21a27d5a0aef1be7516dcf2ddd7d966406a8091
+BUILD_SYSTEM MANUAL
+MANUAL_BUILD_SH <<'EOF'
+set -eu
+source_dir="$DEPO_SOURCE_DIR"
+patch_file="$DEPO_BUILD_DIR/quicperf-dependency.patch"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "f21a27d5a0aef1be7516dcf2ddd7d966406a8091"
+test "$(git -C "$source_dir" rev-parse 'HEAD^{tree}')" = "8edc217e16ed52813e86cfeae230e5effcf7b94e"
+cat > "$patch_file" <<'QUICPERF_DEPENDENCY_PATCH'
+diff --git a/neqo-common/src/hrtime.rs b/neqo-common/src/hrtime.rs
+index 74881e51..967af11c 100644
+--- a/neqo-common/src/hrtime.rs
++++ b/neqo-common/src/hrtime.rs
+@@ -235,6 +235,9 @@ impl Handle {
+     /// calling `HrTime::get` again with the new period, except that this applies
+     /// a little hysteresis that smoothes out fluctuations.
+     pub fn update(&mut self, period: Duration) {
++        if cfg!(not(any(target_os = "macos", target_os = "windows"))) {
++            return;
++        }
+         self.hysteresis[self.hysteresis_index] = Period::from(period);
+         self.hysteresis_index += 1;
+         self.hysteresis_index %= self.hysteresis.len();
+@@ -262,6 +265,7 @@ impl Handle {
+ 
+ impl Drop for Handle {
+     fn drop(&mut self) {
++        #[cfg(any(target_os = "macos", target_os = "windows"))]
+         self.hrt.borrow_mut().remove(self.active);
+     }
+ }
+@@ -340,6 +344,7 @@ impl Time {
+         self.update();
+     }
+ 
++    #[cfg(any(target_os = "macos", target_os = "windows"))]
+     fn remove(&mut self, p: Period) {
+         self.periods.remove(p);
+         self.update();
+diff --git a/neqo-transport/src/connection/mod.rs b/neqo-transport/src/connection/mod.rs
+index e07750d4..6f631213 100644
+--- a/neqo-transport/src/connection/mod.rs
++++ b/neqo-transport/src/connection/mod.rs
+@@ -407,6 +407,23 @@ impl Connection {
+         )
+     }
+ 
++    /// Create a new QUIC server connection from a DER certificate and PKCS#8 key.
++    pub fn new_server_with_identity_der<P: AsRef<str>>(
++        certificate: &[u8],
++        private_key: &[u8],
++        protocols: &[P],
++        cid_generator: Rc<RefCell<dyn ConnectionIdGenerator>>,
++        conn_params: ConnectionParameters,
++    ) -> Res<Self> {
++        Self::new(
++            Role::Server,
++            Agent::from(Server::new_with_identity_der(certificate, private_key)?),
++            cid_generator,
++            protocols,
++            conn_params,
++        )
++    }
++
+     fn new<P: AsRef<str>>(
+         role: Role,
+         agent: Agent,
+@@ -1086,6 +1103,15 @@ impl Connection {
+         self.cid_manager.is_valid(cid)
+     }
+ 
++    /// Whether the first packet in a datagram carries a local connection ID
++    /// owned by this connection.
++    pub fn accepts_input(&self, data: &mut [u8]) -> bool {
++        match packet::Public::decode(data, self.cid_manager.decoder().as_ref()) {
++            Ok((packet, _)) => self.is_valid_local_cid(packet.dcid()),
++            Err(_) => false,
++        }
++    }
++
+     /// Process a new input datagram on the connection.
+     pub fn process_input<A: AsRef<[u8]> + AsMut<[u8]>>(&mut self, d: Datagram<A>, now: Instant) {
+         self.process_multiple_input(iter::once(d), now);
+@@ -3406,6 +3432,10 @@ impl Connection {
+                     "[{self}] ConnectionClose received. Error code: {error_code:?} frame type {frame_type:x} reason {reason_phrase}"
+                 );
+                 let (detail, frame_type) = if let CloseError::Application(_) = error_code {
++                    self.events.peer_application_close(
++                        error_code.code(),
++                        reason_phrase.len(),
++                    );
+                     // Use a transport error here because we want to send
+                     // NO_ERROR in this case.
+                     (
+diff --git a/neqo-transport/src/server.rs b/neqo-transport/src/server.rs
+index fee266e2..ad1693ee 100644
+--- a/neqo-transport/src/server.rs
++++ b/neqo-transport/src/server.rs
+@@ -101,8 +101,7 @@ impl EchConfig {
+ }
+ 
+ pub struct Server {
+-    /// The names of certificates.
+-    certs: Vec<String>,
++    identity: ServerIdentity,
+     /// The ALPN values that the server supports.
+     protocols: Vec<String>,
+     /// The cipher suites that the server supports.
+@@ -131,6 +130,14 @@ pub struct Server {
+     saved_datagrams: VecDeque<SavedDatagram>,
+ }
+ 
++enum ServerIdentity {
++    Nicknames(Vec<String>),
++    Der {
++        certificate: Vec<u8>,
++        private_key: Vec<u8>,
++    },
++}
++
+ impl Server {
+     /// Construct a new server.
+     /// * `now` is the time that the server is instantiated.
+@@ -152,10 +159,57 @@ impl Server {
+         zero_rtt_checker: Box<dyn ZeroRttChecker>,
+         cid_generator: Rc<RefCell<dyn ConnectionIdGenerator>>,
+         conn_params: ConnectionParameters,
++    ) -> Res<Self> {
++        Self::new_inner(
++            now,
++            ServerIdentity::Nicknames(
++                certs.iter().map(|x| String::from(x.as_ref())).collect(),
++            ),
++            protocols,
++            anti_replay,
++            zero_rtt_checker,
++            cid_generator,
++            conn_params,
++        )
++    }
++
++    /// Construct a server from an exact DER certificate and PKCS#8 private key.
++    pub fn new_with_identity_der<A: AsRef<str>>(
++        now: Instant,
++        certificate: &[u8],
++        private_key: &[u8],
++        protocols: &[A],
++        anti_replay: AntiReplay,
++        zero_rtt_checker: Box<dyn ZeroRttChecker>,
++        cid_generator: Rc<RefCell<dyn ConnectionIdGenerator>>,
++        conn_params: ConnectionParameters,
++    ) -> Res<Self> {
++        Self::new_inner(
++            now,
++            ServerIdentity::Der {
++                certificate: certificate.to_vec(),
++                private_key: private_key.to_vec(),
++            },
++            protocols,
++            anti_replay,
++            zero_rtt_checker,
++            cid_generator,
++            conn_params,
++        )
++    }
++
++    fn new_inner<A: AsRef<str>>(
++        now: Instant,
++        identity: ServerIdentity,
++        protocols: &[A],
++        anti_replay: AntiReplay,
++        zero_rtt_checker: Box<dyn ZeroRttChecker>,
++        cid_generator: Rc<RefCell<dyn ConnectionIdGenerator>>,
++        conn_params: ConnectionParameters,
+     ) -> Res<Self> {
+         let validation = AddressValidation::new(now, ValidateAddress::Never)?;
+         Ok(Self {
+-            certs: certs.iter().map(|x| String::from(x.as_ref())).collect(),
++            identity,
+             protocols: protocols.iter().map(|x| String::from(x.as_ref())).collect(),
+             ciphers: Vec::new(),
+             anti_replay,
+@@ -366,12 +420,24 @@ impl Server {
+ 
+         let mut params = self.conn_params.clone();
+         params.get_versions_mut().set_initial(initial.version);
+-        let sconn = Connection::new_server(
+-            &self.certs,
+-            &self.protocols,
+-            Rc::clone(&self.cid_generator),
+-            params,
+-        );
++        let sconn = match &self.identity {
++            ServerIdentity::Nicknames(certs) => Connection::new_server(
++                certs,
++                &self.protocols,
++                Rc::clone(&self.cid_generator),
++                params,
++            ),
++            ServerIdentity::Der {
++                certificate,
++                private_key,
++            } => Connection::new_server_with_identity_der(
++                certificate,
++                private_key,
++                &self.protocols,
++                Rc::clone(&self.cid_generator),
++                params,
++            ),
++        };
+ 
+         match sconn {
+             Ok(mut c) => {
+diff --git a/neqo-transport/src/events.rs b/neqo-transport/src/events.rs
+index a52715d0..7cc33138 100644
+--- a/neqo-transport/src/events.rs
++++ b/neqo-transport/src/events.rs
+@@ -62,6 +62,11 @@ pub enum ConnectionEvent {
+     SendStreamComplete {
+         stream_id: StreamId,
+     },
++    /// Peer sent an application CONNECTION_CLOSE frame.
++    PeerApplicationClose {
++        app_error: AppError,
++        reason_len: usize,
++    },
+     /// Peer increased `MAX_STREAMS`
+     SendStreamCreatable {
+         stream_type: StreamType,
+@@ -146,6 +151,13 @@ impl ConnectionEvents {
+         self.insert(ConnectionEvent::SendStreamComplete { stream_id });
+     }
+ 
++    pub fn peer_application_close(&self, app_error: AppError, reason_len: usize) {
++        self.insert(ConnectionEvent::PeerApplicationClose {
++            app_error,
++            reason_len,
++        });
++    }
++
+     pub fn send_stream_creatable(&self, stream_type: StreamType) {
+         self.insert(ConnectionEvent::SendStreamCreatable { stream_type });
+     }
+diff --git a/neqo-transport/src/recovery/mod.rs b/neqo-transport/src/recovery/mod.rs
+index 669fa759..ea8e01f3 100644
+--- a/neqo-transport/src/recovery/mod.rs
++++ b/neqo-transport/src/recovery/mod.rs
+@@ -858,6 +858,7 @@ impl Loss {
+         }
+ 
+         if let Some(st) = &mut self.pto_state {
++            self.stats.borrow_mut().recovery_wakeups += 1;
+             st.count_pto(&mut self.stats.borrow_mut());
+             qlog::metrics_updated(&mut self.qlog, [qlog::Metric::PtoCount(st.count())], now);
+         }
+diff --git a/neqo-transport/src/stats.rs b/neqo-transport/src/stats.rs
+index 9be83c3e..47ca6bc6 100644
+--- a/neqo-transport/src/stats.rs
++++ b/neqo-transport/src/stats.rs
+@@ -371,6 +371,9 @@ pub struct Stats {
+     /// separately.
+     pub pto_counts: [usize; Self::MAX_PTO_COUNTS],
+ 
++    /// Number of loss-recovery PTO expirations that reached transport processing.
++    pub recovery_wakeups: usize,
++
+     /// Count frames received.
+     pub frame_rx: FrameStats,
+     /// Count frames sent.
+QUICPERF_DEPENDENCY_PATCH
+if git -C "$source_dir" apply --check "$patch_file"; then
+  git -C "$source_dir" apply "$patch_file"
+elif git -C "$source_dir" apply --reverse --check "$patch_file"; then
+  :
+else
+  echo "quicperf dependency patch does not match pinned source" >&2
+  exit 1
+fi
+treatment_patch="$DEPO_BUILD_DIR/quicperf-treatment.patch"
+cat > "$treatment_patch" <<'QUICPERF_TREATMENT_PATCH'
+diff --git a/neqo-transport/src/cc/classic_cc.rs b/neqo-transport/src/cc/classic_cc.rs
+index 2a3ac7279af9ef8c2447178ffc4097b6a51849dd..11d9e5e06d54a41fac38082acc6cc12d1824caed 100644
+--- a/neqo-transport/src/cc/classic_cc.rs
++++ b/neqo-transport/src/cc/classic_cc.rs
+@@ -175,10 +175,13 @@ impl Display for State {
+ }
+QUICPERF_CONTEXT_BLANK
+ impl State {
+-    pub const fn new(mtu: usize) -> Self {
++    pub const fn new(mtu: usize, initial_congestion_window: Option<usize>) -> Self {
+         Self {
+             phase: Phase::SlowStart,
+-            congestion_window: cwnd_initial(mtu),
++            congestion_window: match initial_congestion_window {
++                Some(bytes) => bytes,
++                None => cwnd_initial(mtu),
++            },
+             acked_bytes: 0,
+             ssthresh: usize::MAX,
+             recovery_start: None,
+@@ -219,6 +222,7 @@ pub struct ClassicCongestionController<S, T> {
+     stored: Option<State>,
+     /// Whether to recover from spurious congestion events by restoring prior state.
+     spurious_recovery: bool,
++    initial_congestion_window: Option<usize>,
+ }
+QUICPERF_CONTEXT_BLANK
+ impl<S: Display, T: Display> Display for ClassicCongestionController<S, T> {
+@@ -238,7 +242,10 @@ impl<S, T> ClassicCongestionController<S, T> {
+QUICPERF_CONTEXT_BLANK
+     #[cfg(test)]
+     pub const fn cwnd_initial(&self) -> usize {
+-        cwnd_initial(self.pmtud.plpmtu())
++        match self.initial_congestion_window {
++            Some(bytes) => bytes,
++            None => cwnd_initial(self.pmtud.plpmtu()),
++        }
+     }
+ }
+QUICPERF_CONTEXT_BLANK
+@@ -611,6 +618,7 @@ where
+         congestion_control: T,
+         pmtud: Pmtud,
+         spurious_recovery: bool,
++        initial_congestion_window: Option<usize>,
+     ) -> Self {
+         let mtu = pmtud.plpmtu();
+         Self {
+@@ -621,9 +629,10 @@ where
+             qlog: Qlog::disabled(),
+             first_app_limited: 0,
+             pmtud,
+-            current: State::new(mtu),
++            current: State::new(mtu, initial_congestion_window),
+             stored: None,
+             spurious_recovery,
++            initial_congestion_window,
+         }
+     }
+QUICPERF_CONTEXT_BLANK
+@@ -1744,6 +1753,7 @@ mod tests {
+             Cubic::default(),
+             Pmtud::new(IP_ADDR, MTU),
+             false,
++            None,
+         );
+         let now = now();
+         let mut cc_stats = CongestionControlStats::default();
+diff --git a/neqo-transport/src/cc/tests/mod.rs b/neqo-transport/src/cc/tests/mod.rs
+index 0926bc89047fe2c1c7a27676041efee7b0dde8e6..2292dfad736eb5c9304ed8165ea8846876a0fecb 100644
+--- a/neqo-transport/src/cc/tests/mod.rs
++++ b/neqo-transport/src/cc/tests/mod.rs
+@@ -34,6 +34,7 @@ pub fn make_cc_newreno() -> ClassicCongestionController<ClassicSlowStart, NewRen
+         NewReno::default(),
+         Pmtud::new(IP_ADDR, MTU),
+         true,
++        None,
+     )
+ }
+QUICPERF_CONTEXT_BLANK
+@@ -44,6 +45,7 @@ pub fn make_cc_cubic() -> ClassicCongestionController<ClassicSlowStart, Cubic> {
+         Cubic::default(),
+         Pmtud::new(IP_ADDR, MTU),
+         true,
++        None,
+     )
+ }
+QUICPERF_CONTEXT_BLANK
+@@ -54,5 +56,6 @@ pub fn make_cc_hystart(paced: bool) -> ClassicCongestionController<HyStart, Cubi
+         Cubic::default(),
+         Pmtud::new(IP_ADDR, MTU),
+         true,
++        None,
+     )
+ }
+diff --git a/neqo-transport/src/connection/mod.rs b/neqo-transport/src/connection/mod.rs
+index 6f6312132cf645f7e1beaa98137e73e43b257d57..97a309c02d476e2e6f5793ede1b52e0a81217761 100644
+--- a/neqo-transport/src/connection/mod.rs
++++ b/neqo-transport/src/connection/mod.rs
+@@ -91,6 +91,27 @@ pub enum ZeroRttState {
+     Rejected,
+ }
+QUICPERF_CONTEXT_BLANK
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct QuicperfNegotiatedTransport {
++    pub quic_version: u32,
++    pub initial_congestion_window_bytes: u64,
++    pub max_udp_payload_size: u64,
++    pub max_ack_delay_ms: u64,
++    pub ack_delay_exponent: u64,
++    pub ack_frequency: bool,
++    pub active_migration: bool,
++    pub active_connection_id_limit: u64,
++    pub connection_id_bytes: usize,
++    pub max_idle_timeout_ms: u64,
++    pub max_bidi_streams: u64,
++    pub max_uni_streams: u64,
++    pub initial_max_data: u64,
++    pub initial_max_stream_data_bidi_local: u64,
++    pub initial_max_stream_data_bidi_remote: u64,
++    pub initial_max_stream_data_uni: u64,
++    pub max_datagram_frame_size: u64,
++}
++
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ /// Type returned from `process()` and `process_output()`. Users are required to
+ /// call these repeatedly until `Callback` or `None` is returned.
+@@ -951,6 +972,41 @@ impl Connection {
+         self.version
+     }
+QUICPERF_CONTEXT_BLANK
++    #[must_use]
++    pub fn quicperf_negotiated_transport(&self) -> Option<QuicperfNegotiatedTransport> {
++        let tps = self.tps.borrow();
++        let remote = tps.remote_handshake()?;
++        Some(QuicperfNegotiatedTransport {
++            quic_version: self.version.wire_version(),
++            initial_congestion_window_bytes: self
++                .conn_params
++                .get_initial_congestion_window()
++                .and_then(|bytes| u64::try_from(bytes).ok())
++                .unwrap_or(0),
++            max_udp_payload_size: remote.get_integer(MaxUdpPayloadSize),
++            max_ack_delay_ms: remote.get_integer(MaxAckDelay),
++            ack_delay_exponent: remote.get_integer(AckDelayExponent),
++            ack_frequency: remote.has_value(MinAckDelay),
++            active_migration: !remote.get_empty(DisableMigration),
++            active_connection_id_limit: remote.get_integer(ActiveConnectionIdLimit),
++            connection_id_bytes: self
++                .remote_initial_source_cid
++                .as_ref()
++                .map_or(0, |cid| cid.as_ref().len()),
++            max_idle_timeout_ms: remote.get_integer(TransportParameterId::IdleTimeout),
++            max_bidi_streams: remote.get_integer(TransportParameterId::InitialMaxStreamsBidi),
++            max_uni_streams: remote.get_integer(TransportParameterId::InitialMaxStreamsUni),
++            initial_max_data: remote.get_integer(TransportParameterId::InitialMaxData),
++            initial_max_stream_data_bidi_local: remote
++                .get_integer(TransportParameterId::InitialMaxStreamDataBidiLocal),
++            initial_max_stream_data_bidi_remote: remote
++                .get_integer(TransportParameterId::InitialMaxStreamDataBidiRemote),
++            initial_max_stream_data_uni: remote
++                .get_integer(TransportParameterId::InitialMaxStreamDataUni),
++            max_datagram_frame_size: remote.get_integer(MaxDatagramFrameSize),
++        })
++    }
++
+     /// Get the 0-RTT state of the connection.
+     #[must_use]
+     pub const fn zero_rtt_state(&self) -> ZeroRttState {
+diff --git a/neqo-transport/src/connection/params.rs b/neqo-transport/src/connection/params.rs
+index 2b14bdc78e3de4d1b5a421394be834437ce94599..750aa5d16275a480b905a3f4fce76bb075c58b75 100644
+--- a/neqo-transport/src/connection/params.rs
++++ b/neqo-transport/src/connection/params.rs
+@@ -15,9 +15,10 @@ use crate::{
+     tparams::{
+         PreferredAddress, TransportParameter,
+         TransportParameterId::{
+-            ActiveConnectionIdLimit, DisableMigration, GreaseQuicBit, IdleTimeout, InitialMaxData,
+-            InitialMaxStreamDataBidiLocal, InitialMaxStreamDataBidiRemote, InitialMaxStreamDataUni,
+-            InitialMaxStreamsBidi, InitialMaxStreamsUni, MaxAckDelay, MaxDatagramFrameSize,
++            AckDelayExponent, ActiveConnectionIdLimit, DisableMigration, GreaseQuicBit,
++            IdleTimeout, InitialMaxData, InitialMaxStreamDataBidiLocal,
++            InitialMaxStreamDataBidiRemote, InitialMaxStreamDataUni, InitialMaxStreamsBidi,
++            InitialMaxStreamsUni, MaxAckDelay, MaxDatagramFrameSize, MaxUdpPayloadSize,
+             MinAckDelay, PreferredAddress as PreferredAddressTp, Scone,
+         },
+         TransportParametersHandler,
+@@ -107,6 +108,7 @@ pub enum PreferredAddressConfig {
+ pub struct ConnectionParameters {
+     versions: version::Config,
+     congestion_control: CongestionControl,
++    initial_congestion_window: Option<usize>,
+     slow_start: SlowStart,
+     hystart_css_baseline: HyStartCssBaseline,
+     /// Initial connection-level flow control limit.
+@@ -131,6 +133,11 @@ pub struct ConnectionParameters {
+     /// acknowledgments every round trip, set the value to `5 * ACK_RATIO_SCALE`.
+     /// Values less than `ACK_RATIO_SCALE` are clamped to `ACK_RATIO_SCALE`.
+     ack_ratio: u8,
++    max_udp_payload_size: u64,
++    max_ack_delay: Duration,
++    ack_delay_exponent: u64,
++    ack_frequency: bool,
++    active_connection_id_limit: u64,
+     /// The duration of the idle timeout for the connection.
+     idle_timeout: Duration,
+     preferred_address: PreferredAddressConfig,
+@@ -164,6 +171,7 @@ impl Default for ConnectionParameters {
+         Self {
+             versions: version::Config::default(),
+             congestion_control: CongestionControl::Cubic,
++            initial_congestion_window: None,
+             slow_start: SlowStart::Classic,
+             hystart_css_baseline: HyStartCssBaseline::CurrentRoundMinRtt,
+             max_data: INITIAL_LOCAL_MAX_DATA,
+@@ -176,6 +184,12 @@ impl Default for ConnectionParameters {
+             max_streams_bidi: LOCAL_STREAM_LIMIT_BIDI,
+             max_streams_uni: LOCAL_STREAM_LIMIT_UNI,
+             ack_ratio: Self::DEFAULT_ACK_RATIO,
++            max_udp_payload_size: 65_527,
++            max_ack_delay: DEFAULT_LOCAL_ACK_DELAY,
++            ack_delay_exponent: 3,
++            ack_frequency: true,
++            active_connection_id_limit: u64::try_from(ConnectionIdManager::ACTIVE_LIMIT)
++                .expect("active connection ID limit fits in u64"),
+             idle_timeout: Self::DEFAULT_IDLE_TIMEOUT,
+             preferred_address: PreferredAddressConfig::Default,
+             datagram_size: MAX_DATAGRAM_FRAME_SIZE,
+@@ -236,6 +250,18 @@ impl ConnectionParameters {
+         self
+     }
+QUICPERF_CONTEXT_BLANK
++    #[must_use]
++    pub const fn get_initial_congestion_window(&self) -> Option<usize> {
++        self.initial_congestion_window
++    }
++
++    #[must_use]
++    pub const fn initial_congestion_window(mut self, bytes: usize) -> Self {
++        assert!(bytes > 0, "initial congestion window must be nonzero");
++        self.initial_congestion_window = Some(bytes);
++        self
++    }
++
+     #[must_use]
+     pub const fn get_slow_start(&self) -> SlowStart {
+         self.slow_start
+@@ -350,6 +376,71 @@ impl ConnectionParameters {
+         self.ack_ratio
+     }
+QUICPERF_CONTEXT_BLANK
++    #[must_use]
++    pub const fn max_udp_payload_size(mut self, bytes: u64) -> Self {
++        assert!(
++            bytes >= 1200,
++            "maximum UDP payload must be at least 1200 bytes"
++        );
++        self.max_udp_payload_size = bytes;
++        self
++    }
++
++    #[must_use]
++    pub const fn get_max_udp_payload_size(&self) -> u64 {
++        self.max_udp_payload_size
++    }
++
++    #[must_use]
++    pub const fn max_ack_delay(mut self, delay: Duration) -> Self {
++        assert!(
++            delay.as_millis() < (1 << 14),
++            "maximum ACK delay is too large"
++        );
++        self.max_ack_delay = delay;
++        self
++    }
++
++    #[must_use]
++    pub const fn get_max_ack_delay(&self) -> Duration {
++        self.max_ack_delay
++    }
++
++    #[must_use]
++    pub const fn ack_delay_exponent(mut self, exponent: u64) -> Self {
++        assert!(exponent <= 20, "ACK delay exponent is too large");
++        self.ack_delay_exponent = exponent;
++        self
++    }
++
++    #[must_use]
++    pub const fn get_ack_delay_exponent(&self) -> u64 {
++        self.ack_delay_exponent
++    }
++
++    #[must_use]
++    pub const fn ack_frequency(mut self, enabled: bool) -> Self {
++        self.ack_frequency = enabled;
++        self
++    }
++
++    #[must_use]
++    pub const fn ack_frequency_enabled(&self) -> bool {
++        self.ack_frequency
++    }
++
++    #[must_use]
++    pub const fn active_connection_id_limit(mut self, limit: u64) -> Self {
++        assert!(limit >= 2, "active connection ID limit must be at least 2");
++        self.active_connection_id_limit = limit;
++        self
++    }
++
++    #[must_use]
++    pub const fn get_active_connection_id_limit(&self) -> u64 {
++        self.active_connection_id_limit
++    }
++
+     /// # Panics
+     ///
+     /// If `timeout` is 2^62 milliseconds or more.
+@@ -554,10 +645,8 @@ impl ConnectionParameters {
+     ) -> Res<TransportParametersHandler> {
+         let mut tps = TransportParametersHandler::new(role, self.versions.clone());
+         // default parameters
+-        tps.local_mut().set_integer(
+-            ActiveConnectionIdLimit,
+-            u64::try_from(ConnectionIdManager::ACTIVE_LIMIT)?,
+-        );
++        tps.local_mut()
++            .set_integer(ActiveConnectionIdLimit, self.active_connection_id_limit);
+         if self.disable_migration {
+             tps.local_mut().set_empty(DisableMigration);
+         }
+@@ -567,12 +656,16 @@ impl ConnectionParameters {
+         if self.scone {
+             tps.local_mut().set_empty(Scone);
+         }
+-        tps.local_mut().set_integer(
+-            MaxAckDelay,
+-            u64::try_from(DEFAULT_LOCAL_ACK_DELAY.as_millis())?,
+-        );
+         tps.local_mut()
+-            .set_integer(MinAckDelay, u64::try_from(GRANULARITY.as_micros())?);
++            .set_integer(MaxAckDelay, u64::try_from(self.max_ack_delay.as_millis())?);
++        tps.local_mut()
++            .set_integer(AckDelayExponent, self.ack_delay_exponent);
++        tps.local_mut()
++            .set_integer(MaxUdpPayloadSize, self.max_udp_payload_size);
++        if self.ack_frequency {
++            tps.local_mut()
++                .set_integer(MinAckDelay, u64::try_from(GRANULARITY.as_micros())?);
++        }
+QUICPERF_CONTEXT_BLANK
+         // set configurable parameters
+         tps.local_mut().set_integer(InitialMaxData, self.max_data);
+@@ -663,4 +756,29 @@ mod tests {
+                 .spurious_recovery_enabled()
+         );
+     }
++
++    #[test]
++    fn exact_transport_parameters() {
++        let params = ConnectionParameters::default()
++            .max_udp_payload_size(1350)
++            .max_ack_delay(Duration::from_millis(25))
++            .ack_delay_exponent(3)
++            .ack_frequency(false)
++            .active_connection_id_limit(2);
++        let mut cid_manager = ConnectionIdManager::new(
++            std::rc::Rc::new(std::cell::RefCell::new(
++                crate::RandomConnectionIdGenerator::new(8),
++            )),
++            crate::ConnectionId::from(&[0; 8][..]),
++        );
++        let tps = params
++            .create_transport_parameter(Role::Client, &mut cid_manager)
++            .unwrap();
++        let local = tps.local();
++        assert_eq!(local.get_integer(MaxUdpPayloadSize), 1350);
++        assert_eq!(local.get_integer(MaxAckDelay), 25);
++        assert_eq!(local.get_integer(AckDelayExponent), 3);
++        assert!(!local.has_value(MinAckDelay));
++        assert_eq!(local.get_integer(ActiveConnectionIdLimit), 2);
++    }
+ }
+diff --git a/neqo-transport/src/lib.rs b/neqo-transport/src/lib.rs
+index 826559f66fe7f3e90b91cca26d90b918b680ee8b..f142b3e9e74f1b0ae4e2af79354a17532f616f84 100644
+--- a/neqo-transport/src/lib.rs
++++ b/neqo-transport/src/lib.rs
+@@ -62,7 +62,7 @@ pub use self::{
+         EmptyConnectionIdGenerator, RandomConnectionIdGenerator,
+     },
+     connection::{
+-        Connection, Output, OutputBatch, State, ZeroRttState,
++        Connection, Output, OutputBatch, QuicperfNegotiatedTransport, State, ZeroRttState,
+         params::{
+             ConnectionParameters, INITIAL_LOCAL_MAX_DATA, INITIAL_LOCAL_MAX_STREAM_DATA,
+             MAX_LOCAL_MAX_STREAM_DATA,
+diff --git a/neqo-transport/src/sender.rs b/neqo-transport/src/sender.rs
+index abe22d6b71ea8ea24a2108abf32ff99e21fcba21..7948db8700d0087cb0312d63e60e6f5efdb151f5 100644
+--- a/neqo-transport/src/sender.rs
++++ b/neqo-transport/src/sender.rs
+@@ -52,6 +52,7 @@ impl PacketSender {
+                             NewReno::default(),
+                             pmtud,
+                             spurious_recovery,
++                            conn_params.get_initial_congestion_window(),
+                         ),
+                     )
+                 }
+@@ -65,6 +66,7 @@ impl PacketSender {
+                             NewReno::default(),
+                             pmtud,
+                             spurious_recovery,
++                            conn_params.get_initial_congestion_window(),
+                         ),
+                     )
+                 }
+@@ -75,6 +77,7 @@ impl PacketSender {
+                             NewReno::default(),
+                             pmtud,
+                             spurious_recovery,
++                            conn_params.get_initial_congestion_window(),
+                         ),
+                     )
+                 }
+@@ -84,6 +87,7 @@ impl PacketSender {
+                         Cubic::default(),
+                         pmtud,
+                         spurious_recovery,
++                        conn_params.get_initial_congestion_window(),
+                     ))
+                 }
+                 (CongestionControl::Cubic, SlowStart::HyStart) => {
+@@ -95,6 +99,7 @@ impl PacketSender {
+                         Cubic::default(),
+                         pmtud,
+                         spurious_recovery,
++                        conn_params.get_initial_congestion_window(),
+                     ))
+                 }
+                 (CongestionControl::Cubic, SlowStart::Search) => {
+@@ -103,6 +108,7 @@ impl PacketSender {
+                         Cubic::default(),
+                         pmtud,
+                         spurious_recovery,
++                        conn_params.get_initial_congestion_window(),
+                     ))
+                 }
+             },
+@@ -296,4 +302,15 @@ mod tests {
+             );
+         }
+     }
++
++    #[test]
++    fn configured_initial_congestion_window_is_applied() {
++        let params = ConnectionParameters::default().initial_congestion_window(13_500);
++        let sender = PacketSender::new(
++            &params,
++            Pmtud::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), Some(1500)),
++            now(),
++        );
++        assert_eq!(sender.cwnd(), 13_500);
++    }
+ }
+QUICPERF_TREATMENT_PATCH
+sed -i 's/^QUICPERF_CONTEXT_BLANK$/ /' "$treatment_patch"
+if git -C "$source_dir" apply --check "$treatment_patch"; then
+  git -C "$source_dir" apply "$treatment_patch"
+elif git -C "$source_dir" apply --reverse --check "$treatment_patch"; then
+  :
+else
+  echo "quicperf treatment patch does not match pinned source" >&2
+  exit 1
+fi
+integration_patch="$DEPO_BUILD_DIR/quicperf-integration.patch"
+cat > "$integration_patch" <<'QUICPERF_INTEGRATION_PATCH'
+diff --git a/neqo-http3/src/connection_client.rs b/neqo-http3/src/connection_client.rs
+index c567f1be94387504f20d80a4e9afd9672f4bf3ec..b40b54f797a493126010d56f87da85116073d2f4 100644
+--- a/neqo-http3/src/connection_client.rs
++++ b/neqo-http3/src/connection_client.rs
+@@ -1168,6 +1168,7 @@ impl Http3Client {
+                     self.base_handler.handle_datagram(dgram);
+                 }
+                 ConnectionEvent::SendStreamComplete { .. }
++                | ConnectionEvent::PeerApplicationClose { .. }
+                 | ConnectionEvent::OutgoingDatagramOutcome { .. }
+                 | ConnectionEvent::IncomingDatagramDropped
+                 | ConnectionEvent::SconeUpdated(_)
+diff --git a/neqo-http3/src/connection_server.rs b/neqo-http3/src/connection_server.rs
+index 7444bf67b7e57f2e20898c20c8bf068b5a195c7d..7a7e30eef7700d2ccc01cf7ded6069364858a3a8 100644
+--- a/neqo-http3/src/connection_server.rs
++++ b/neqo-http3/src/connection_server.rs
+@@ -374,6 +374,7 @@ impl Http3ServerHandler {
+                 | ConnectionEvent::ZeroRttRejected
+                 | ConnectionEvent::ResumptionToken(..) => return Err(Error::HttpInternal(4)),
+                 ConnectionEvent::SendStreamComplete { .. }
++                | ConnectionEvent::PeerApplicationClose { .. }
+                 | ConnectionEvent::SendStreamCreatable { .. }
+                 | ConnectionEvent::OutgoingDatagramOutcome { .. }
+                 | ConnectionEvent::IncomingDatagramDropped
+diff --git a/neqo-transport/src/cc/classic_cc.rs b/neqo-transport/src/cc/classic_cc.rs
+index 11d9e5e06d54a41fac38082acc6cc12d1824caed..79f1d90410539de5f87c2d2505e299f23ddc52fe 100644
+--- a/neqo-transport/src/cc/classic_cc.rs
++++ b/neqo-transport/src/cc/classic_cc.rs
+@@ -222,6 +222,7 @@ pub struct ClassicCongestionController<S, T> {
+     stored: Option<State>,
+     /// Whether to recover from spurious congestion events by restoring prior state.
+     spurious_recovery: bool,
++    #[cfg(test)]
+     initial_congestion_window: Option<usize>,
+ }
+QUICPERF_CONTEXT_BLANK
+@@ -632,6 +633,7 @@ where
+             current: State::new(mtu, initial_congestion_window),
+             stored: None,
+             spurious_recovery,
++            #[cfg(test)]
+             initial_congestion_window,
+         }
+     }
+diff --git a/neqo-transport/src/connection/params.rs b/neqo-transport/src/connection/params.rs
+index 750aa5d16275a480b905a3f4fce76bb075c58b75..90be64c67909b6a76d2464195bc3af6694454af4 100644
+--- a/neqo-transport/src/connection/params.rs
++++ b/neqo-transport/src/connection/params.rs
+@@ -759,6 +759,7 @@ mod tests {
+QUICPERF_CONTEXT_BLANK
+     #[test]
+     fn exact_transport_parameters() {
++        nss::init().unwrap();
+         let params = ConnectionParameters::default()
+             .max_udp_payload_size(1350)
+             .max_ack_delay(Duration::from_millis(25))
+@@ -767,9 +768,9 @@ mod tests {
+             .active_connection_id_limit(2);
+         let mut cid_manager = ConnectionIdManager::new(
+             std::rc::Rc::new(std::cell::RefCell::new(
+-                crate::RandomConnectionIdGenerator::new(8),
++                crate::EmptyConnectionIdGenerator::default(),
+             )),
+-            crate::ConnectionId::from(&[0; 8][..]),
++            crate::ConnectionId::from(&[]),
+         );
+         let tps = params
+             .create_transport_parameter(Role::Client, &mut cid_manager)
+QUICPERF_INTEGRATION_PATCH
+sed -i 's/^QUICPERF_CONTEXT_BLANK$/ /' "$integration_patch"
+if git -C "$source_dir" apply --check "$integration_patch"; then
+  git -C "$source_dir" apply "$integration_patch"
+elif git -C "$source_dir" apply --reverse --check "$integration_patch"; then
+  :
+else
+  echo "quicperf integration patch does not match pinned source" >&2
+  exit 1
+fi
+source_index="$DEPO_BUILD_DIR/quicperf-source.index"
+rm -f "$source_index"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" read-tree HEAD
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$treatment_patch"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$integration_patch"
+test "$(GIT_INDEX_FILE="$source_index" git -C "$source_dir" write-tree)" = "67a23af19e809620d706e94acdcac25e3c9a2ea6"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" diff --quiet --no-ext-diff -- .
+EOF
+STAGE_TREE SOURCE . share/neqo
+TARGET neqosource::source INTERFACE share/neqo

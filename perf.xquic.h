@@ -11,20 +11,30 @@
 #include <deque>
 #include <limits>
 #include <memory>
+#include <sys/time.h>
 #include <vector>
 
 #pragma once
 
 extern "C" SSL_CTX *__real_SSL_CTX_new(const SSL_METHOD *method);
 
+static void xquicTlsCurrentTime(const SSL *, struct timeval *value)
+{
+  value->tv_sec = static_cast<time_t>(benchmarkTlsCalendarUnixSeconds);
+  value->tv_usec = 0;
+}
+
 extern "C" SSL_CTX *__wrap_SSL_CTX_new(const SSL_METHOD *method)
 {
   SSL_CTX *ctx = __real_SSL_CTX_new(method);
-  if (ctx != nullptr &&
-      SSL_CTX_set1_sigalgs_list(ctx, "ed25519:ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256") != 1)
+  if (ctx != nullptr)
   {
-    fprintf(stderr, "xquic: failed to set benchmark TLS signature algorithms\n");
-    abort();
+    SSL_CTX_set_current_time_cb(ctx, xquicTlsCurrentTime);
+    if (SSL_CTX_set1_sigalgs_list(ctx, "ed25519:ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256") != 1)
+    {
+      fprintf(stderr, "xquic: failed to set benchmark TLS signature algorithms\n");
+      abort();
+    }
   }
   return ctx;
 }
@@ -251,8 +261,7 @@ private:
         {
           return serverCompletedConnections >= benchmarkServerTargetConnections;
         }
-        return genericServerCompletedStreams >=
-               static_cast<uint64_t>(benchmarkServerTargetConnections) * benchmarkGenericStreamsPerConnection();
+        return genericServerCompletedStreams >= benchmarkGenericServerTargetStreams();
       }
       if (benchmarkScenario == BenchmarkScenario::datagram)
       {
@@ -282,9 +291,14 @@ private:
     }
   }
 
-  static xqc_usec_t now(void)
+  static xqc_usec_t monotonicNow(void)
   {
     return timeNowUs();
+  }
+
+  static xqc_usec_t realtimeNow(void)
+  {
+    return benchmarkTlsCalendarUnixSeconds * 1'000'000ULL;
   }
 
   static void setTimer(xqc_usec_t wakeAfter, void *engineUserData)
@@ -1258,8 +1272,7 @@ private:
         static_cast<unsigned long long>(genericCompletedStreams),
         static_cast<unsigned long long>(benchmarkGenericStreamsPerConnection()),
         static_cast<unsigned long long>(genericServerCompletedStreams),
-        static_cast<unsigned long long>(
-            static_cast<uint64_t>(benchmarkServerTargetConnections) * benchmarkGenericStreamsPerConnection()),
+        static_cast<unsigned long long>(benchmarkGenericServerTargetStreams()),
         hasPendingGenericStreamWrite() ? 1 : 0,
         socketWriteBlocked ? 1 : 0,
         networkHub != nullptr ? networkHub->debugSendPoolAvailable() : 0,
@@ -2838,9 +2851,13 @@ private:
           writeToServerStream(state, activeStream);
         }
       }
-      else if (!benchmarkIsUpload() && state.requestParsed &&
-               (state.durationMode || state.bytesInFlight == 0) &&
-               consumed < static_cast<size_t>(read))
+      else if (benchmarkServerObservedDownloadDoneMarker(
+                   benchmarkIsUpload(),
+                   state.requestParsed,
+                   state.durationMode,
+                   state.bytesInFlight,
+                   consumed,
+                   static_cast<size_t>(read)))
       {
         state.clientDone = true;
         writeToServerStream(state, activeStream);
@@ -3328,8 +3345,8 @@ private:
     engineCallbacks.log_callbacks.xqc_log_write_err = ignoreLog;
     engineCallbacks.log_callbacks.xqc_log_write_stat = ignoreLog;
     engineCallbacks.log_callbacks.xqc_qlog_event_write = ignoreQlog;
-    engineCallbacks.realtime_ts = now;
-    engineCallbacks.monotonic_ts = now;
+    engineCallbacks.realtime_ts = realtimeNow;
+    engineCallbacks.monotonic_ts = monotonicNow;
 
     xqc_transport_callbacks_t transportCallbacks = {};
     transportCallbacks.server_accept = serverAccept;
@@ -3798,7 +3815,7 @@ public:
           &settings,
           nullptr,
           0,
-          "localhost",
+          benchmarkTlsHostname,
           0,
           &sslConfig,
           address,
@@ -3846,7 +3863,7 @@ public:
           &settings,
           nullptr,
           0,
-          "localhost",
+          benchmarkTlsHostname,
           0,
           &sslConfig,
           address,

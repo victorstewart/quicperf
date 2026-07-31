@@ -1,0 +1,116 @@
+NAME nssrssource
+VERSION 0.11.0-quicperf4
+SYSTEM_LIBS ALLOW
+SOURCE GIT https://github.com/mozilla/nss-rs.git 07994e820280efb40d42d41ee9558817c6859a58
+BUILD_SYSTEM MANUAL
+MANUAL_BUILD_SH <<'EOF'
+set -eu
+source_dir="$DEPO_SOURCE_DIR"
+patch_file="$DEPO_BUILD_DIR/quicperf-dependency.patch"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "07994e820280efb40d42d41ee9558817c6859a58"
+test "$(git -C "$source_dir" rev-parse 'HEAD^{tree}')" = "261d9884839d204d46a5844553e67557e73c5687"
+cat > "$patch_file" <<'QUICPERF_DEPENDENCY_PATCH'
+diff --git a/bindings/bindings.toml b/bindings/bindings.toml
+index f6f8378..136d590 100644
+--- a/bindings/bindings.toml
++++ b/bindings/bindings.toml
+@@ -148,7 +148,9 @@ types = [
+ functions = [
+     "CERT_DestroyCertificate",
+     "CERT_DestroyCertList",
++    "CERT_GetDefaultCertDB",
+     "CERT_GetCertificateDer",
++    "CERT_NewTempCertificate",
+     "NSS_SetAlgorithmPolicy",
+     "PK11_AEADOp",
+     "PK11_Authenticate",
+diff --git a/src/agent.rs b/src/agent.rs
+index c0d4641..7917896 100644
+--- a/src/agent.rs
++++ b/src/agent.rs
+@@ -1341,6 +1341,28 @@ impl Server {
+         })
+     }
+ 
++    /// Create a server from a DER certificate and an unencrypted PKCS#8 private key.
++    ///
++    /// The certificate and key remain in memory and scoped to this server agent.
++    ///
++    /// # Errors
++    ///
++    /// Errors returned when NSS cannot decode or configure the supplied identity.
++    pub fn new_with_identity_der(certificate: &[u8], private_key: &[u8]) -> Res<Self> {
++        let mut agent = SecretAgent::new()?;
++        let key = crate::ec::import_ec_private_key_pkcs8(private_key)?;
++        let cert = p11::import_certificate_der(certificate, "quicperf-server")
++            .map_err(|_| Error::CertificateLoading)?;
++        secstatus_to_res(unsafe {
++            ssl::SSL_ConfigServerCert(agent.fd, (*cert).cast(), (*key).cast(), null(), 0)
++        })?;
++        agent.ready(true, true)?;
++        Ok(Self {
++            agent,
++            zero_rtt_check: None,
++        })
++    }
++
+     /// Create a server with OCSP responses and SCTs configured.
+     /// Not suitable for multiple certificates, because it configures the same OCSP/SCT for all
+     /// certificates. In other words, this is good for testing that the plumbing works, not for
+diff --git a/src/p11.rs b/src/p11.rs
+index 3842cbf..8496876 100644
+--- a/src/p11.rs
++++ b/src/p11.rs
+@@ -22,6 +22,7 @@ use std::{
+ use pkcs11_bindings::{CKA_EC_POINT, CKA_VALUE};
+ 
+ use crate::{
++    SECItemBorrowed, assert_initialized,
+     err::{Error, Res, secstatus_to_res},
+     nss_prelude::SECITEM_FreeItem,
+     util::SECItemMut,
+@@ -63,6 +64,26 @@ use crate::null_safe_slice;
+ scoped_ptr!(Certificate, CERTCertificate, CERT_DestroyCertificate);
+ scoped_ptr!(CertList, CERTCertList, CERT_DestroyCertList);
+ 
++/// Decode a DER certificate into NSS's in-memory certificate store.
++///
++/// # Errors
++///
++/// When NSS cannot decode the certificate.
++pub fn import_certificate_der(certificate: &[u8], nickname: &str) -> Res<Certificate> {
++    assert_initialized();
++    let mut der = SECItemBorrowed::wrap(certificate)?;
++    let nickname = std::ffi::CString::new(nickname)?;
++    Certificate::from_ptr(unsafe {
++        CERT_NewTempCertificate(
++            CERT_GetDefaultCertDB(),
++            der.as_mut(),
++            nickname.as_ptr().cast_mut(),
++            PRBool::from(false),
++            PRBool::from(true),
++        )
++    })
++}
++
+ scoped_ptr!(
+     SubjectPublicKeyInfo,
+     CERTSubjectPublicKeyInfo,
+QUICPERF_DEPENDENCY_PATCH
+if git -C "$source_dir" apply --check "$patch_file"; then
+  git -C "$source_dir" apply "$patch_file"
+elif git -C "$source_dir" apply --reverse --check "$patch_file"; then
+  :
+else
+  echo "quicperf dependency patch does not match pinned source" >&2
+  exit 1
+fi
+source_index="$DEPO_BUILD_DIR/quicperf-source.index"
+rm -f "$source_index"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" read-tree HEAD
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file"
+test "$(GIT_INDEX_FILE="$source_index" git -C "$source_dir" write-tree)" = "67a2043b300264e91c2cfb5f36dbf58d84b4da74"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" diff --quiet --no-ext-diff -- .
+EOF
+STAGE_TREE SOURCE . share/nss-rs
+TARGET nssrssource::source INTERFACE share/nss-rs

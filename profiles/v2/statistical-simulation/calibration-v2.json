@@ -1,0 +1,758 @@
+{
+  "algorithm_version": "paired-session-superblock-max-t-calibration-v3",
+  "campaigns_per_condition": 25000,
+  "conditions": [
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 23716,
+        "rate": "0.94864000000000004"
+      },
+      "critical_value": {
+        "maximum": "2.4391844922301038",
+        "mean": "2.2065164418577994",
+        "minimum": "1.6623152378524935"
+      },
+      "false_equivalence_at_margin": {
+        "count": 641,
+        "rate": "0.02564"
+      },
+      "family_size": 1,
+      "familywise_type_i_error": {
+        "count": 1284,
+        "rate": "0.051360000000000003"
+      },
+      "generator": "iid_lognormal",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "3.8484978628796553e-06",
+      "name": "iid_lognormal",
+      "parameters": {
+        "paired_log_ratio_sd": "0.025000000000000001"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 23788,
+        "rate": "0.95152000000000003"
+      },
+      "critical_value": {
+        "maximum": "3.8191830273173282",
+        "mean": "3.4366276629256065",
+        "minimum": "2.8268758918839465"
+      },
+      "false_equivalence_at_margin": {
+        "count": 623,
+        "rate": "0.024920000000000001"
+      },
+      "family_size": 11,
+      "familywise_type_i_error": {
+        "count": 1212,
+        "rate": "0.048480000000000002"
+      },
+      "generator": "iid_family",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "5.9358347551393348e-05",
+      "name": "iid_familywise_null",
+      "parameters": {
+        "paired_log_ratio_sd": "0.025000000000000001",
+        "shared_baseline": "true"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 23739,
+        "rate": "0.94955999999999996"
+      },
+      "critical_value": {
+        "maximum": "4.8354198101743862",
+        "mean": "4.5063683564303982",
+        "minimum": "4.0549701071277644"
+      },
+      "false_equivalence_at_margin": {
+        "count": 638,
+        "rate": "0.025520000000000001"
+      },
+      "family_size": 66,
+      "familywise_type_i_error": {
+        "count": 1261,
+        "rate": "0.050439999999999999"
+      },
+      "generator": "iid_all_pairs",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "9.9595898486935634e-05",
+      "name": "iid_all_pairs_familywise_null",
+      "parameters": {
+        "implementation_count": "12",
+        "paired_log_ratio_sd": "0.025000000000000001"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 23753,
+        "rate": "0.95011999999999996"
+      },
+      "critical_value": {
+        "maximum": "3.8202793618202335",
+        "mean": "3.4186406105766061",
+        "minimum": "2.8596662687878216"
+      },
+      "false_equivalence_at_margin": {
+        "count": 598,
+        "rate": "0.02392"
+      },
+      "family_size": 11,
+      "familywise_type_i_error": {
+        "count": 1247,
+        "rate": "0.049880000000000001"
+      },
+      "generator": "heteroskedastic",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "9.1679051265404357e-05",
+      "name": "heteroskedastic_implementations",
+      "parameters": {
+        "candidate_implementation_sd_scale_range": "0.5..1.5",
+        "shared_baseline_sd_scale": "1"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 24101,
+        "rate": "0.96404000000000001"
+      },
+      "critical_value": {
+        "maximum": "2.4695368154393504",
+        "mean": "2.2070545746272954",
+        "minimum": "1.7501299459148989"
+      },
+      "false_equivalence_at_margin": {
+        "count": 478,
+        "rate": "0.019120000000000002"
+      },
+      "family_size": 1,
+      "familywise_type_i_error": {
+        "count": 899,
+        "rate": "0.035959999999999999"
+      },
+      "generator": "drift",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "6.8611851686912819e-05",
+      "name": "block_and_session_drift",
+      "parameters": {
+        "block_drift_sd": "0.005",
+        "session_step": "0.004"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 23633,
+        "rate": "0.94532000000000005"
+      },
+      "critical_value": {
+        "maximum": "2.471324045936786",
+        "mean": "2.2064876505833833",
+        "minimum": "1.7374357397066724"
+      },
+      "false_equivalence_at_margin": {
+        "count": 706,
+        "rate": "0.028240000000000001"
+      },
+      "family_size": 1,
+      "familywise_type_i_error": {
+        "count": 1367,
+        "rate": "0.054679999999999999"
+      },
+      "generator": "ar1",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "2.885077401959169e-05",
+      "name": "ar1_time_effects",
+      "parameters": {
+        "common_observation_rho": "0.6",
+        "differential_log_effect_rho": "0.02"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 23907,
+        "rate": "0.95628000000000002"
+      },
+      "critical_value": {
+        "maximum": "2.4581896162466332",
+        "mean": "2.206733288941034",
+        "minimum": "1.7442152991934889"
+      },
+      "false_equivalence_at_margin": {
+        "count": 566,
+        "rate": "0.02264"
+      },
+      "family_size": 1,
+      "familywise_type_i_error": {
+        "count": 1093,
+        "rate": "0.043720000000000002"
+      },
+      "generator": "order",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "3.6089888683194314e-05",
+      "name": "order_effects",
+      "parameters": {
+        "balanced_order_effect": "0.006"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 23946,
+        "rate": "0.95784000000000002"
+      },
+      "critical_value": {
+        "maximum": "2.4554413375829065",
+        "mean": "2.2067017950051406",
+        "minimum": "1.7336729600367731"
+      },
+      "false_equivalence_at_margin": {
+        "count": 537,
+        "rate": "0.021479999999999999"
+      },
+      "family_size": 1,
+      "familywise_type_i_error": {
+        "count": 1054,
+        "rate": "0.042160000000000003"
+      },
+      "generator": "predecessor",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "3.2588758656298868e-05",
+      "name": "predecessor_effects",
+      "parameters": {
+        "balanced_predecessor_effect": "0.006"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 23721,
+        "rate": "0.94884000000000002"
+      },
+      "critical_value": {
+        "maximum": "2.4916713816698759",
+        "mean": "2.2031342097114628",
+        "minimum": "1.6822331046203471"
+      },
+      "false_equivalence_at_margin": {
+        "count": 810,
+        "rate": "0.032399999999999998"
+      },
+      "family_size": 1,
+      "familywise_type_i_error": {
+        "count": 1279,
+        "rate": "0.051159999999999997"
+      },
+      "generator": "skew",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "4.470936175573154e-05",
+      "name": "skewed_log_effects",
+      "parameters": {
+        "centered_lognormal_shape": "0.12"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 23801,
+        "rate": "0.95204"
+      },
+      "critical_value": {
+        "maximum": "2.5013889131193809",
+        "mean": "2.1728641434308242",
+        "minimum": "1.4892690700479077"
+      },
+      "false_equivalence_at_margin": {
+        "count": 604,
+        "rate": "0.024160000000000001"
+      },
+      "family_size": 1,
+      "familywise_type_i_error": {
+        "count": 1199,
+        "rate": "0.047960000000000003"
+      },
+      "generator": "heavy_tail",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "7.1387482903973427e-05",
+      "name": "heavy_tailed_log_effects",
+      "parameters": {
+        "student_t_degrees_of_freedom": "5"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 23729,
+        "rate": "0.94916"
+      },
+      "critical_value": {
+        "maximum": "2.5007239339563747",
+        "mean": "2.2070605895298576",
+        "minimum": "1.7274543498505093"
+      },
+      "false_equivalence_at_margin": {
+        "count": 640,
+        "rate": "0.025600000000000001"
+      },
+      "family_size": 1,
+      "familywise_type_i_error": {
+        "count": 1271,
+        "rate": "0.050840000000000003"
+      },
+      "generator": "lower_is_better",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "4.9815186847468009e-05",
+      "name": "lower_is_better_metrics",
+      "parameters": {
+        "orientation": "positive_is_better"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "campaigns": 25000,
+      "family_size": 1,
+      "generator": "invalid_rows",
+      "invalid_campaigns_rejected": 25000,
+      "name": "invalid_failed_censored_rows",
+      "parameters": {
+        "statuses": "invalid,failed,censored"
+      },
+      "passed": true
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 25000,
+      "coverage": {
+        "count": 23763,
+        "rate": "0.95052000000000003"
+      },
+      "critical_value": {
+        "maximum": "2.4505723662137293",
+        "mean": "2.2059518331785792",
+        "minimum": "1.6858935293282451"
+      },
+      "false_equivalence_at_margin": {
+        "count": 607,
+        "rate": "0.024279999999999999"
+      },
+      "family_size": 1,
+      "familywise_type_i_error": {
+        "count": 1237,
+        "rate": "0.049480000000000003"
+      },
+      "generator": "caps_quantization",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "3.7858409426940528e-05",
+      "name": "caps_and_quantization",
+      "parameters": {
+        "relative_quantum": "0.001"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 23982,
+        "rate": "0.95928000000000002"
+      },
+      "critical_value": {
+        "maximum": "2.5331910342810349",
+        "mean": "2.2065449511731612",
+        "minimum": "1.753041403842249"
+      },
+      "false_equivalence_at_margin": {
+        "count": 503,
+        "rate": "0.020119999999999999"
+      },
+      "family_size": 1,
+      "familywise_type_i_error": {
+        "count": 1018,
+        "rate": "0.040719999999999999"
+      },
+      "generator": "interactions",
+      "interaction_coefficient_biases": {
+        "client": "9.981780886574379e-05",
+        "client_session": "0.00015129445079874095",
+        "session": "-1.6272031609533902e-05"
+      },
+      "maximum_absolute_bias": "0.00015129445079874095",
+      "name": "reference_client_and_session_interactions",
+      "parameters": {
+        "interaction_effect": "0.006",
+        "reference_client_effect": "0.01",
+        "session_effect": "0.008"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 23772,
+        "rate": "0.95087999999999995"
+      },
+      "critical_value": {
+        "maximum": "2.4867212566000152",
+        "mean": "2.2062381271831786",
+        "minimum": "1.6862892284708333"
+      },
+      "false_equivalence_at_margin": {
+        "count": 606,
+        "rate": "0.024240000000000001"
+      },
+      "family_size": 1,
+      "familywise_type_i_error": {
+        "count": 1228,
+        "rate": "0.049119999999999997"
+      },
+      "generator": "session_pair_rho_0",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "1.0332562036884561e-05",
+      "name": "cross_session_rho_0_coverage",
+      "parameters": {
+        "cross_session_correlation": "0",
+        "raw_session_paired_log_ratio_sd": "0.025000000000000001",
+        "superblock_construction": "mean_of_matching_session_rows"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 23744,
+        "rate": "0.94976000000000005"
+      },
+      "critical_value": {
+        "maximum": "2.4864103190253082",
+        "mean": "2.2059260492360169",
+        "minimum": "1.7862745805532048"
+      },
+      "false_equivalence_at_margin": {
+        "count": 657,
+        "rate": "0.026280000000000001"
+      },
+      "family_size": 1,
+      "familywise_type_i_error": {
+        "count": 1256,
+        "rate": "0.05024"
+      },
+      "generator": "session_pair_rho_0_25",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "1.4402275621261979e-05",
+      "name": "cross_session_rho_0_25_coverage",
+      "parameters": {
+        "cross_session_correlation": "0.25",
+        "raw_session_paired_log_ratio_sd": "0.025000000000000001",
+        "superblock_construction": "mean_of_matching_session_rows"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    },
+    {
+      "bias_limit": "0.0073897005603861072",
+      "campaigns": 25000,
+      "capped_campaigns_rejected": 0,
+      "coverage": {
+        "count": 23706,
+        "rate": "0.94823999999999997"
+      },
+      "critical_value": {
+        "maximum": "2.4700715665194086",
+        "mean": "2.2067167383106594",
+        "minimum": "1.7584900037993523"
+      },
+      "false_equivalence_at_margin": {
+        "count": 627,
+        "rate": "0.025080000000000002"
+      },
+      "family_size": 1,
+      "familywise_type_i_error": {
+        "count": 1294,
+        "rate": "0.05176"
+      },
+      "generator": "session_pair_rho_0_50",
+      "interaction_coefficient_biases": {},
+      "maximum_absolute_bias": "5.162315782408921e-05",
+      "name": "cross_session_rho_0_50_stress",
+      "parameters": {
+        "cross_session_correlation": "0.5",
+        "raw_session_paired_log_ratio_sd": "0.025000000000000001",
+        "superblock_construction": "mean_of_matching_session_rows"
+      },
+      "passed": true,
+      "resume_replays_unchanged": 25000
+    }
+  ],
+  "implementation_calibration_passed": true,
+  "inference": {
+    "alpha": "0.050000000000000003",
+    "critical_order_statistic": 3892,
+    "orientation": "positive_is_better",
+    "primary_baseline_contrasts": 11,
+    "raw_rows": 24,
+    "secondary_all_pairs_contrasts": 66,
+    "sign_patterns": 4096,
+    "superblocks": 12
+  },
+  "legacy_12_row_failure_reference": [
+    {
+      "declared_effect_power": {
+        "count": 17479,
+        "probability": "0.69916"
+      },
+      "equivalence": {
+        "count": 12435,
+        "probability": "0.49740000000000001"
+      },
+      "expected_to_fail_0_80_gate": true,
+      "failure_reproduced": true,
+      "name": "rate_legacy_12_row",
+      "raw_rows": 12
+    },
+    {
+      "declared_effect_power": {
+        "count": 17712,
+        "probability": "0.70848"
+      },
+      "equivalence": {
+        "count": 13931,
+        "probability": "0.55723999999999996"
+      },
+      "expected_to_fail_0_80_gate": true,
+      "failure_reproduced": true,
+      "name": "memory_legacy_12_row",
+      "raw_rows": 12
+    }
+  ],
+  "passed": true,
+  "planning": [
+    {
+      "blocks": 12,
+      "campaigns": 25000,
+      "critical_value_simulation": {
+        "empirical_95th": "3.6094897345266514",
+        "maximum": "3.8064562713314358",
+        "mean": "3.4363586545710376",
+        "minimum": "2.904511565194773"
+      },
+      "cross_session_correlation": "0",
+      "declared_effect": "0.058268908123975824",
+      "declared_effect_power": {
+        "count": 24215,
+        "one_sided_95_exact_binomial_lower": "0.96672494480809701",
+        "probability": "0.96860000000000002"
+      },
+      "equivalence": {
+        "count": 23866,
+        "one_sided_95_exact_binomial_lower": "0.95241577190801308",
+        "probability": "0.95464000000000004"
+      },
+      "family_size": 11,
+      "margin": "0.029558802241544429",
+      "name": "rate_planning_envelope_rho_0",
+      "passed": true,
+      "raw_rows": 24,
+      "raw_session_paired_log_ratio_sd": "0.025000000000000001",
+      "standard_error": "ordinary_sample_standard_error_across_superblocks",
+      "superblock_variance_formula": "sigma_squared_times_one_plus_rho_over_two",
+      "twice_margin_effect": "0.059117604483088858",
+      "twice_margin_power": {
+        "count": 24437,
+        "one_sided_95_exact_binomial_lower": "0.97587478374811409",
+        "probability": "0.97748000000000002"
+      }
+    },
+    {
+      "blocks": 12,
+      "campaigns": 25000,
+      "critical_value_simulation": {
+        "empirical_95th": "3.6103701172478866",
+        "maximum": "3.8172322099641156",
+        "mean": "3.4366499561375989",
+        "minimum": "2.8674691574752837"
+      },
+      "cross_session_correlation": "0.25",
+      "declared_effect": "0.058268908123975824",
+      "declared_effect_power": {
+        "count": 22876,
+        "one_sided_95_exact_binomial_lower": "0.91208361119357173",
+        "probability": "0.91503999999999996"
+      },
+      "equivalence": {
+        "count": 21670,
+        "one_sided_95_exact_binomial_lower": "0.8632136369131902",
+        "probability": "0.86680000000000001"
+      },
+      "family_size": 11,
+      "margin": "0.029558802241544429",
+      "name": "rate_planning_envelope_rho_0_25",
+      "passed": true,
+      "raw_rows": 24,
+      "raw_session_paired_log_ratio_sd": "0.025000000000000001",
+      "standard_error": "ordinary_sample_standard_error_across_superblocks",
+      "superblock_variance_formula": "sigma_squared_times_one_plus_rho_over_two",
+      "twice_margin_effect": "0.059117604483088858",
+      "twice_margin_power": {
+        "count": 23304,
+        "one_sided_95_exact_binomial_lower": "0.92948659423274615",
+        "probability": "0.93215999999999999"
+      }
+    },
+    {
+      "blocks": 12,
+      "campaigns": 25000,
+      "critical_value_simulation": {
+        "empirical_95th": "3.6080467416295741",
+        "maximum": "3.8024453727617771",
+        "mean": "3.436036532311173",
+        "minimum": "2.8233650922993943"
+      },
+      "cross_session_correlation": "0",
+      "declared_effect": "0.095310179804324935",
+      "declared_effect_power": {
+        "count": 24301,
+        "one_sided_95_exact_binomial_lower": "0.97026381379326954",
+        "probability": "0.97204000000000002"
+      },
+      "equivalence": {
+        "count": 24183,
+        "one_sided_95_exact_binomial_lower": "0.96540968895713308",
+        "probability": "0.96731999999999996"
+      },
+      "family_size": 11,
+      "margin": "0.048790164169432049",
+      "name": "memory_planning_envelope_rho_0",
+      "passed": true,
+      "raw_rows": 24,
+      "raw_session_paired_log_ratio_sd": "0.040000000000000001",
+      "standard_error": "ordinary_sample_standard_error_across_superblocks",
+      "superblock_variance_formula": "sigma_squared_times_one_plus_rho_over_two",
+      "twice_margin_effect": "0.097580328338864097",
+      "twice_margin_power": {
+        "count": 24591,
+        "one_sided_95_exact_binomial_lower": "0.9822578444397545",
+        "probability": "0.98363999999999996"
+      }
+    },
+    {
+      "blocks": 12,
+      "campaigns": 25000,
+      "critical_value_simulation": {
+        "empirical_95th": "3.6102178560290556",
+        "maximum": "3.8236226596519911",
+        "mean": "3.4374205146914649",
+        "minimum": "2.9144201355552863"
+      },
+      "cross_session_correlation": "0.25",
+      "declared_effect": "0.095310179804324935",
+      "declared_effect_power": {
+        "count": 22953,
+        "one_sided_95_exact_binomial_lower": "0.91521160769636922",
+        "probability": "0.91812000000000005"
+      },
+      "equivalence": {
+        "count": 22340,
+        "one_sided_95_exact_binomial_lower": "0.89033835867624633",
+        "probability": "0.89359999999999995"
+      },
+      "family_size": 11,
+      "margin": "0.048790164169432049",
+      "name": "memory_planning_envelope_rho_0_25",
+      "passed": true,
+      "raw_rows": 24,
+      "raw_session_paired_log_ratio_sd": "0.040000000000000001",
+      "standard_error": "ordinary_sample_standard_error_across_superblocks",
+      "superblock_variance_formula": "sigma_squared_times_one_plus_rho_over_two",
+      "twice_margin_effect": "0.097580328338864097",
+      "twice_margin_power": {
+        "count": 23630,
+        "one_sided_95_exact_binomial_lower": "0.94277383367121748",
+        "probability": "0.94520000000000004"
+      }
+    }
+  ],
+  "profile_design_power_gate_passed": true,
+  "publication_analysis_permitted": true,
+  "reference_kernel_validation": {
+    "campaigns": 16,
+    "maximum_absolute_critical_value_delta": "1.7763568394002505e-15",
+    "passed": true,
+    "tolerance": "0.000000000001"
+  },
+  "reproducibility": {
+    "same_seed_and_input_reproduce_bit_for_bit": true,
+    "serialization": "utf8-json-sort-keys-indent-2-lf"
+  },
+  "schema_version": "quicperf.statistical-simulation.v3",
+  "seed": "quicperf-v2-superblock-calibration-2026-07-18",
+  "thresholds": {
+    "iid_coverage_maximum": "0.96499999999999997",
+    "iid_coverage_minimum": "0.93500000000000005",
+    "maximum_bias_fraction_of_margin": "0.25",
+    "maximum_false_equivalence": "0.055",
+    "maximum_familywise_type_i_error": "0.055",
+    "minimum_equivalence_probability": "0.80000000000000004",
+    "minimum_power": "0.80000000000000004",
+    "stress_coverage_minimum": "0.93500000000000005"
+  }
+}

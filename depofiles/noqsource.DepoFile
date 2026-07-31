@@ -1,0 +1,230 @@
+NAME noqsource
+VERSION quicperf-c-abi-e2130ab-quicperf5
+SYSTEM_LIBS ALLOW
+SOURCE GIT https://github.com/victorstewart/noq.git e2130abf4e47e3a3566f5dad30a99954a8f0772d
+BUILD_SYSTEM MANUAL
+MANUAL_BUILD_SH <<'EOF'
+set -eu
+source_dir="$DEPO_SOURCE_DIR"
+patch_file="$DEPO_BUILD_DIR/quicperf-dependency.patch"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "e2130abf4e47e3a3566f5dad30a99954a8f0772d"
+test "$(git -C "$source_dir" rev-parse 'HEAD^{tree}')" = "a8ef14199d34dc6bacfe4c98f33f7e0802faefb4"
+cat > "$patch_file" <<'QUICPERF_DEPENDENCY_PATCH'
+diff --git a/noq-proto/src/connection/mod.rs b/noq-proto/src/connection/mod.rs
+--- a/noq-proto/src/connection/mod.rs
++++ b/noq-proto/src/connection/mod.rs
+@@ -3197,6 +3197,9 @@ impl Connection {
+             %path_id,
+             "PTO fired"
+         );
++        self.partial_stats.recovery_wakeups = self
++            .partial_stats.recovery_wakeups
++            .saturating_add(1);
+ 
+         let count = match self.path_data(path_id).in_flight.ack_eliciting {
+             // A PTO when we're not expecting any ACKs must be due to handshake
+diff --git a/noq-proto/src/connection/stats.rs b/noq-proto/src/connection/stats.rs
+--- a/noq-proto/src/connection/stats.rs
++++ b/noq-proto/src/connection/stats.rs
+@@ -266,4 +266,6 @@ pub struct ConnectionStats {
+     pub lost_packets: u64,
+     /// The number of bytes lost on the connection.
+     pub lost_bytes: u64,
++    /// Number of processed PTO expirations that scheduled loss-recovery probes.
++    pub recovery_wakeups: u64,
+ }
+@@ -296,6 +298,7 @@ impl std::ops::Add<PathStats> for ConnectionStats {
+             frame_rx: self.frame_rx + frame_rx,
+             lost_packets: self.lost_packets + lost_packets,
+             lost_bytes: self.lost_bytes + lost_bytes,
++            recovery_wakeups: self.recovery_wakeups,
+         }
+     }
+ }
+@@ -334,6 +337,7 @@ impl std::ops::AddAssign<PathStats> for ConnectionStats {
+             frame_rx,
+             lost_packets,
+             lost_bytes,
++            recovery_wakeups: _,
+         } = self;
+         *udp_tx += path_udp_tx;
+         *udp_rx += path_udp_rx;
+QUICPERF_DEPENDENCY_PATCH
+if git -C "$source_dir" apply --check "$patch_file"; then
+  git -C "$source_dir" apply "$patch_file"
+elif git -C "$source_dir" apply --reverse --check "$patch_file"; then
+  :
+else
+  echo "quicperf dependency patch does not match pinned source" >&2
+  exit 1
+fi
+settings_patch_file="$DEPO_BUILD_DIR/quicperf-negotiated-settings.patch"
+cat > "$settings_patch_file" <<'QUICPERF_NEGOTIATED_SETTINGS_PATCH'
+diff --git a/noq-proto/src/config/transport.rs b/noq-proto/src/config/transport.rs
+index 223976836e8264d7dcd941225823c97effaa9483..7ac369d5df8c9bb7613c0b1defec548dd3329e53 100644
+--- a/noq-proto/src/config/transport.rs
++++ b/noq-proto/src/config/transport.rs
+@@ -46,0 +47,2 @@ pub struct TransportConfig {
++    pub(crate) quicperf_active_connection_id_limit: VarInt,
++    pub(crate) quicperf_disable_active_migration: bool,
+@@ -259,0 +262,14 @@ impl TransportConfig {
++    /// Set the active connection ID limit sent in transport parameters.
++    #[doc(hidden)]
++    pub fn quicperf_active_connection_id_limit(&mut self, value: VarInt) -> &mut Self {
++        self.quicperf_active_connection_id_limit = value;
++        self
++    }
++
++    /// Set whether active migration is disabled in transport parameters.
++    #[doc(hidden)]
++    pub fn quicperf_disable_active_migration(&mut self, value: bool) -> &mut Self {
++        self.quicperf_disable_active_migration = value;
++        self
++    }
++
+@@ -550,0 +567,2 @@ impl Default for TransportConfig {
++            quicperf_active_connection_id_limit: 2u32.into(),
++            quicperf_disable_active_migration: false,
+@@ -599,0 +618,2 @@ impl fmt::Debug for TransportConfig {
++            quicperf_active_connection_id_limit,
++            quicperf_disable_active_migration,
+@@ -635,0 +656,8 @@ impl fmt::Debug for TransportConfig {
++            .field(
++                "quicperf_active_connection_id_limit",
++                quicperf_active_connection_id_limit,
++            )
++            .field(
++                "quicperf_disable_active_migration",
++                quicperf_disable_active_migration,
++            )
+diff --git a/noq-proto/src/connection/mod.rs b/noq-proto/src/connection/mod.rs
+index 05ac135291d101303839b14003f3f0a2ea3e272f..da28151d70e258bb648338dd4174e0befcf41706 100644
+--- a/noq-proto/src/connection/mod.rs
++++ b/noq-proto/src/connection/mod.rs
+@@ -316,0 +317,22 @@ pub struct Connection {
++/// Peer transport parameters retained after the handshake for quicperf audit.
++#[doc(hidden)]
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct QuicperfNegotiatedTransport {
++    pub quic_version: u32,
++    pub max_idle_timeout: u64,
++    pub max_udp_payload_size: u64,
++    pub initial_max_data: u64,
++    pub initial_max_stream_data_bidi_local: u64,
++    pub initial_max_stream_data_bidi_remote: u64,
++    pub initial_max_stream_data_uni: u64,
++    pub initial_max_streams_bidi: u64,
++    pub initial_max_streams_uni: u64,
++    pub ack_delay_exponent: u64,
++    pub max_ack_delay: u64,
++    pub disable_active_migration: bool,
++    pub active_connection_id_limit: u64,
++    pub max_datagram_frame_size: u64,
++    pub ack_frequency: bool,
++    pub connection_id_len: usize,
++}
++
+@@ -2678,0 +2701,32 @@ impl Connection {
++    /// Return the peer's retained post-handshake transport parameters.
++    #[doc(hidden)]
++    pub fn quicperf_negotiated_transport(&self) -> QuicperfNegotiatedTransport {
++        QuicperfNegotiatedTransport {
++            quic_version: self.version,
++            max_idle_timeout: self.peer_params.max_idle_timeout.into_inner(),
++            max_udp_payload_size: self.peer_params.max_udp_payload_size.into_inner(),
++            initial_max_data: self.peer_params.initial_max_data.into_inner(),
++            initial_max_stream_data_bidi_local: self
++                .peer_params
++                .initial_max_stream_data_bidi_local
++                .into_inner(),
++            initial_max_stream_data_bidi_remote: self
++                .peer_params
++                .initial_max_stream_data_bidi_remote
++                .into_inner(),
++            initial_max_stream_data_uni: self.peer_params.initial_max_stream_data_uni.into_inner(),
++            initial_max_streams_bidi: self.peer_params.initial_max_streams_bidi.into_inner(),
++            initial_max_streams_uni: self.peer_params.initial_max_streams_uni.into_inner(),
++            ack_delay_exponent: self.peer_params.ack_delay_exponent.into_inner(),
++            max_ack_delay: self.peer_params.max_ack_delay.into_inner(),
++            disable_active_migration: self.peer_params.disable_active_migration,
++            active_connection_id_limit: self.peer_params.active_connection_id_limit.into_inner(),
++            max_datagram_frame_size: self
++                .peer_params
++                .max_datagram_frame_size
++                .map_or(0, VarInt::into_inner),
++            ack_frequency: self.peer_params.min_ack_delay.is_some(),
++            connection_id_len: self.peer_params.initial_src_cid.map_or(0, |cid| cid.len()),
++        }
++    }
++
+diff --git a/noq-proto/src/crypto/rustls.rs b/noq-proto/src/crypto/rustls.rs
+index 9a9482c5624c7f76acd1f40b0f69d52722078ee3..f599049419e0ac168a673c518b291796d150e52c 100644
+--- a/noq-proto/src/crypto/rustls.rs
++++ b/noq-proto/src/crypto/rustls.rs
+@@ -63,0 +64,5 @@ impl crypto::Session for TlsSession {
++            protocol_version: self.inner.protocol_version(),
++            cipher_suite: self
++                .inner
++                .negotiated_cipher_suite()
++                .map(|suite| suite.suite()),
+@@ -265,0 +271,4 @@ pub struct HandshakeData {
++    /// The negotiated TLS protocol version.
++    pub protocol_version: Option<rustls::ProtocolVersion>,
++    /// The negotiated TLS cipher suite.
++    pub cipher_suite: Option<rustls::CipherSuite>,
+diff --git a/noq-proto/src/lib.rs b/noq-proto/src/lib.rs
+index e100f281cf77c91f0763d2ba9084a4b9aa338ccc..897aa8d6c9980874ff9f0f9049589f6ee0d86b40 100644
+--- a/noq-proto/src/lib.rs
++++ b/noq-proto/src/lib.rs
+@@ -49,2 +49,3 @@ pub use crate::connection::{
+-    ReadError, ReadableError, RecvStream, RttEstimator, SendDatagramError, SendStream,
+-    SetPathStatusError, ShouldTransmit, StreamEvent, Streams, UdpStats, WriteError,
++    QuicperfNegotiatedTransport, ReadError, ReadableError, RecvStream, RttEstimator,
++    SendDatagramError, SendStream, SetPathStatusError, ShouldTransmit, StreamEvent, Streams,
++    UdpStats, WriteError,
+diff --git a/noq-proto/src/transport_parameters.rs b/noq-proto/src/transport_parameters.rs
+index 65f0dce4f3dca6b124821f8cb817fe234d6161fa..35ae01132a4f73b70147451bc5431d950c8c4cb7 100644
+--- a/noq-proto/src/transport_parameters.rs
++++ b/noq-proto/src/transport_parameters.rs
+@@ -23 +22,0 @@ use crate::{
+-    cid_queue::CidQueue,
+@@ -163 +162 @@ impl TransportParameters {
+-        cid_gen: &dyn ConnectionIdGenerator,
++        _cid_gen: &dyn ConnectionIdGenerator,
+@@ -178,7 +177,3 @@ impl TransportParameters {
+-            disable_active_migration: server_config.is_some_and(|c| !c.migration),
+-            active_connection_id_limit: if cid_gen.cid_len() == 0 {
+-                2 // i.e. default, i.e. unsent
+-            } else {
+-                CidQueue::LEN as u32
+-            }
+-            .into(),
++            disable_active_migration: config.quicperf_disable_active_migration
++                || server_config.is_some_and(|c| !c.migration),
++            active_connection_id_limit: config.quicperf_active_connection_id_limit,
+@@ -189,3 +184,3 @@ impl TransportParameters {
+-            min_ack_delay: Some(
+-                VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap(),
+-            ),
++            min_ack_delay: config.ack_frequency_config.as_ref().map(|_| {
++                VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap()
++            }),
+QUICPERF_NEGOTIATED_SETTINGS_PATCH
+if git -C "$source_dir" apply --unidiff-zero --check "$settings_patch_file"; then
+  git -C "$source_dir" apply --unidiff-zero "$settings_patch_file"
+elif git -C "$source_dir" apply --unidiff-zero --reverse --check "$settings_patch_file"; then
+  :
+else
+  echo "quicperf negotiated-settings patch does not match pinned source" >&2
+  exit 1
+fi
+source_index="$DEPO_BUILD_DIR/quicperf-source.index"
+rm -f "$source_index"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" read-tree HEAD
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --unidiff-zero --cached "$settings_patch_file"
+test "$(GIT_INDEX_FILE="$source_index" git -C "$source_dir" write-tree)" = "b088bae7a941b27faa186749c25443d064d9d3b7"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" diff --quiet --no-ext-diff -- .
+EOF
+STAGE_TREE SOURCE . share/noq
+TARGET noqsource::source INTERFACE share/noq

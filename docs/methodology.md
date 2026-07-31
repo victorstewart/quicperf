@@ -1,282 +1,226 @@
-# Benchmark Methodology
+# quicperf V2.3 methodology
 
-This document is the benchmark contract. `README.md` is the entry point;
-`docs/latest-results.md` is the current result index.
+This document is the scientific contract for the V2.3 primary publication
+campaign. The canonical machine-readable contract is
+[`profiles/v2.3/publication.json`](../profiles/v2.3/publication.json). If prose
+and profile disagree, execution fails rather than silently substituting a
+treatment.
 
-## Implementations
+## Estimand and scope
 
-Benchmarked QUIC binaries:
+The primary estimand is fixed-treatment server performance on the qualified
+host: one isolated server physical core, four isolated client physical cores,
+exactly 16 active connections, and the equal 50/50 mixture of the two frozen
+reference clients (`ngtcp2perf` and `picoperf`). Every endpoint uses the common
+C++ `iouring` UDP backend.
 
-`ngtcp2perf`, `lsperf`, `tquicperf`, `quicheperf`, `picoperf`, `xquicperf`,
-`quinnperf`, `s2nperf`, `neqoperf`, `noqperf`, `quiczigperf`, `mvfstperf`.
+The treatment covers 12 server implementations and 15 scenarios. It does not
+estimate capacity, memory scaling, long-tail latency, syscall-backend
+performance, or symmetric same-stack performance. Those are excluded from
+trials, inference, and claims. Diagnostic utilities cannot enter the V2.3
+journal or receive publication status.
 
-## Workloads
+## Frozen treatment
 
-Default workloads:
+The server order is `ngtcp2perf`, `lsperf`, `tquicperf`, `quicheperf`,
+`picoperf`, `xquicperf`, `quinnperf`, `s2nperf`, `neqoperf`, `noqperf`,
+`quiczigperf`, and `mvfstperf`.
 
-| Scenario | Metric | Contract |
-|---|---|---|
-| `download` | `throughput_gbps` | 8-byte request, server-to-client bulk response. |
-| `upload` | `throughput_gbps` | 8-byte request plus client-to-server bulk body. |
-| `connect` | `connections_per_second` | Full handshake plus bidirectional stream creation. |
-| `reqresp` | `requests_per_second` | Repeated fresh-stream request/response. |
-| `stream_churn` | `streams_per_second` | Repeated stream open/send/receive/finish. |
-| `multistream_download` | `throughput_gbps` | Concurrent server-to-client streams on one connection. |
-| `multistream_upload` | `throughput_gbps` | Concurrent client-to-server streams on one connection. |
-| `bidi` | `throughput_gbps` | Simultaneous upload and download on one connection. |
-| `small_payload_pps` | `messages_per_second` | Repeated tiny messages. |
-| `loss_recovery` | `throughput_gbps` | Download through deterministic `NetworkHub` loss. |
-| `flow_control` | `throughput_gbps` | Download under small stream/connection windows. |
-| `idle_footprint` | `server_rss_delta_bytes_per_connection` | Server RSS delta per held idle connection. |
-| `close_reset_cleanup` | `streams_per_second` | Graceful fresh-stream FIN cleanup profile. |
-| `datagram` | `datagrams_per_second` | Delivered app DATAGRAM echo rate. |
+The scenarios are:
 
-Session capability workloads:
+1. `download`
+2. `upload`
+3. `multistream_download`
+4. `multistream_upload`
+5. `bidi`
+6. `small_payload_pps`
+7. `datagram`
+8. `reqresp`
+9. `stream_churn`
+10. `connect`
+11. `resumed_connect`
+12. `zero_rtt_reqresp`
+13. `loss_recovery`
+14. `flow_control`
+15. `close_reset_cleanup`
 
-| Scenario | Metric | Status |
-|---|---|---|
-| `resumed_connect` | `connections_per_second` | Session-ticket resumption connection setup. |
-| `zero_rtt_reqresp` | `requests_per_second` | 0-RTT request/response with accepted/rejected state captured by the adapter contract. |
+Ordinary windows are 2 seconds after a 250 ms warmup. Loss recovery uses a
+5-second window after a 500 ms warmup. Connect, resumed-connect, and 0-RTT
+scenarios have no warmup. The profile freezes all payload sizes, stream counts,
+flow-control limits, operation slots, and ticket chains. There is no adaptive
+load selection.
 
-Publication rows use a two-stage fixed design: a bounded scout chooses client
-threads and workload shape, then fixed randomized publication blocks collect the
-predeclared measured samples without adaptive extension.
+Transport is QUIC v1 with ALPN `qperf/2`, CUBIC, a 13,500-byte initial
+congestion window, 1,350-byte maximum UDP payload, fixed ACK policy, no active
+migration, and common-core pacing. TLS is TLS 1.3 with
+`TLS_AES_128_GCM_SHA256`, X25519, Ed25519, strict hostname/chain verification,
+and a frozen validation calendar. The 0-RTT treatment uses one-use tickets and
+a 4,096-byte early-data maximum.
 
-Unsupported rows exit with code `77` and write an explicit reason. They are not
-silently remapped to another workload, and they are quicperf adapter-contract
-markers rather than upstream library feature claims.
+Sockets use IPv4, MTU 1,500, 64-packet receive/send batches, 16 MiB requested
+socket buffers, a 4,096-buffer pool, UDP GSO/GRO, and no ECN, busy polling, or
+receive timestamps. Loss recovery applies deterministic 1% QUIC-packet loss
+and 10 ms one-way delay from an HMAC-derived trace; all other scenarios use
+loopback without path impairment.
 
-Current non-graceful close/reset subprofiles are not primary rows. They require
-uniform RESET_STREAM, STOP_SENDING, CONNECTION_CLOSE, and abrupt-peer controls
-before promotion.
+## Shared-I/O and workload validity
 
-### DATAGRAM Contract
+C++ owns measured socket creation, receive, send, batching, backend selection,
+loss application, timeout scheduling, and the event loop. Transport adapters
+consume caller-supplied monotonic and frozen calendar time. Rust, Zig, and
+mvfst do not own a hidden competing UDP/event-loop path.
 
-`datagram` measures delivered application DATAGRAM echo rate. The operation
-count is the client accepted-send budget, not required echo delivery. The client
-sends until the budget is accepted by the library, then sends a reliable
-per-connection done marker and drains for a bounded interval, ending earlier if
-all sent sequence numbers are echoed.
+QPF2 endpoints declare their workload, negotiate the exact frozen treatment,
+and attest reset completion before each persistent-worker trial. The global
+barrier fixes endpoint start and stop times. Only receiver-validated work whose
+start and terminal event both satisfy the scenario ownership rule contributes
+to a numerator. Byte, operation, stream, DATAGRAM, cleanup, ticket, loss, and
+transport-accounting invariants fail closed.
 
-DATAGRAM frame size is negotiated through the QUIC DATAGRAM transport parameter,
-and the harness caps the application payload to the adapter's negotiated or
-effective payload limit before sending. Adapters without a public effective
-DATAGRAM MSS API use a conservative packet-payload cap under the QUIC minimum
-1200-byte UDP payload. Local send and receive queue capacity is a library-local
-public configuration request and write backpressure is the effective queue
-limit.
+The `datagram` drive loop is batch-equivalent and reports unique validated 64-byte QUIC DATAGRAM echoes,
+unreturned/lost messages, UDP packets, batching, polling, and DATAGRAMs per UDP
+packet. GSO loss is applied to QUIC packets, not whole UDP super-packets.
+Flow control proves bounded connection and stream windows while replenishing
+consumed credit. Cleanup requires bounded process, FD, socket, cgroup,
+namespace, and path state.
 
-Each DATAGRAM carries a sequence number. The harness records accepted sends,
-unique echoes received, unreturned/lost DATAGRAMs, delivery ratio, UDP packets,
-send submit/syscall batches, receive polls, and DATAGRAMs per UDP packet.
-Delivery ratio is reported, not used to make an unreliable primitive reliable.
+## Schedule and cardinality
 
-Packet-engine adapters must not flush or poll once per app DATAGRAM. C++ owns
-the UDP socket, backend, batching, and timeout loop for DATAGRAM rows just like
-the stream workloads.
+Each independently started session contains all 12 Williams rows for all 15
+scenarios. A microblock contains the 12 servers at one
+scenario/reference-client/session/Williams-row coordinate.
 
-## Output Schema
+- 180 microblocks and 2,160 primary trials per session
+- two sessions
+- 4,320 primary trials
+- one dormant retry mate for every microblock
+- 8,640 maximum preallocated trial IDs
+- 180 retained server/scenario cells
+- 24 rows per retained cell
+- 12 matching-session superblocks per cell
+- 2,160/2,160 reference-client balance
 
-Current metrics are `throughput_gbps`, `connections_per_second`,
-`requests_per_second`, `streams_per_second`, `messages_per_second`,
-`datagrams_per_second`, and `server_rss_delta_bytes_per_connection`.
-Public comparisons are interpreted only within the same scenario, network
-backend, path profile, and metric group.
+HMAC ordering is frozen before outcomes. The second session reverses row order
+and uses the opposite reference-client assignment for matching rows. Execution
+is one lane, so there is no concurrent-treatment balance control. Workers are
+persistent but must prove complete reset between trials.
 
-`tools/run-benchmarks.sh` writes one `summary.tsv` row per
-binary/library/scenario/network/path-profile/client-thread/metric group and
-writes `raw-samples.tsv` for every invocation. Publication runners append the
-same structured rows to `adaptive-samples.tsv`: measured rows carry metric
-values, while unsupported, failed, and thread-check rows carry status/reason/log
-metadata with a blank value.
+Retries never add post-outcome trial IDs. A treatment-independent transient
+invalidates only its affected microblock and activates that microblock's
+dormant mate. A failed retry, hard hardware/policy violation, or exhaustion of
+the predeclared aggregate budget fails closed. No outcome-dependent
+rescheduling or diagnostic fallback is permitted.
 
-### Fixed Publication Design
+## ARM and monitor timing
 
-The publication protocol separates planning from measurement:
+Each endpoint window is armed with a 750 ms lead. Immediately before send, a
+500 ms guard verifies that the whole window is still usable. A stale window is
+transactionally cancelled and rebased, up to the frozen bound. A late ARM is a
+structured rejection: it does not close the endpoint channel. The coordinator
+recreates the worker and retries only the unstarted microblock under a separate
+one-per-session control-plane budget.
 
-- scout data is non-publication data and is written to `saturation-scout.tsv`
-- scout grid: `1,2,4,8,16` client threads, 3 short samples per point
-- scout selection: choose the lowest thread count within 2% of the scout best
-  where the next grid point improves by less than 2%
-- successful scout output is cached as the default plan with a fingerprint of
-  dependency pins, benchmark-touching harness code, and scout scope; the scout is
-  regenerated only when that fingerprint changes or refresh is forced
-- `benchmark-plan.tsv` declares mode, duration/work, samples, warmup, blocks,
-  client threads, and timeout before publication starts
-- publication uses 20 measured samples, 1 warmup, and 5 randomized blocks by
-  default
-- publication never extends sample count or changes client threads based on
-  CI/spread/drift during the same run
+Endpoint workload start and stop timing remains strict. Health-monitor
+timestamps use observed boundaries: activity and APERF/MPERF calculations use
+the actual observed interval. Monitor duration error may not exceed 0.1% and
+the conservative phase-offset cap is 5 ms. Monitor wake lateness alone is not
+misclassified as endpoint timing failure.
 
-Rate workloads use duration mode by policy: `download`, `upload`,
-`multistream_download`, `multistream_upload`, `bidi`, `loss_recovery`,
-`flow_control`, `small_payload_pps`, `datagram`, `reqresp`, `stream_churn`,
-`close_reset_cleanup`, and `zero_rtt_reqresp`. Count-semantics workloads
-(`connect`, `resumed_connect`, `idle_footprint`) use fixed counts or fixed idle
-hold time. Connection lifecycle rows cap each measured sample at 128 handshakes
-to keep one process sample from becoming a lifecycle-churn stress test.
+Tctl evidence combines boundary reads and the identified sensor stream. The
+maximum permitted evidence gap is 250 ms; sensor loss beyond it fails closed.
+The ceiling is 80°C. Any thermal breach, throttle counter increase, frequency,
+governor/EPP/turbo, IRQ, scheduler, cgroup, swap, topology, isolation, or
+external-noise violation invalidates the affected evidence according to its
+hard-gate rule.
 
-This follows established benchmark practice: warmup/calibration/scout work is
-separate from measured data, and repeated reruns until significance are avoided.
-Sources: Google Benchmark user guide
-https://google.github.io/benchmark/user_guide.html, Criterion.rs analysis
-https://bheisler.github.io/criterion.rs/book/analysis.html, Go benchmarks
-https://pkg.go.dev/testing, pytest-benchmark calibration
-https://pytest-benchmark.readthedocs.io/en/latest/calibration.html, benchstat
-guidance https://pkg.go.dev/golang.org/x/perf/cmd/benchstat, and
-Kalibera/Jones uncertainty framing https://arxiv.org/abs/2007.10899.
+Live campaign monitoring is passive: service events and terminal snapshots are
+allowed, but repeated polling of the live journal is prohibited.
 
-`network` is the socket backend dimension (`syscall` or `iouring`). `path_profile`
-is the packet-delivery path dimension. The default is `loopback`; namespace-backed
-profiles such as `dc-fabric-1ms`, `lte-good`, and `5g-sub6-good` run through a
-router namespace with `tc netem` shaping for RTT, jitter, loss, queue depth, and
-uplink/downlink rate. The runner starts the shaped path before the server and
-client start, so handshake, RTT estimation, ACK timing, PTO, congestion control,
-and loss recovery observe the simulated path directly.
-The namespace setup installs static IPv6 neighbor entries before shaping is
-enabled, so benchmark rows do not measure cold NDP resolution artifacts.
-Before publication, non-loopback path profiles must pass
-`tools/quicperf_network_validate.py --require-idle-host`; the validator records
-qdisc snapshots before and after traffic, expected BDP/queue metadata, ping
-RTT/loss/jitter checks, and qdisc snapshots. The detailed acceptance
-criteria and source-backed profile audit live in
-`docs/network-profile-validation.md`.
-Public cellular trace archives are kept outside git under `.data/`; compact
-derived UCC 5G, UCC 4G LTE, and UMN 5Gophers path-profile packs generated by
-`tools/quicperf_cellular_profiles.py` are loaded from `profiles/network/*.json`
-alongside the base WAN profile file.
+## Host and identity qualification
 
-For WAN throughput rows, the benchmark promotes default flow-control windows to a
-bounded bandwidth-delay-product profile derived from the active path's RTT and
-maximum configured rate. This prevents connection or stream windows from hiding
-the actual bottleneck. The `flow_control` scenario remains intentionally
-window-limited unless the caller explicitly selects a different window profile.
+Publication requires:
 
-Loopback rows use CUBIC for every adapter and publish the effective controller
-in `adapter_features` and `congestion_controller` columns. `picoperf` exposes
-picoquic congestion-control selection through `QUICPERF_CONGESTION_PROFILE`;
-for non-loopback targeted A/B runs, explicit values `cubic`, `dcubic`,
-`newreno`, `prague`, and `c4` are available.
-The `path-auto` profile is a benchmark policy for short-transfer WAN rows: it
-selects `cubic` on the 10G/0.5ms datacenter profile and current BBR elsewhere
-where the library exposes BBR.
-When RTT and configured rate metadata are available, `path-auto` also enables
-picoquic's BDP/cwnd seed on non-loopback profiles and applies it
-immediately to the sender. This is a benchmark policy for known simulated paths,
-not an assertion that an unknown fresh Internet path can safely start at that
-window. Picoquic packet-train mode and the BDP transport extension are
-controlled by `QUICPERF_PICOQUIC_PACKET_TRAIN` and
-`QUICPERF_PICOQUIC_BDP_FRAME`; `QUICPERF_PICOQUIC_BDP_SEED=0` disables the
-path-derived seed and `QUICPERF_PICOQUIC_BDP_SEED_IMMEDIATE=0` disables
-immediate sender seeding for A/B runs. The shared picoquic transfer includes a
-one-byte app completion exchange after payload delivery so impaired-path rows
-require client-side receipt, not merely server-side enqueue.
+- a clean exact source archive, dependency pins, build flags, binaries, loaded
+  libraries, toolchains, TLS assets, path profiles, schedule, and analysis
+  identity;
+- one isolated server physical core and four isolated client physical cores,
+  with SMT siblings excluded and IRQs assigned to housekeeping CPUs;
+- cgroup v2 delegation, zero swap for the service, fixed `performance`
+  governor/EPP, turbo disabled, and 8 GiB endpoint memory ceilings;
+- 180/180 fresh native interoperability records, balanced 90/90 over the two
+  reference clients;
+- host stability and four-client-core headroom qualification;
+- an all-phase doctor pass on the exact identity.
 
-Summary statistics:
+The launcher may transactionally apply authorized temporary swap, power,
+cgroup, and IRQ policy, then restore exact prior values. CPU isolation boot
+arguments, missing kernel facilities, or unsupported hardware evidence require
+operator action and possibly reboot; they are never fabricated by the
+launcher. An unavailable required gate is `NOT_RUN`, never a pass.
 
-The fixed publication runner appends raw rows to `adaptive-samples.tsv` for
-schema compatibility. Measured rows carry metric values; unsupported and failed
-rows carry status, reason, and log metadata.
+## Statistical analysis
 
-Summary columns include `samples`, `min`, `p50`, `p90`, `p99`, and `max`.
-`p50` uses a true median and is the publication statistic. `p90` and `p99` are
-bad-tail visibility columns: for higher-is-better throughput and rate metrics,
-`p90`/`p99` report the lower tail; for lower-is-better metrics, they report the
-upper tail. `p99` is not claimable unless a row has at least 300 samples.
+The primary family is
+`estimand × scenario × path × metric × server_backend`. `ngtcp2perf` is the
+baseline. The response is the paired log ratio, with positive values oriented
+as better. Matching session rows form 12 superblocks.
 
-## Saturation
+Inference enumerates all 4,096 common sign patterns and uses the maximum
+absolute t statistic across the 11 server-vs-baseline contrasts, controlling
+the family-wise error rate at 0.05. The practical equivalence margin is
+`log(1.03)`. Outputs include simultaneous intervals, superior/inferior/
+equivalent/inconclusive classification, planning-variance misses, and separate
+reference-client and session sensitivity. A variance miss does not disappear;
+it constrains interpretation.
 
-Scout uses `server_connections == client_threads` and the fixed grid
-`1,2,4,8,16`; 16 client threads is the maximum accepted by fixed plans and
-direct smoke runs. The selected row means the fewest load-generator client threads
-needed to reach the scout plateau for one server thread. Scout samples are never
-publication samples.
+The frozen rho=0.25 calibration is unchanged from V2.2 because inferential
+replication is unchanged:
 
-## Publication Gates
+| Criterion | Estimate | Exact one-sided 95% lower bound |
+|---|---:|---:|
+| Declared-effect power | 0.91504 | 0.91208 |
+| Equivalence | 0.86680 | 0.86321 |
+| Twice-margin power | 0.93216 | 0.92949 |
 
-Use `tools/run-saturation-scout.py` followed by
-`tools/run-fixed-publication-suite.py --plan benchmark-plan.tsv` for
-publication rows.
+Calibration used 25,000 simulated campaigns per condition and passed the
+predeclared 0.8 minimum.
 
-Default flow:
+## Runtime policy
 
-- bounded scout writes `saturation-scout.tsv`
-- fixed plan writes `benchmark-plan.tsv`
-- successful scout output is cached with a benchmark-relevant fingerprint and
-  reused until dependency pins, benchmark-touching harness code, or scout scope
-  changes
-- one unmeasured warmup per row by default
-- 20 measured publication samples per selected row
-- 5 randomized blocks, 4 measured samples per row per block
-- no optional stopping or adaptive extension during publication
-- CI, spread, drift, and outliers are audit labels, not same-run sampling triggers
+The scheduled two-session floor is:
 
-Default gates:
+- measurement: 9,504 s
+- warmup: 936 s
+- 4,320 × 750 ms ARM lead: 3,240 s
+- four physical probes: 241 s
+- total: 13,921 s (3:52:01)
 
-| Gate | Default |
-|---|---:|
-| Bulk p50 CI relative width | <= 3% |
-| Connect/request/lifecycle p50 CI relative width | <= 5% |
-| Impaired-network p50 CI relative width | <= 8% |
-| p20/p80 middle-spread ratio | <= 1.15 |
-| Block-median ratio | <= 1.10 |
-| Absolute drift | <= 3% |
-| Scout selected-vs-best tolerance | within 2% |
-| Next scout grid improvement | < 2% |
+Historical pre-V2.3 spans are design evidence only, never publication input.
+V2.3 changes V2.2 only by raising the operational session ceiling to 10,800 s
+(3:00:00). It does not reuse any V2.2 trial.
 
-Status fields:
+The clean-start conservative budget is 1,200 s deterministic verification +
+3,847.8 s admissions + 21,600 s sessions + 600 s analysis/finalization/export
+= 27,247.8 s (7:34:07.8). The hard suite deadline is 30,000 s (8:20:00), leaving
+2,752.2 s safety margin. Plan/create rejects an identity whose frozen
+derivation exceeds the deadline. Exceeding an operational estimate alone does
+not retroactively invalidate valid samples, but loss of continuous health
+evidence does.
 
-- `measurement_status`: `complete`, `failed`, or `unsupported`
-- `audit_status`: `clean`, `noisy`, or `tail_insufficient`
-- `publication_status`: `publishable`, `inconclusive`, `failed`, or
-  `unsupported`
+Useful-measurement fraction and intrinsic overhead are prominently reported
+operational metrics, not publication gates. Rendering must finish within 60 s.
 
-A completed 20-sample row with CI, spread, or drift problems is
-`inconclusive`/`noisy`; it is not called `not_ready` and it is not extended in
-the same publication run. Public result pages may still show these completed
-rows when their status is visible. `p99` remains diagnostic unless a separate
-tail campaign has at least 300 samples.
+## Qualification and publication
 
-`publication-results.tsv` is the selected-row table. `publication-row-audit.tsv`
-preserves gate details for publication rows. `pairwise-comparisons.tsv`
-compares publishable rows only; noisy completed rows remain visible in the
-selected-row tables with their audit status.
+The SQLite journal is authoritative. Resume requires the exact immutable
+source, binary, build, host-policy, spec, schedule, and analysis identity.
+Exports and logs are never progress or sample inputs.
 
-## Controls
+`finalize` records `publication_qualified` only when cardinality, pairing,
+workload, identity, timing, health, thermal, throttle, policy,
+interoperability, physical admission, deterministic analysis, and checksums all
+pass. `implementation_complete`, diagnostic output, a dirty run, or any
+`NOT_RUN` gate is not publishable.
 
-- one pinned userspace server thread
-- unpinned client workers used only for load generation
-- hidden userspace helper threads blocked after configured workers exist
-- kernel io_uring workers reported separately
-- shared TLS 1.3 Ed25519 certificate/key/chain by default
-- verified TLS requires `tools/run-tls-verify-audit.sh`
-- loopback CUBIC congestion control for every adapter
-- shared public window, stream-limit, and workload requests where APIs permit;
-  negotiated or clamped library policy is reported, not overridden
-- server app-level completion before client/server exit
-- true per-connection/per-stream server state for multi-client rows
-- fresh random loopback port blocks by default
-- no parallel measured loopback rows unless isolated CPU lanes, server core
-  isolation, IRQ/noise audit, and one-lane-vs-N-lane A/B equivalence are proven
-
-P-256 is still selectable with explicit `QUICPERF_TLS_CERT`,
-`QUICPERF_TLS_KEY`, `QUICPERF_TLS_CHAIN`, and
-`QUICPERF_TLS_CERT_PROFILE=p256`.
-
-## Backend Rules
-
-- `syscall`: shared traditional UDP socket path
-- `iouring`: shared Linux io_uring UDP path with registered socket fd, larger
-  CQ, taskrun flags, provided buffers, multishot `recvmsg`, default UDP GSO, and
-  default UDP GRO
-- C++ owns socket creation, receive, send, batching, backend selection, and
-  timeout scheduling for measured adapters
-- `tools/audit-cpp-io-boundary.sh` is part of the build graph
-- The shared GSO path coalesces compatible same-destination QUIC packets after
-  deterministic loss filtering, so `loss_recovery` still drops at the QUIC
-  packet unit. Received UDP GRO packets are split back into QUIC-packet
-  deliveries before adapter callbacks.
-- The default GSO train is 8 UDP segments, bounded by a 64-segment buffer and
-  the UDP payload limit for explicit tuning with `QUICPERF_UDP_GSO_SEGMENTS`.
-- SQPOLL, NAPI busy polling, and zerocopy receive are outside the default
-  apples-to-apples rows.
+The [published campaign](results/v2/ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492/README.md)
+is one host- and treatment-specific result, not a universal ordering.

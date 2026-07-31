@@ -269,6 +269,10 @@ private:
   {
     if constexpr (mode & Mode::server)
     {
+      if (benchmarkIsZeroRttReqResp())
+      {
+        return genericCompletedStreams >= benchmarkGenericServerTargetStreams();
+      }
       return serverCompletedConnections >= benchmarkServerTargetConnections;
     }
     else if (benchmarkScenarioIsGenericStreamWorkload(benchmarkScenario))
@@ -705,6 +709,7 @@ private:
     state->complete = true;
     state->phase = GenericPhase::complete;
     ++activeServerState->genericCompletedStreams;
+    ++genericCompletedStreams;
     if (activeServerState->durationMode && supportsGenericDurationMode(benchmarkScenario) && activeServerState->clientDone)
     {
       activeServerState->serverDrainDeadlineUs = timeNowUs() + benchmarkDatagramDrainUs;

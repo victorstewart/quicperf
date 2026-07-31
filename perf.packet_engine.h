@@ -2627,10 +2627,9 @@ private:
     conns.reserve(benchmarkServerTargetConnections);
     const bool durationMode = benchmarkDurationModeActive() &&
                               supportsDurationMode(benchmarkScenario);
-    const uint64_t streamsPerConn = benchmarkGenericStreamsPerConnection();
     const uint64_t targetStreams = durationMode
                                        ? UINT64_MAX
-                                       : static_cast<uint64_t>(benchmarkServerTargetConnections) * streamsPerConn;
+                                       : benchmarkGenericServerTargetStreams();
     uint64_t idleLoops = 0;
     uint64_t lastStallDumpUs = nowUs();
     uint64_t durationDoneSignalsSeen = 0;
@@ -3012,14 +3011,34 @@ public:
     config.cert_path = tls_cert;
     config.key_path = tls_key;
     config.chain_path = tls_chain;
+    if constexpr (!Abi::is_zig)
+    {
+      config.tls_hostname = benchmarkTlsHostname;
+    }
+    config.calendar_unix_seconds = benchmarkTlsCalendarUnixSeconds;
     config.tls_verify_peer = benchmarkTlsVerifyPeer();
     config.use_bbr = !benchmarkCongestionProfileUsesCubic();
+    if constexpr (!Abi::is_zig)
+    {
+      config.initial_congestion_window_bytes = 13'500;
+      config.max_ack_delay_ns = 25'000'000;
+      config.ack_delay_exponent = 3;
+      config.ack_frequency = false;
+      config.active_migration = false;
+      config.active_connection_id_limit = 2;
+      config.connection_id_bytes = 8;
+      config.stream_credit_replenish_below = 32;
+      config.ticket_lifetime_ns = 300'000'000'000;
+      config.maximum_early_data_bytes = 4'096;
+      config.one_use_tickets = true;
+    }
     config.connection_window = benchmarkConnectionWindow;
     config.stream_window = benchmarkStreamWindow;
     config.max_bidi_streams = benchmarkMaxBidiStreams;
     config.max_uni_streams = benchmarkMaxUniStreams;
     config.idle_timeout_ms = benchmarkIdleTimeoutMs;
-    config.udp_payload_size = benchmarkUdpPayloadSize;
+    config.udp_payload_size = 1'350;
+    config.datagram_max_frame_size = 1'200;
     if constexpr (Abi::is_zig)
     {
       config.send_backlog_limit = config.stream_window;

@@ -1,0 +1,363 @@
+NAME nssquicperf
+VERSION 3.125-quicperf8
+SYSTEM_LIBS ALLOW
+DEPENDS nsprsource VERSION 4.39-0190cb6
+SOURCE GIT https://github.com/nss-dev/nss.git 108de14257bf363cf53a42e1ef382d44fe39c599
+BUILD_SYSTEM MANUAL
+MANUAL_BUILD_SH <<'EOF'
+set -eu
+source_dir="$DEPO_SOURCE_DIR"
+patch_file="$DEPO_BUILD_DIR/quicperf-dependency.patch"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "108de14257bf363cf53a42e1ef382d44fe39c599"
+test "$(git -C "$source_dir" rev-parse 'HEAD^{tree}')" = "5cd6efa3273e2ebbdb64e4506fd4a614efd67917"
+cat > "$patch_file" <<'QUICPERF_DEPENDENCY_PATCH'
+diff --git a/lib/ssl/ssl3con.c b/lib/ssl/ssl3con.c
+index a2790723e..3649450cd 100644
+--- a/lib/ssl/ssl3con.c
++++ b/lib/ssl/ssl3con.c
+@@ -191,6 +191,7 @@ static ssl3CipherSuiteCfg cipherSuites[ssl_V3_SUITES_IMPLEMENTED] = {
+  * cipher suites just for consistency.
+  */
+ static const SSLSignatureScheme defaultSignatureSchemes[] = {
++    ssl_sig_ed25519,
+     ssl_sig_ecdsa_secp256r1_sha256,
+     ssl_sig_ecdsa_secp384r1_sha384,
+     ssl_sig_ecdsa_secp521r1_sha512,
+@@ -363,7 +364,8 @@ static const CK_MECHANISM_TYPE auth_alg_defs[] = {
+     CKM_RSA_PKCS,          /* ssl_auth_rsa_sign */
+     CKM_RSA_PKCS_PSS,      /* ssl_auth_rsa_pss */
+     CKM_HKDF_DATA,         /* ssl_auth_psk (just check for HKDF) */
+-    CKM_INVALID_MECHANISM  /* ssl_auth_tls13_any */
++    CKM_INVALID_MECHANISM, /* ssl_auth_tls13_any */
++    CKM_EDDSA              /* ssl_auth_ed25519 */
+ };
+ PR_STATIC_ASSERT(PR_ARRAY_SIZE(auth_alg_defs) == ssl_auth_size);
+ 
+@@ -4531,6 +4533,8 @@ ssl3_AuthTypeToOID(SSLAuthType authType)
+             return SEC_OID_ANSIX962_EC_PUBLIC_KEY;
+         case ssl_auth_dsa:
+             return SEC_OID_ANSIX9_DSA_SIGNATURE;
++        case ssl_auth_ed25519:
++            return SEC_OID_ED25519_PUBLIC_KEY;
+         default:
+             break;
+     }
+@@ -4567,8 +4571,9 @@ ssl_SignatureSchemeToHashType(SSLSignatureScheme scheme)
+             return ssl_hash_sha512;
+         case ssl_sig_rsa_pkcs1_sha1md5:
+             return ssl_hash_none; /* Special for TLS 1.0/1.1. */
+-        case ssl_sig_none:
+         case ssl_sig_ed25519:
++            return ssl_hash_none;
++        case ssl_sig_none:
+         case ssl_sig_ed448:
+             break;
+     }
+@@ -4726,6 +4731,11 @@ ssl_SignatureSchemeFromSpki(const CERTSubjectPublicKeyInfo *spki,
+         return ssl_SignatureSchemeFromEcSpki(spki, scheme);
+     }
+ 
++    if (isTls13 && spkiOid == SEC_OID_ED25519_PUBLIC_KEY) {
++        *scheme = ssl_sig_ed25519;
++        return SECSuccess;
++    }
++
+     *scheme = ssl_sig_none;
+     return SECSuccess;
+ }
+@@ -4837,12 +4847,12 @@ ssl_IsSupportedSignatureScheme(SSLSignatureScheme scheme)
+         case ssl_sig_dsa_sha384:
+         case ssl_sig_dsa_sha512:
+         case ssl_sig_ecdsa_sha1:
++        case ssl_sig_ed25519:
+             return ssl_SchemePolicyOK(scheme, kSSLSigSchemePolicy);
+             break;
+ 
+         case ssl_sig_rsa_pkcs1_sha1md5:
+         case ssl_sig_none:
+-        case ssl_sig_ed25519:
+         case ssl_sig_ed448:
+             return PR_FALSE;
+     }
+@@ -4942,6 +4952,8 @@ ssl_SignatureSchemeToAuthType(SSLSignatureScheme scheme)
+         case ssl_sig_dsa_sha384:
+         case ssl_sig_dsa_sha512:
+             return ssl_auth_dsa;
++        case ssl_sig_ed25519:
++            return ssl_auth_ed25519;
+ 
+         default:
+             PORT_Assert(0);
+@@ -6031,7 +6043,8 @@ const SSLAuthType ssl_wrap_key_auth_type[SSL_NUM_WRAP_KEYS] = {
+     ssl_auth_rsa_pss,
+     ssl_auth_ecdsa,
+     ssl_auth_ecdh_rsa,
+-    ssl_auth_ecdh_ecdsa
++    ssl_auth_ecdh_ecdsa,
++    ssl_auth_ed25519
+ };
+ 
+ static SECStatus
+@@ -6270,6 +6283,19 @@ ssl3_GetWrappingKey(sslSocket *ss,
+         *pSymWrapKey = unwrappedWrappingKey = NULL;
+     }
+ 
++    /* Ed25519 cannot wrap keys. Keep this wrapping key process-local, just
++     * like the fallback self-encryption keys used when no RSA ticket key pair
++     * is configured. */
++    if (authType == ssl_auth_ed25519) {
++        if (!masterSecretSlot) {
++            goto loser;
++        }
++        length = PK11_GetBestKeyLength(masterSecretSlot, masterWrapMech);
++        unwrappedWrappingKey = PK11_KeyGen(masterSecretSlot, masterWrapMech,
++                                           NULL, length, pwArg);
++        goto install;
++    }
++
+     /* Try to get wrapped SymWrapping key out of the (disk) cache. */
+     /* Following call fills in wswk on success. */
+     rv = ssl_GetWrappingKey(wrapMechIndex, wrapKeyIndex, &wswk);
+@@ -11881,6 +11907,11 @@ ssl_SetAuthKeyBits(sslSocket *ss, const SECKEYPublicKey *pubKey)
+             }
+             break;
+ 
++        case edKey:
++            /* Ed25519 is a fixed-strength algorithm. */
++            minKey = ss->sec.authKeyBits;
++            break;
++
+         default:
+             FATAL_ERROR(ss, SEC_ERROR_LIBRARY_FAILURE, internal_error);
+             return SECFailure;
+diff --git a/lib/ssl/sslcert.c b/lib/ssl/sslcert.c
+index 0fa6ca353..3d4d297d5 100644
+--- a/lib/ssl/sslcert.c
++++ b/lib/ssl/sslcert.c
+@@ -570,6 +570,12 @@ ssl_GetCertificateAuthTypes(CERTCertificate *cert, SSLAuthType targetAuthType)
+             }
+             break;
+ 
++        case SEC_OID_ED25519_PUBLIC_KEY:
++            if (cert->keyUsage & KU_DIGITAL_SIGNATURE) {
++                authTypes |= 1 << ssl_auth_ed25519;
++            }
++            break;
++
+         default:
+             break;
+     }
+diff --git a/lib/ssl/sslimpl.h b/lib/ssl/sslimpl.h
+index c197c54ea..9cc013b2e 100644
+--- a/lib/ssl/sslimpl.h
++++ b/lib/ssl/sslimpl.h
+@@ -114,7 +114,7 @@ typedef enum { SSLAppOpRead = 0,
+ 
+ /* number of wrap mechanisms potentially used to wrap master secrets. */
+ #define SSL_NUM_WRAP_MECHS 15
+-#define SSL_NUM_WRAP_KEYS 6
++#define SSL_NUM_WRAP_KEYS 7
+ 
+ /* This makes the cert cache entry exactly 4k. */
+ #define SSL_MAX_CACHED_CERT_LEN 4060
+@@ -143,14 +143,24 @@ typedef enum {
+     sig_sign,
+ } sslSignOrVerify;
+ 
++typedef struct tlsEd25519ContextStr {
++    SECKEYPrivateKey *privKey;
++    SECKEYPublicKey *pubKey;
++    SECItem *signature;
++    void *pwArg;
++    sslBuffer message;
++} tlsEd25519Context;
++
+ /* sign or verify context */
+ struct tlsSignOrVerifyContextStr {
+     sslSignOrVerify type;
+     union {
+         SGNContext *sig;
+         VFYContext *vfy;
++        tlsEd25519Context *ed25519;
+         void *ptr;
+     } u;
++    SSLSignatureScheme scheme;
+ };
+ 
+ /* Types and names of elliptic curves used in TLS */
+diff --git a/lib/ssl/sslt.h b/lib/ssl/sslt.h
+index f9dc38a3b..067d7afef 100644
+--- a/lib/ssl/sslt.h
++++ b/lib/ssl/sslt.h
+@@ -185,6 +185,7 @@ typedef enum {
+     ssl_auth_rsa_pss = 8,    /* RSA signing with a PSS key. */
+     ssl_auth_psk = 9,
+     ssl_auth_tls13_any = 10,
++    ssl_auth_ed25519 = 11,
+     ssl_auth_size /* number of authentication types */
+ } SSLAuthType;
+ 
+diff --git a/lib/ssl/tls13signature.c b/lib/ssl/tls13signature.c
+index 04865431c..9b98c454e 100644
+--- a/lib/ssl/tls13signature.c
++++ b/lib/ssl/tls13signature.c
+@@ -8,6 +8,7 @@
+ #include "sslimpl.h"
+ #include "cryptohi.h"
+ #include "keyhi.h"
++#include "pk11pub.h"
+ 
+ /* we put this here because it only affects TLS 1.3, and not TLS 1.2 and earlier
+  * which use the old sign hashes interface. The TLS 1.3 protocol is friendly to
+@@ -57,6 +57,9 @@ tls_GetSignatureAlgorithmId(PLArenaPool *arena, SSLSignatureScheme scheme,
+             algTag = SEC_OID_ANSIX962_ECDSA_SHA512_SIGNATURE;
+             hashAlgTag = SEC_OID_SHA512;
+             break;
++        case ssl_sig_ed25519:
++            algTag = SEC_OID_ED25519_SIGNATURE;
++            break;
+ 
+         /* the following is unsupported in tls 1.3 and greater, just break.
+          * We include them here explicitly so we get the compiler warning about
+@@ -68,7 +71,6 @@ tls_GetSignatureAlgorithmId(PLArenaPool *arena, SSLSignatureScheme scheme,
+          * could change, and this is part the code that would pick up the
+          * change (need OIDS for the hash variants of these signature, and
+          * then add them here) */
+-        case ssl_sig_ed25519:
+         case ssl_sig_ed448:
+ 
+         /* sha1 hashes in sigs are explicitly disallowed in TLS 1.3 or greater */
+@@ -117,7 +120,7 @@ tls_CreateSignOrVerifyContext(SECKEYPrivateKey *privKey,
+                               SECItem *signature, void *pwArg)
+ {
+     PLArenaPool *arena = PORT_NewArena(DER_DEFAULT_CHUNKSIZE);
+-    tlsSignOrVerifyContext newCtx = { type, { NULL } };
++    tlsSignOrVerifyContext newCtx = { type, { NULL }, scheme };
+     SECStatus rv;
+ 
+     if (!arena) {
+@@ -130,6 +133,19 @@ tls_CreateSignOrVerifyContext(SECKEYPrivateKey *privKey,
+         PORT_Assert(pubKey);
+     }
+ 
++    if (scheme == ssl_sig_ed25519) {
++        newCtx.u.ed25519 = PORT_ZNew(tlsEd25519Context);
++        if (!newCtx.u.ed25519) {
++            goto loser;
++        }
++        newCtx.u.ed25519->privKey = privKey;
++        newCtx.u.ed25519->pubKey = pubKey;
++        newCtx.u.ed25519->signature = signature;
++        newCtx.u.ed25519->pwArg = pwArg;
++        PORT_FreeArena(arena, PR_FALSE);
++        return newCtx;
++    }
++
+     /* we use sigAlgID here because it automatically formats parameters
+      * for PSS. */
+     SECAlgorithmID *sigAlgID = tls_GetSignatureAlgorithmId(arena, scheme,
+@@ -170,7 +186,9 @@ tls_SignOrVerifyUpdate(tlsSignOrVerifyContext ctx, const unsigned char *buf,
+                        int len)
+ {
+     SECStatus rv;
+-    if (ctx.type == sig_sign) {
++    if (ctx.scheme == ssl_sig_ed25519) {
++        rv = sslBuffer_Append(&ctx.u.ed25519->message, buf, len);
++    } else if (ctx.type == sig_sign) {
+         rv = SGN_Update(ctx.u.sig, buf, len);
+     } else {
+         rv = VFY_Update(ctx.u.vfy, buf, len);
+@@ -182,7 +200,30 @@ SECStatus
+ tls_SignOrVerifyEnd(tlsSignOrVerifyContext ctx, SECItem *sig)
+ {
+     SECStatus rv;
+-    if (ctx.type == sig_sign) {
++    if (ctx.scheme == ssl_sig_ed25519) {
++        SECItem message = { siBuffer, ctx.u.ed25519->message.buf,
++                            ctx.u.ed25519->message.len };
++        if (ctx.type == sig_sign) {
++            int signatureLen = PK11_SignatureLen(ctx.u.ed25519->privKey);
++            if (signatureLen <= 0) {
++                PORT_SetError(SEC_ERROR_INVALID_KEY);
++                return SECFailure;
++            }
++            sig->data = PORT_Alloc(signatureLen);
++            if (!sig->data) {
++                return SECFailure;
++            }
++            sig->len = signatureLen;
++            rv = PK11_Sign(ctx.u.ed25519->privKey, sig, &message);
++            if (rv != SECSuccess) {
++                SECITEM_ZfreeItem(sig, PR_FALSE);
++            }
++        } else {
++            rv = PK11_Verify(ctx.u.ed25519->pubKey,
++                             ctx.u.ed25519->signature, &message,
++                             ctx.u.ed25519->pwArg);
++        }
++    } else if (ctx.type == sig_sign) {
+         rv = SGN_End(ctx.u.sig, sig);
+     } else {
+         /* sig was already set in the context VFY_CreateContext */
+@@ -204,7 +245,12 @@ tls_DestroySignOrVerifyContext(tlsSignOrVerifyContext *ctx)
+     if (!ctx) {
+         return;
+     }
+-    if (ctx->type == sig_sign) {
++    if (ctx->scheme == ssl_sig_ed25519) {
++        if (ctx->u.ed25519) {
++            sslBuffer_Clear(&ctx->u.ed25519->message);
++            PORT_ZFree(ctx->u.ed25519, sizeof(tlsEd25519Context));
++        }
++    } else if (ctx->type == sig_sign) {
+         if (ctx->u.sig) {
+             SGN_DestroyContext(ctx->u.sig, PR_TRUE);
+         }
+QUICPERF_DEPENDENCY_PATCH
+if git -C "$source_dir" apply --check "$patch_file"; then
+  git -C "$source_dir" apply "$patch_file"
+elif git -C "$source_dir" apply --reverse --check "$patch_file"; then
+  :
+else
+  echo "quicperf dependency patch does not match pinned source" >&2
+  exit 1
+fi
+source_index="$DEPO_BUILD_DIR/quicperf-source.index"
+rm -f "$source_index"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" read-tree HEAD
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file"
+test "$(GIT_INDEX_FILE="$source_index" git -C "$source_dir" write-tree)" = "db125fcb4bef92dbd03dcd26af87197861ee52f4"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" diff --quiet --no-ext-diff -- .
+work_root="$DEPO_BUILD_DIR/nss-work"
+rm -rf "$work_root"
+mkdir -p "$work_root"
+cp -a "$source_dir" "$work_root/nss"
+cp -a "${dep:nsprsource}/share/nspr" "$work_root/nspr"
+gyp_serial="$DEPO_BUILD_DIR/gyp-serial"
+cat > "$gyp_serial" <<'GYP_SERIAL'
+#!/bin/sh
+exec /usr/lib/node_modules/node-gyp/gyp/gyp_main.py --no-parallel "$@"
+GYP_SERIAL
+chmod +x "$gyp_serial"
+GYP="$gyp_serial" \
+  "$work_root/nss/build.sh" -c -Ddisable_tests=1 -Ddisable_dbm=1 \
+  -Ddisable_libpkix=1 -Ddisable_ckbi=1 -Ddisable_fips=1 \
+  --opt --static --disable-tests -j "$(nproc)"
+cp -a "$work_root/dist/Release/include/nspr" \
+  "$work_root/nss/quicperf-nspr-headers"
+EOF
+STAGE_TREE BUILD nss-work/nss share/nss-tree/nss
+STAGE_TREE BUILD nss-work/dist/public/nss share/nss-tree/dist/public/nss
+STAGE_TREE BUILD nss-work/dist/Release/lib share/nss-tree/dist/Release/lib
+TARGET nssquicperf::source INTERFACE share/nss-tree/nss
+TARGET nssquicperf::ssl SHARED share/nss-tree/dist/Release/lib/libssl3.so INTERFACE share/nss-tree/dist/public/nss
+TARGET nssquicperf::smime SHARED share/nss-tree/dist/Release/lib/libsmime3.so
+TARGET nssquicperf::nss SHARED share/nss-tree/dist/Release/lib/libnss3.so
+TARGET nssquicperf::util SHARED share/nss-tree/dist/Release/lib/libnssutil3.so
+TARGET nssquicperf::plds SHARED share/nss-tree/dist/Release/lib/libplds4.so
+TARGET nssquicperf::plc SHARED share/nss-tree/dist/Release/lib/libplc4.so
+TARGET nssquicperf::nspr SHARED share/nss-tree/dist/Release/lib/libnspr4.so
+TARGET nssquicperf::softokn SHARED share/nss-tree/dist/Release/lib/libsoftokn3.so
+TARGET nssquicperf::freeblpriv SHARED share/nss-tree/dist/Release/lib/libfreeblpriv3.so
+TARGET nssquicperf::sqlite SHARED share/nss-tree/dist/Release/lib/libsqlite3.so
+LINK nssquicperf::ssl nssquicperf::smime nssquicperf::nss nssquicperf::util nssquicperf::plds nssquicperf::plc nssquicperf::nspr nssquicperf::softokn nssquicperf::freeblpriv nssquicperf::sqlite

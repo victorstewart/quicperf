@@ -733,10 +733,17 @@ static void verifyThreadCount(const char *role, const char *phase, int expectedT
 }
 
 // mode (client or server) networking (iouring or syscall) serverIpAddress (any, loopback, or ipv6)
+int quicperfV2Main(int argc, char *argv[]);
+
 int main(int argc, char *argv[])
 {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   setvbuf(stderr, nullptr, _IONBF, 0);
+
+  if (argc >= 2 && (strcmp(argv[1], "describe") == 0 || strcmp(argv[1], "worker") == 0))
+  {
+    return quicperfV2Main(argc, argv);
+  }
 
   if (argc < 4)
   {

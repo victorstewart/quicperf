@@ -1,0 +1,352 @@
+NAME s2nsource
+VERSION quicperf-c-abi-15175ed-quicperf3
+SYSTEM_LIBS ALLOW
+SOURCE GIT https://github.com/victorstewart/s2n-quic.git 15175edba353f79e2dc4b9b4fa3786f36d30ebf1
+BUILD_SYSTEM MANUAL
+MANUAL_BUILD_SH <<'EOF'
+set -eu
+source_dir="$DEPO_SOURCE_DIR"
+patch_file="$DEPO_BUILD_DIR/quicperf-negotiated-settings.patch"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "15175edba353f79e2dc4b9b4fa3786f36d30ebf1"
+test "$(git -C "$source_dir" rev-parse 'HEAD^{tree}')" = "fa3dca290eb7d935d4ced0234adf79fd6da34c11"
+cat > "$patch_file" <<'QUICPERF_DEPENDENCY_PATCH'
+diff --git a/quic/s2n-quic-core/events/common.rs b/quic/s2n-quic-core/events/common.rs
+index 6d01e5d75926f9231f42ef74670ed00ed7c41779..29067a60a07255cbedcbb5ddb43d7a697e6f7d50 100644
+--- a/quic/s2n-quic-core/events/common.rs
++++ b/quic/s2n-quic-core/events/common.rs
+@@ -45,6 +45,7 @@ struct TransportParameters<'a> {
+     max_ack_delay: Duration,
+     max_udp_payload_size: u64,
+     active_connection_id_limit: u64,
++    initial_max_data: u64,
+     initial_max_stream_data_bidi_local: u64,
+     initial_max_stream_data_bidi_remote: u64,
+     initial_max_stream_data_uni: u64,
+diff --git a/quic/s2n-quic-core/src/datagram/default.rs b/quic/s2n-quic-core/src/datagram/default.rs
+index 91ebd3799d74e84c64e8dff9db77ccb549b76c44..a641fc599faace68bb87b8192eecff75b67d6ec0 100644
+--- a/quic/s2n-quic-core/src/datagram/default.rs
++++ b/quic/s2n-quic-core/src/datagram/default.rs
+@@ -23,10 +23,17 @@ use core::{
+ /// and Receiver behavior can be swapped out by implementing the respective [`Sender`](s2n-quic-core::datagram::traits::Sender) and
+ /// [`Receiver`](s2n-quic-core::datagram::traits::Receiver) traits.
+ ///
+-#[derive(Debug, Default)]
++#[derive(Debug)]
+ pub struct Endpoint {
+     send_queue_capacity: usize,
+     recv_queue_capacity: usize,
++    max_datagram_frame_size: u64,
++}
++
++impl Default for Endpoint {
++    fn default() -> Self {
++        EndpointBuilder::default().build().unwrap()
++    }
+ }
+ 
+ impl Endpoint {
+@@ -37,10 +44,21 @@ impl Endpoint {
+ }
+ 
+ /// A builder for the default datagram endpoint
+-#[derive(Debug, Default)]
++#[derive(Debug)]
+ pub struct EndpointBuilder {
+     send_queue_capacity: usize,
+     recv_queue_capacity: usize,
++    max_datagram_frame_size: u64,
++}
++
++impl Default for EndpointBuilder {
++    fn default() -> Self {
++        Self {
++            send_queue_capacity: 0,
++            recv_queue_capacity: 0,
++            max_datagram_frame_size: MaxDatagramFrameSize::RECOMMENDED,
++        }
++    }
+ }
+ 
+ #[non_exhaustive]
+@@ -79,10 +97,17 @@ impl EndpointBuilder {
+         Ok(self)
+     }
+ 
++    /// Sets the maximum DATAGRAM frame size advertised to the peer.
++    pub fn with_max_datagram_frame_size(mut self, size: u64) -> Self {
++        self.max_datagram_frame_size = size;
++        self
++    }
++
+     pub fn build(self) -> Result<Endpoint, core::convert::Infallible> {
+         Ok(Endpoint {
+             send_queue_capacity: self.send_queue_capacity,
+             recv_queue_capacity: self.recv_queue_capacity,
++            max_datagram_frame_size: self.max_datagram_frame_size,
+         })
+     }
+ }
+@@ -100,14 +125,14 @@ impl super::Endpoint for Endpoint {
+                 .unwrap(),
+             Receiver::builder()
+                 .with_capacity(self.recv_queue_capacity)
+-                .with_max_datagram_frame_size(MaxDatagramFrameSize::RECOMMENDED)
++                .with_max_datagram_frame_size(self.max_datagram_frame_size)
+                 .build()
+                 .unwrap(),
+         )
+     }
+ 
+     fn max_datagram_frame_size(&self, _info: &PreConnectionInfo) -> u64 {
+-        MaxDatagramFrameSize::RECOMMENDED
++        self.max_datagram_frame_size
+     }
+ }
+ 
+@@ -578,6 +603,25 @@ mod tests {
+     use core::task::{Context, Poll};
+     use futures_test::task::{new_count_waker, noop_waker};
+ 
++    #[test]
++    fn endpoint_advertises_configured_max_datagram_frame_size() {
++        let endpoint = Endpoint::builder()
++            .with_send_capacity(1)
++            .unwrap()
++            .with_recv_capacity(1)
++            .unwrap()
++            .with_max_datagram_frame_size(1200)
++            .build()
++            .unwrap();
++        assert_eq!(
++            crate::datagram::Endpoint::max_datagram_frame_size(
++                &endpoint,
++                &PreConnectionInfo::new(),
++            ),
++            1200
++        );
++    }
++
+     #[test]
+     fn send_datagram_forced() {
+         let conn_info = ConnectionInfo {
+diff --git a/quic/s2n-quic-core/src/event/generated.rs b/quic/s2n-quic-core/src/event/generated.rs
+index 77696ea244931f847a7321b66722b42b2be27bbc..7e4c1874ae52fcb86668b8c0dedf4b26189dbca1 100644
+--- a/quic/s2n-quic-core/src/event/generated.rs
++++ b/quic/s2n-quic-core/src/event/generated.rs
+@@ -73,6 +73,7 @@ pub mod api {
+         pub max_ack_delay: Duration,
+         pub max_udp_payload_size: u64,
+         pub active_connection_id_limit: u64,
++        pub initial_max_data: u64,
+         pub initial_max_stream_data_bidi_local: u64,
+         pub initial_max_stream_data_bidi_remote: u64,
+         pub initial_max_stream_data_uni: u64,
+@@ -109,6 +110,7 @@ pub mod api {
+                 "active_connection_id_limit",
+                 &self.active_connection_id_limit,
+             );
++            fmt.field("initial_max_data", &self.initial_max_data);
+             fmt.field(
+                 "initial_max_stream_data_bidi_local",
+                 &self.initial_max_stream_data_bidi_local,
+@@ -4716,6 +4718,7 @@ pub mod builder {
+         pub max_ack_delay: Duration,
+         pub max_udp_payload_size: u64,
+         pub active_connection_id_limit: u64,
++        pub initial_max_data: u64,
+         pub initial_max_stream_data_bidi_local: u64,
+         pub initial_max_stream_data_bidi_remote: u64,
+         pub initial_max_stream_data_uni: u64,
+@@ -4740,6 +4743,7 @@ pub mod builder {
+                 max_ack_delay,
+                 max_udp_payload_size,
+                 active_connection_id_limit,
++                initial_max_data,
+                 initial_max_stream_data_bidi_local,
+                 initial_max_stream_data_bidi_remote,
+                 initial_max_stream_data_uni,
+@@ -4761,6 +4765,7 @@ pub mod builder {
+                 max_ack_delay: max_ack_delay.into_event(),
+                 max_udp_payload_size: max_udp_payload_size.into_event(),
+                 active_connection_id_limit: active_connection_id_limit.into_event(),
++                initial_max_data: initial_max_data.into_event(),
+                 initial_max_stream_data_bidi_local: initial_max_stream_data_bidi_local.into_event(),
+                 initial_max_stream_data_bidi_remote: initial_max_stream_data_bidi_remote
+                     .into_event(),
+diff --git a/quic/s2n-quic-core/src/transport/parameters/mod.rs b/quic/s2n-quic-core/src/transport/parameters/mod.rs
+index ca9865aa8a70bfe08d40342892a366e9d91ec110..4aab80715a4f6ecd83b510182c2faf066203bb3a 100644
+--- a/quic/s2n-quic-core/src/transport/parameters/mod.rs
++++ b/quic/s2n-quic-core/src/transport/parameters/mod.rs
+@@ -1417,6 +1417,7 @@ impl<'a> IntoEvent<event::builder::TransportParameters<'a>> for &'a ServerTransp
+             ack_delay_exponent: self.ack_delay_exponent.into_event(),
+             max_ack_delay: Duration::from(self.max_ack_delay),
+             active_connection_id_limit: self.active_connection_id_limit.into_event(),
++            initial_max_data: self.initial_max_data.into_event(),
+             initial_max_stream_data_bidi_local: self
+                 .initial_max_stream_data_bidi_local
+                 .into_event(),
+@@ -1450,6 +1451,7 @@ impl<'a> IntoEvent<event::builder::TransportParameters<'a>> for &'a ClientTransp
+             ack_delay_exponent: self.ack_delay_exponent.into_event(),
+             max_ack_delay: Duration::from(self.max_ack_delay),
+             active_connection_id_limit: self.active_connection_id_limit.into_event(),
++            initial_max_data: self.initial_max_data.into_event(),
+             initial_max_stream_data_bidi_local: self
+                 .initial_max_stream_data_bidi_local
+                 .into_event(),
+QUICPERF_DEPENDENCY_PATCH
+if git -C "$source_dir" apply --check "$patch_file"; then
+  git -C "$source_dir" apply "$patch_file"
+elif git -C "$source_dir" apply --reverse --check "$patch_file"; then
+  :
+else
+  echo "quicperf s2n negotiated-settings patch does not match pinned source" >&2
+  exit 1
+fi
+udp_patch_file="$DEPO_BUILD_DIR/quicperf-max-udp-payload.patch"
+cat > "$udp_patch_file" <<'QUICPERF_MAX_UDP_PAYLOAD_PATCH'
+diff --git a/quic/s2n-quic-core/src/connection/limits.rs b/quic/s2n-quic-core/src/connection/limits.rs
+index cb7ba1185157bb0175e22d3fa8d0b90d48d9bdbd..b407554bf87d07d636dd14ab1f43fb1eb465952f 100644
+--- a/quic/s2n-quic-core/src/connection/limits.rs
++++ b/quic/s2n-quic-core/src/connection/limits.rs
+@@ -10,7 +10,8 @@ use crate::{
+         AckDelayExponent, ActiveConnectionIdLimit, InitialFlowControlLimits, InitialMaxData,
+         InitialMaxStreamDataBidiLocal, InitialMaxStreamDataBidiRemote, InitialMaxStreamDataUni,
+         InitialMaxStreamsBidi, InitialMaxStreamsUni, InitialStreamLimits, MaxAckDelay,
+-        MaxDatagramFrameSize, MaxIdleTimeout, MigrationSupport, TransportParameters,
++        MaxDatagramFrameSize, MaxIdleTimeout, MaxUdpPayloadSize, MigrationSupport,
++        TransportParameters,
+     },
+ };
+ #[cfg(feature = "alloc")]
+@@ -89,6 +90,7 @@ impl<'a> HandshakeInfo<'a> {
+ #[derive(Clone, Copy, Debug)]
+ pub struct Limits {
+     pub(crate) max_idle_timeout: MaxIdleTimeout,
++    pub(crate) max_udp_payload_size: MaxUdpPayloadSize,
+     pub(crate) data_window: InitialMaxData,
+     pub(crate) bidirectional_local_data_window: InitialMaxStreamDataBidiLocal,
+     pub(crate) bidirectional_remote_data_window: InitialMaxStreamDataBidiRemote,
+@@ -137,6 +139,7 @@ impl Limits {
+     pub const fn new() -> Self {
+         Self {
+             max_idle_timeout: MaxIdleTimeout::RECOMMENDED,
++            max_udp_payload_size: MaxUdpPayloadSize::MAXIMUM,
+             data_window: InitialMaxData::RECOMMENDED,
+             bidirectional_local_data_window: InitialMaxStreamDataBidiLocal::RECOMMENDED,
+             bidirectional_remote_data_window: InitialMaxStreamDataBidiRemote::RECOMMENDED,
+@@ -262,6 +265,7 @@ impl Limits {
+         u64
+     );
+     setter!(with_max_ack_delay, max_ack_delay, Duration);
++    setter!(with_max_udp_payload_size, max_udp_payload_size, u16);
+     setter!(
+         with_max_active_connection_ids,
+         max_active_connection_ids,
+@@ -531,6 +535,12 @@ mod tests {
+         assert!(limits.with_unidirectional_data_window(data).is_ok());
+     }
+ 
++    #[test]
++    fn max_udp_payload_size_is_configurable() {
++        let limits = Limits::new().with_max_udp_payload_size(1350).unwrap();
++        assert_eq!(*limits.max_udp_payload_size, 1350u64);
++    }
++
+     // Limits can be updated through the UpdatableLimits wrapper
+     #[test]
+     fn updatable_limits() {
+diff --git a/quic/s2n-quic-core/src/transport/parameters/mod.rs b/quic/s2n-quic-core/src/transport/parameters/mod.rs
+index 4aab80715a4f6ecd83b510182c2faf066203bb3a..02f9ce65ac5ebfbbe17f978ba4bfe2a5036d2fbe 100644
+--- a/quic/s2n-quic-core/src/transport/parameters/mod.rs
++++ b/quic/s2n-quic-core/src/transport/parameters/mod.rs
+@@ -597,6 +597,10 @@ impl TransportParameterValidator for MaxUdpPayloadSize {
+     }
+ }
+ 
++impl MaxUdpPayloadSize {
++    pub const MAXIMUM: Self = Self(VarInt::from_u16(65527));
++}
++
+ impl TryFrom<u16> for MaxUdpPayloadSize {
+     type Error = ValidationError;
+ 
+@@ -1634,6 +1638,7 @@ impl<
+         }
+ 
+         load!(max_idle_timeout, max_idle_timeout);
++        load!(max_udp_payload_size, max_udp_payload_size);
+         load!(data_window, initial_max_data);
+         load!(
+             bidirectional_local_data_window,
+QUICPERF_MAX_UDP_PAYLOAD_PATCH
+if git -C "$source_dir" apply --check "$udp_patch_file"; then
+  git -C "$source_dir" apply "$udp_patch_file"
+elif git -C "$source_dir" apply --reverse --check "$udp_patch_file"; then
+  :
+else
+  echo "quicperf s2n max-UDP-payload patch does not match pinned source" >&2
+  exit 1
+fi
+cid_patch_file="$DEPO_BUILD_DIR/quicperf-active-cid-limit.patch"
+cat > "$cid_patch_file" <<'QUICPERF_ACTIVE_CID_LIMIT_PATCH'
+diff --git a/quic/s2n-quic-transport/src/endpoint/initial.rs b/quic/s2n-quic-transport/src/endpoint/initial.rs
+index 3ed2118374387cfe058541adbf03389bfda78bae..30119c8ad43698bff8d90ae6a097f31c5b65f5ca 100644
+--- a/quic/s2n-quic-transport/src/endpoint/initial.rs
++++ b/quic/s2n-quic-transport/src/endpoint/initial.rs
+@@ -209,19 +209,6 @@ impl<Config: endpoint::Config> endpoint::Endpoint<Config> {
+                 .expect("connection ID already validated"),
+         );
+ 
+-        //= https://www.rfc-editor.org/rfc/rfc9000#section-18.2
+-        //# active_connection_id_limit (0x0e):  This is an integer value
+-        //#    specifying the maximum number of connection IDs from the peer that
+-        //#    an endpoint is willing to store.  This value includes the
+-        //#    connection ID received during the handshake, that received in the
+-        //#    preferred_address transport parameter, and those received in
+-        //#    NEW_CONNECTION_ID frames.
+-        transport_parameters.active_connection_id_limit = s2n_quic_core::varint::VarInt::from(
+-            connection::peer_id_registry::ACTIVE_CONNECTION_ID_LIMIT,
+-        )
+-        .try_into()
+-        .unwrap();
+-
+         let endpoint_context = self.config.context();
+ 
+         transport_parameters.max_datagram_frame_size = endpoint_context
+diff --git a/quic/s2n-quic-transport/src/endpoint/mod.rs b/quic/s2n-quic-transport/src/endpoint/mod.rs
+index 6e847e50ec8bedb5bb8c1e7b727e9ac054bda99d..788160352c6fbebd0cccb233a07343d35a6e5d70 100644
+--- a/quic/s2n-quic-transport/src/endpoint/mod.rs
++++ b/quic/s2n-quic-transport/src/endpoint/mod.rs
+@@ -1221,12 +1221,6 @@ impl<Cfg: Config> Endpoint<Cfg> {
+             .try_into()
+             .expect("Failed to convert max_datagram_frame_size");
+ 
+-        transport_parameters.active_connection_id_limit = s2n_quic_core::varint::VarInt::from(
+-            connection::peer_id_registry::ACTIVE_CONNECTION_ID_LIMIT,
+-        )
+-        .try_into()
+-        .unwrap();
+-
+         if Cfg::DcEndpoint::ENABLED {
+             transport_parameters.dc_supported_versions =
+                 DcSupportedVersions::for_client(dc::SUPPORTED_VERSIONS);
+QUICPERF_ACTIVE_CID_LIMIT_PATCH
+if git -C "$source_dir" apply --check "$cid_patch_file"; then
+  git -C "$source_dir" apply "$cid_patch_file"
+elif git -C "$source_dir" apply --reverse --check "$cid_patch_file"; then
+  :
+else
+  echo "quicperf s2n active-CID-limit patch does not match pinned source" >&2
+  exit 1
+fi
+source_index="$DEPO_BUILD_DIR/quicperf-source.index"
+rm -f "$source_index"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" read-tree HEAD
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$udp_patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$cid_patch_file"
+test "$(GIT_INDEX_FILE="$source_index" git -C "$source_dir" write-tree)" = "6f990c95f9c4b551c4f9424182b43dcc38962f40"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" diff --quiet --no-ext-diff -- .
+EOF
+STAGE_TREE SOURCE . share/s2n
+TARGET s2nsource::source INTERFACE share/s2n

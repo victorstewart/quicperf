@@ -1,5 +1,5 @@
 NAME lsquic
-VERSION 4.7.0
+VERSION 4.7.0-quicperf5
 SYSTEM_LIBS ALLOW
 DEPENDS boringssl VERSION main-beddb58-pic
 DEPENDS zlib VERSION 1.3.2
@@ -14,5 +14,944 @@ CMAKE_DEFINE LSQUIC_TESTS=OFF
 CMAKE_DEFINE LSQUIC_SHARED_LIB=OFF
 CMAKE_DEFINE BORINGSSL_INCLUDE=${dep:boringssl}/include
 CMAKE_DEFINE BORINGSSL_DIR=${dep:boringssl}
+CMAKE_BUILD_SH <<'EOF'
+set -eu
+source_dir="$DEPO_SOURCE_DIR"
+patch_file="$DEPO_BUILD_DIR/quicperf-dependency.patch"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "39718e50d60405efcb4e3bb6a8b7d9e28aee96eb"
+test "$(git -C "$source_dir" rev-parse 'HEAD^{tree}')" = "c3d2683cd7205a33912a302731b1a2c4167298c6"
+cat > "$patch_file" <<'QUICPERF_DEPENDENCY_PATCH'
+diff --git a/include/lsquic.h b/include/lsquic.h
+index 38a30ee230543af79ee82d5f02e2d59336c228bc..353fbd170542b94b00452df41fe014f9c01c9717 100644
+--- a/include/lsquic.h
++++ b/include/lsquic.h
+@@ -227,6 +227,12 @@ struct lsquic_stream_if {
+      * just one direction in IETF QUIC.
+      */
+     void (*on_reset)    (lsquic_stream_t *s, lsquic_stream_ctx_t *h, int how);
++    /**
++     * Optional extended reset callback.  It has the same `how' semantics as
++     * on_reset and additionally reports the peer's application error code.
++     */
++    void (*on_reset_ext)(lsquic_stream_t *s, lsquic_stream_ctx_t *h, int how,
++                                                        uint64_t error_code);
+     /**
+      * Optional callback is called when a CONNECTION_CLOSE frame is received.
+      * This allows the application to log low-level diagnostic information about
+@@ -1515,6 +1521,20 @@ lsquic_engine_connect (lsquic_engine_t *, enum lsquic_version,
+                        /** Resumption token: optional */
+                        const unsigned char *token, size_t token_sz);
+ 
++/**
++ * Extended client connection constructor.  When `use_0rtt' is zero, session
++ * resumption remains enabled but TLS early data and cached transport-parameter
++ * use before handshake confirmation are disabled.
++ */
++lsquic_conn_t *
++lsquic_engine_connect_ext (lsquic_engine_t *, enum lsquic_version,
++                       const struct sockaddr *local_sa,
++                       const struct sockaddr *peer_sa,
++                       void *peer_ctx, lsquic_conn_ctx_t *conn_ctx,
++                       const char *hostname, unsigned short base_plpmtu,
++                       const unsigned char *sess_resume, size_t sess_resume_len,
++                       const unsigned char *token, size_t token_sz, int use_0rtt);
++
+ /**
+  * Pass incoming packet to the QUIC engine.  This function can be called
+  * more than once in a row.  After you add one or more packets, call
+@@ -1611,6 +1631,16 @@ lsquic_conn_going_away (lsquic_conn_t *);
+ void
+ lsquic_conn_close (lsquic_conn_t *);
+ 
++/** Send an application CONNECTION_CLOSE with the supplied code and reason. */
++int
++lsquic_conn_close_ext (lsquic_conn_t *, uint64_t error_code,
++                                            const char *reason, size_t reason_len);
++
++/** Return retained client-side 0-RTT state. */
++int
++lsquic_conn_get_early_data_status (const lsquic_conn_t *, int *attempted,
++                                                    int *accepted, int *rejected);
++
+ /**
+  * Set whether you want to read from stream.  If @param is_want is true,
+  * @ref on_read() will be called when there is readable data in the
+@@ -1795,6 +1825,12 @@ lsquic_conn_is_push_enabled (lsquic_conn_t *);
+ /** Possible values for how are 0, 1, and 2.  See shutdown(2). */
+ int lsquic_stream_shutdown(lsquic_stream_t *s, int how);
+ 
++/** Send RESET_STREAM with the supplied application error code. */
++int lsquic_stream_reset_ext(lsquic_stream_t *s, uint64_t error_code);
++
++/** Send STOP_SENDING with the supplied application error code. */
++int lsquic_stream_stop_sending_ext(lsquic_stream_t *s, uint64_t error_code);
++
+ int lsquic_stream_close(lsquic_stream_t *s);
+ 
+ /**
+diff --git a/src/liblsquic/lsquic_eng_hist.h b/src/liblsquic/lsquic_eng_hist.h
+index 0e554df4a8d331f2d33f5522626a5181307f163f..071be63930e34aa0c81da85e8c94c484e6d430d0 100644
+--- a/src/liblsquic/lsquic_eng_hist.h
++++ b/src/liblsquic/lsquic_eng_hist.h
+@@ -10,7 +10,7 @@
+ 
+ #include "lsquic_int_types.h"
+ 
+-#define ENG_HIST_ENABLED 1
++#define ENG_HIST_ENABLED 0
+ 
+ #define ENG_HIST_BITS    2
+ #define ENG_HIST_NELEMS (1 << ENG_HIST_BITS)
+diff --git a/src/liblsquic/lsquic_conn.c b/src/liblsquic/lsquic_conn.c
+index d3d723ee73b8bb281f95462ceb78caa7e5caaf39..413acf8cb315d4c3eb3d31c3b5664b239200fd1c 100644
+--- a/src/liblsquic/lsquic_conn.c
++++ b/src/liblsquic/lsquic_conn.c
+@@ -1,6 +1,8 @@
+ /* Copyright (c) 2017 - 2026 LiteSpeed Technologies Inc.  See LICENSE. */
+ #include <assert.h>
++#include <errno.h>
+ #include <inttypes.h>
++#include <limits.h>
+ #include <string.h>
+ #include <sys/queue.h>
+ 
+@@ -180,6 +182,43 @@ lsquic_conn_close (struct lsquic_conn *lconn)
+ }
+ 
+ 
++int
++lsquic_conn_close_ext (struct lsquic_conn *lconn, uint64_t error_code,
++                                            const char *reason, size_t reason_len)
++{
++    if (!(lconn->cn_flags & LSCONN_IETF))
++    {
++        errno = ENOTSUP;
++        return -1;
++    }
++    if (error_code > UINT_MAX || reason_len >= 0x100 || reason_len > INT_MAX
++            || (reason_len && (!reason || memchr(reason, '\0', reason_len))))
++    {
++        errno = EINVAL;
++        return -1;
++    }
++    lconn->cn_if->ci_abort_error(lconn, 1, (unsigned) error_code, "%.*s",
++                        (int) reason_len, reason ? reason : "");
++    return 0;
++}
++
++
++int
++lsquic_conn_get_early_data_status (const struct lsquic_conn *lconn,
++                                    int *attempted, int *accepted, int *rejected)
++{
++    if (!attempted || !accepted || !rejected)
++    {
++        errno = EINVAL;
++        return -1;
++    }
++    *attempted = !!(lconn->cn_flags & LSCONN_0RTT_ATTEMPTED);
++    *accepted = !!(lconn->cn_flags & LSCONN_0RTT_ACCEPTED);
++    *rejected = !!(lconn->cn_flags & LSCONN_0RTT_REJECTED);
++    return 0;
++}
++
++
+ int
+ lsquic_conn_is_push_enabled (lsquic_conn_t *lconn)
+ {
+@@ -369,4 +408,3 @@ lsquic_conn_get_param (lsquic_conn_t *lconn, enum lsquic_conn_param param,
+         return lconn->cn_if->ci_get_param(lconn, param, value, value_len);
+     return -1;
+ }
+-
+diff --git a/src/liblsquic/lsquic_conn.h b/src/liblsquic/lsquic_conn.h
+index b1e0ec10c26bbc8df4ce4de31559b0e40c30b1b9..b137b9a6f8f30de4c30c21e46f2a3d238798e514 100644
+--- a/src/liblsquic/lsquic_conn.h
++++ b/src/liblsquic/lsquic_conn.h
+@@ -62,6 +62,9 @@ enum lsquic_conn_flags {
+     LSCONN_RETRY_CONN     = (1 <<24),   /* This is a retry connection */
+     LSCONN_VER_UPDATED    = (1 <<25),
+     LSCONN_NO_BL          = (1 <<26),
++    LSCONN_0RTT_ATTEMPTED = (1 <<27),
++    LSCONN_0RTT_ACCEPTED  = (1 <<28),
++    LSCONN_0RTT_REJECTED  = (1 <<29),
+ };
+ 
+ /* A connection may have things to send and be closed at the same time.
+diff --git a/src/liblsquic/lsquic_enc_sess_ietf.c b/src/liblsquic/lsquic_enc_sess_ietf.c
+index 9339dc38e62650c1cd8b840991bd17db019ca59f..3a909e962f8a2b377173e3e5bbf1d71305457b08 100644
+--- a/src/liblsquic/lsquic_enc_sess_ietf.c
++++ b/src/liblsquic/lsquic_enc_sess_ietf.c
+@@ -2834,11 +2834,19 @@ iquic_esfi_data_in (enc_session_t *sess, enum enc_level enc_level,
+ static void iquic_esfi_shake_stream (enc_session_t *sess,
+                             struct lsquic_stream *stream, const char *what);
+ 
++static SSL *
++iquic_esfi_get_ssl (enc_session_t *enc_session_p)
++{
++    struct enc_sess_iquic *const enc_sess = enc_session_p;
++    return enc_sess->esi_ssl;
++}
++
+ 
+ const struct enc_session_funcs_iquic lsquic_enc_session_iquic_ietf_v1 =
+ {
+     .esfi_create_client  = iquic_esfi_create_client,
+     .esfi_destroy        = iquic_esfi_destroy,
++    .esfi_get_ssl        = iquic_esfi_get_ssl,
+     .esfi_get_peer_transport_params
+                          = iquic_esfi_get_peer_transport_params,
+     .esfi_reset_dcid     = iquic_esfi_reset_dcid,
+diff --git a/src/liblsquic/lsquic_engine.c b/src/liblsquic/lsquic_engine.c
+index 3d50c6075ed5ba38dd734ed5af40ec9ce7ee6a41..ea3b0133114c7f68d7775e3621be102abe098271 100644
+--- a/src/liblsquic/lsquic_engine.c
++++ b/src/liblsquic/lsquic_engine.c
+@@ -1937,6 +1937,21 @@ lsquic_engine_connect (lsquic_engine_t *engine, enum lsquic_version version,
+                        const char *hostname, unsigned short base_plpmtu,
+                        const unsigned char *sess_resume, size_t sess_resume_len,
+                        const unsigned char *token, size_t token_sz)
++{
++    return lsquic_engine_connect_ext(engine, version, local_sa, peer_sa,
++            peer_ctx, conn_ctx, hostname, base_plpmtu, sess_resume,
++            sess_resume_len, token, token_sz, 1);
++}
++
++
++lsquic_conn_t *
++lsquic_engine_connect_ext (lsquic_engine_t *engine, enum lsquic_version version,
++                       const struct sockaddr *local_sa,
++                       const struct sockaddr *peer_sa,
++                       void *peer_ctx, lsquic_conn_ctx_t *conn_ctx,
++                       const char *hostname, unsigned short base_plpmtu,
++                       const unsigned char *sess_resume, size_t sess_resume_len,
++                       const unsigned char *token, size_t token_sz, int use_0rtt)
+ {
+     lsquic_conn_t *conn;
+     unsigned flags, versions;
+@@ -1982,7 +1997,8 @@ lsquic_engine_connect (lsquic_engine_t *engine, enum lsquic_version version,
+     if (versions & LSQUIC_IETF_VERSIONS)
+         conn = lsquic_ietf_full_conn_client_new(&engine->pub, versions,
+                     flags, hostname, base_plpmtu,
+-                    is_ipv4, sess_resume, sess_resume_len, token, token_sz, peer_ctx);
++                    is_ipv4, sess_resume, sess_resume_len, token, token_sz,
++                    peer_ctx, use_0rtt);
+     else
+         conn = lsquic_gquic_full_conn_client_new(&engine->pub, versions,
+                             flags, hostname, base_plpmtu, is_ipv4,
+@@ -3585,4 +3601,3 @@ lsquic_engine_retire_cid (struct lsquic_engine_public *enpub,
+     LSQ_DEBUGC("retire CID %"CID_FMT, CID_BITS(&cce->cce_cid));
+ }
+ 
+-
+diff --git a/src/liblsquic/lsquic_full_conn.h b/src/liblsquic/lsquic_full_conn.h
+index cb39ce0a2fd66014d61374233da1fc07aae51f69..84a33db692c36966acb381e82929a462fb51f0b5 100644
+--- a/src/liblsquic/lsquic_full_conn.h
++++ b/src/liblsquic/lsquic_full_conn.h
+@@ -19,7 +19,7 @@ lsquic_ietf_full_conn_client_new (struct lsquic_engine_public *,
+                unsigned flags /* Only FC_SERVER and FC_HTTP */,
+            const char *hostname, unsigned short base_plpmtu, int is_ipv4,
+            const unsigned char *sess_resume, size_t,
+-           const unsigned char *token, size_t, void* peer_ctx);
++           const unsigned char *token, size_t, void* peer_ctx, int use_0rtt);
+ 
+ typedef struct lsquic_conn *
+ (*server_conn_ctor_f) (struct lsquic_engine_public *,
+diff --git a/src/liblsquic/lsquic_full_conn_ietf.c b/src/liblsquic/lsquic_full_conn_ietf.c
+index a0ac7ed4ed3a638a339f0ab0311201800b616156..35e3db3b97efe5e41be5513a16af76782f04744e 100644
+--- a/src/liblsquic/lsquic_full_conn_ietf.c
++++ b/src/liblsquic/lsquic_full_conn_ietf.c
+@@ -16,6 +16,7 @@
+ 
+ #include <openssl/aead.h>
+ #include <openssl/rand.h>
++#include <openssl/ssl.h>
+ 
+ #include "fiu-local.h"
+ 
+@@ -1303,7 +1304,8 @@ lsquic_ietf_full_conn_client_new (struct lsquic_engine_public *enpub,
+            unsigned versions, unsigned flags,
+            const char *hostname, unsigned short base_plpmtu, int is_ipv4,
+            const unsigned char *sess_resume, size_t sess_resume_sz,
+-           const unsigned char *token, size_t token_sz, void* peer_ctx)
++           const unsigned char *token, size_t token_sz, void* peer_ctx,
++           int use_0rtt)
+ {
+     const struct transport_params *params;
+     const struct enc_session_funcs_iquic *esfi;
+@@ -1391,6 +1393,9 @@ lsquic_ietf_full_conn_client_new (struct lsquic_engine_public *enpub,
+                 conn->ifc_max_streams_in[SD_UNI], peer_ctx);
+     if (!conn->ifc_conn.cn_enc_session)
+         goto err2;
++    if (!use_0rtt)
++        SSL_set_early_data_enabled(conn->ifc_conn.cn_esf.i->esfi_get_ssl(
++                                    conn->ifc_conn.cn_enc_session), 0);
+ 
+     conn->ifc_u.cli.crypto_streams[ENC_LEV_INIT] = lsquic_stream_new_crypto(
+                 ENC_LEV_INIT, &conn->ifc_pub, &lsquic_cry_sm_if,
+@@ -1411,7 +1416,7 @@ lsquic_ietf_full_conn_client_new (struct lsquic_engine_public *enpub,
+     conn->ifc_process_incoming_packet = process_incoming_packet_verneg;
+     conn->ifc_created = now;
+     LSQ_DEBUG("logging using client SCID");
+-    if (sess_resume && (params
++    if (use_0rtt && sess_resume && (params
+             = conn->ifc_conn.cn_esf.i->esfi_get_peer_transport_params(
+                             conn->ifc_conn.cn_enc_session), params != NULL))
+     {
+@@ -1421,6 +1426,7 @@ lsquic_ietf_full_conn_client_new (struct lsquic_engine_public *enpub,
+         if ((conn->ifc_flags & IFC_HTTP) && 0 != init_http(conn))
+             goto full_err;
+         conn->ifc_mflags |= MF_DOING_0RTT;
++        conn->ifc_conn.cn_flags |= LSCONN_0RTT_ATTEMPTED;
+     }
+     conn->ifc_flags |= IFC_CREATED_OK;
+     return &conn->ifc_conn;
+@@ -2443,7 +2449,7 @@ generate_max_stream_data_frame (struct ietf_full_conn *conn,
+ 
+ static int
+ generate_stop_sending_frame_by_id (struct ietf_full_conn *conn,
+-                lsquic_stream_id_t stream_id, enum http_error_code error_code)
++                lsquic_stream_id_t stream_id, uint64_t error_code)
+ {
+     struct lsquic_packet_out *packet_out;
+     size_t need;
+@@ -2465,7 +2471,7 @@ generate_stop_sending_frame_by_id (struct ietf_full_conn *conn,
+         return -1;
+     }
+     LSQ_DEBUG("generated %d-byte STOP_SENDING frame (stream id: %"PRIu64", "
+-        "error code: %u)", w, stream_id, error_code);
++        "error code: %"PRIu64")", w, stream_id, error_code);
+     EV_LOG_GENERATED_STOP_SENDING_FRAME(LSQUIC_LOG_CONN_ID, stream_id,
+                                                                 error_code);
+     if (0 != lsquic_packet_out_add_frame(packet_out, conn->ifc_pub.mm, 0,
+@@ -2486,7 +2492,8 @@ static int
+ generate_stop_sending_frame (struct ietf_full_conn *conn,
+                                                 struct lsquic_stream *stream)
+ {
+-    if (0 == generate_stop_sending_frame_by_id(conn, stream->id, HEC_NO_ERROR))
++    if (0 == generate_stop_sending_frame_by_id(conn, stream->id,
++                                        stream->stop_sending_error_code))
+     {
+         lsquic_stream_ss_frame_sent(stream);
+         return 1;
+@@ -3868,6 +3875,7 @@ ietf_full_conn_ci_hsk_done (struct lsquic_conn *lconn,
+                                                 enum lsquic_hsk_status status)
+ {
+     struct ietf_full_conn *const conn = (struct ietf_full_conn *) lconn;
++    SSL *ssl;
+ 
+     lsquic_alarmset_unset(&conn->ifc_alset, AL_HANDSHAKE);
+ 
+@@ -3896,6 +3904,16 @@ ietf_full_conn_ci_hsk_done (struct lsquic_conn *lconn,
+         handshake_failed(lconn);
+         break;
+     }
++    if (lconn->cn_flags & LSCONN_0RTT_ATTEMPTED)
++    {
++        ssl = lconn->cn_esf.i->esfi_get_ssl(lconn->cn_enc_session);
++        lconn->cn_flags &= ~(LSCONN_0RTT_ACCEPTED|LSCONN_0RTT_REJECTED);
++        if ((status == LSQ_HSK_OK || status == LSQ_HSK_RESUMED_OK)
++                                && ssl && SSL_early_data_accepted(ssl))
++            lconn->cn_flags |= LSCONN_0RTT_ACCEPTED;
++        else
++            lconn->cn_flags |= LSCONN_0RTT_REJECTED;
++    }
+     if (conn->ifc_enpub->enp_stream_if->on_hsk_done)
+         conn->ifc_enpub->enp_stream_if->on_hsk_done(lconn, status);
+ }
+@@ -4061,6 +4078,6 @@ immediate_close (struct ietf_full_conn *conn)
+QUICPERF_EMPTY_CONTEXT
+     assert(conn->ifc_flags & (IFC_ERROR|IFC_ABORTED|IFC_HSK_FAILED));
+-    if (conn->ifc_error.u.err != 0)
++    if (conn->ifc_error.u.err != 0 || conn->ifc_error.app_error)
+     {
+         conn_err = conn->ifc_error;
+         error_reason = conn->ifc_errmsg;
+@@ -8059,6 +8077,8 @@ ietf_full_conn_ci_early_data_failed (struct lsquic_conn *lconn)
+     struct ietf_full_conn *conn = (struct ietf_full_conn *) lconn;
+ 
+     LSQ_DEBUG("early data failed");
++    lconn->cn_flags &= ~LSCONN_0RTT_ACCEPTED;
++    lconn->cn_flags |= LSCONN_0RTT_REJECTED;
+     lsquic_send_ctl_stash_0rtt_packets(&conn->ifc_send_ctl);
+ }
+ 
+@@ -8606,7 +8625,7 @@ ietf_full_conn_ci_abort_error (struct lsquic_conn *lconn, int is_app,
+     const char *err_str, *percent;
+     char err_buf[0x100];
+QUICPERF_EMPTY_CONTEXT
+-    if (conn->ifc_error.u.err != 0)
++    if (conn->ifc_error.u.err != 0 || conn->ifc_error.app_error)
+         return;
+     percent = strchr(fmt, '%');
+     if (percent)
+diff --git a/src/liblsquic/lsquic_stream.c b/src/liblsquic/lsquic_stream.c
+index bed9f70b48f49ab0815a1cd07b549eca1bb85346..7056ea0d01b1d4daeee6a2a6d0e1cabf420ae784 100644
+--- a/src/liblsquic/lsquic_stream.c
++++ b/src/liblsquic/lsquic_stream.c
+@@ -1207,14 +1207,18 @@ lsquic_stream_rst_in (lsquic_stream_t *stream, uint64_t offset,
+         return -1;
+     }
+ 
+-    if (stream->stream_if->on_reset
++    if ((stream->stream_if->on_reset || stream->stream_if->on_reset_ext)
+                             && !(stream->stream_flags & STREAM_ONCLOSE_DONE))
+     {
+         if (stream->sm_bflags & SMBF_IETF)
+         {
+             if (!(stream->sm_dflags & SMDF_ONRESET0))
+             {
+-                stream->stream_if->on_reset(stream, stream->st_ctx, 0);
++                if (stream->stream_if->on_reset)
++                    stream->stream_if->on_reset(stream, stream->st_ctx, 0);
++                if (stream->stream_if->on_reset_ext)
++                    stream->stream_if->on_reset_ext(stream, stream->st_ctx, 0,
++                                                                    error_code);
+                 stream->sm_dflags |= SMDF_ONRESET0;
+             }
+         }
+@@ -1223,7 +1227,11 @@ lsquic_stream_rst_in (lsquic_stream_t *stream, uint64_t offset,
+             if ((stream->sm_dflags & (SMDF_ONRESET0|SMDF_ONRESET1))
+                                     != (SMDF_ONRESET0|SMDF_ONRESET1))
+             {
+-                stream->stream_if->on_reset(stream, stream->st_ctx, 2);
++                if (stream->stream_if->on_reset)
++                    stream->stream_if->on_reset(stream, stream->st_ctx, 2);
++                if (stream->stream_if->on_reset_ext)
++                    stream->stream_if->on_reset_ext(stream, stream->st_ctx, 2,
++                                                                    error_code);
+                 stream->sm_dflags |= SMDF_ONRESET0|SMDF_ONRESET1;
+             }
+         }
+@@ -1275,10 +1283,15 @@ lsquic_stream_stop_sending_in (struct lsquic_stream *stream,
+     SM_HISTORY_APPEND(stream, SHE_STOP_SENDIG_IN);
+     stream->stream_flags |= STREAM_SS_RECVD;
+ 
+-    if (stream->stream_if->on_reset && !(stream->sm_dflags & SMDF_ONRESET1)
++    if ((stream->stream_if->on_reset || stream->stream_if->on_reset_ext)
++                            && !(stream->sm_dflags & SMDF_ONRESET1)
+                             && !(stream->stream_flags & STREAM_ONCLOSE_DONE))
+     {
+-        stream->stream_if->on_reset(stream, stream->st_ctx, 1);
++        if (stream->stream_if->on_reset)
++            stream->stream_if->on_reset(stream, stream->st_ctx, 1);
++        if (stream->stream_if->on_reset_ext)
++            stream->stream_if->on_reset_ext(stream, stream->st_ctx, 1,
++                                                            error_code);
+         stream->sm_dflags |= SMDF_ONRESET1;
+     }
+ 
+@@ -1913,6 +1926,45 @@ lsquic_stream_shutdown (lsquic_stream_t *stream, int how)
+ }
+ 
+ 
++int
++lsquic_stream_reset_ext (lsquic_stream_t *stream, uint64_t error_code)
++{
++    if (!(stream->sm_bflags & SMBF_IETF))
++    {
++        errno = ENOTSUP;
++        return -1;
++    }
++    if ((stream->stream_flags &
++                (STREAM_RST_SENT|STREAM_FIN_SENT|STREAM_U_WRITE_DONE))
++                                    || (stream->sm_qflags & SMQF_SEND_RST))
++    {
++        errno = EALREADY;
++        return -1;
++    }
++    stream_reset(stream, error_code, 0);
++    maybe_conn_to_tickable_if_writeable(stream, 1);
++    return 0;
++}
++
++
++int
++lsquic_stream_stop_sending_ext (lsquic_stream_t *stream, uint64_t error_code)
++{
++    if (!(stream->sm_bflags & SMBF_IETF))
++    {
++        errno = ENOTSUP;
++        return -1;
++    }
++    if (stream->stream_flags & STREAM_U_READ_DONE)
++    {
++        errno = EALREADY;
++        return -1;
++    }
++    stream->stop_sending_error_code = error_code;
++    return lsquic_stream_shutdown(stream, 0);
++}
++
++
+ void
+ lsquic_stream_shutdown_internal (lsquic_stream_t *stream)
+ {
+diff --git a/src/liblsquic/lsquic_stream.h b/src/liblsquic/lsquic_stream.h
+index 1f2fe6a49785d908a81c8acd4835c8c1b958e9bc..c47e5797d82f3c6c2d7a7fdc78e9463e22d2a8a6 100644
+--- a/src/liblsquic/lsquic_stream.h
++++ b/src/liblsquic/lsquic_stream.h
+@@ -271,6 +271,7 @@ struct lsquic_stream
+     uint64_t                        max_send_off;
+     uint64_t                        sm_last_recv_off;
+     uint64_t                        error_code;
++    uint64_t                        stop_sending_error_code;
+ 
+     /* From the network, we get frames, which we keep on a list ordered
+      * by offset.
+
+
+QUICPERF_DEPENDENCY_PATCH
+sed -i 's/^QUICPERF_EMPTY_CONTEXT$/ /' "$patch_file"
+if git -C "$source_dir" apply --check "$patch_file"; then
+  git -C "$source_dir" apply "$patch_file"
+elif git -C "$source_dir" apply --reverse --check "$patch_file"; then
+  :
+else
+  echo "quicperf dependency patch does not match pinned source" >&2
+  exit 1
+fi
+settings_patch_file="$DEPO_BUILD_DIR/quicperf-negotiated-settings.patch"
+cat > "$settings_patch_file" <<'QUICPERF_NEGOTIATED_SETTINGS_PATCH'
+diff --git a/include/lsquic.h b/include/lsquic.h
+index 353fbd170542b94b00452df41fe014f9c01c9717..9c9e09f5a6a1255479ee325b2b5428f535566127 100644
+--- a/include/lsquic.h
++++ b/include/lsquic.h
+@@ -426,6 +426,9 @@ typedef struct ssl_ctx_st * (*lsquic_lookup_cert_f)(
+ /* Use Adaptive CC by default */
+ #define LSQUIC_DF_CC_ALGO 3
+
++/** Default initial congestion window in bytes. */
++#define LSQUIC_DF_INIT_CWND_BYTES (32 * 1460)
++
+ /* Default value of the CC RTT threshold is 1.5 ms */
+ #define LSQUIC_DF_CC_RTT_THRESH 1500
+
+@@ -435,6 +438,12 @@ typedef struct ssl_ctx_st * (*lsquic_lookup_cert_f)(
+ /** Turn off datagram extension by default */
+ #define LSQUIC_DF_DATAGRAMS 0
+
++/** Preserve the historical active CID limit by default. */
++#define LSQUIC_DF_ACTIVE_CONNECTION_ID_LIMIT 8
++
++/** Zero selects the receive UDP payload size for the DATAGRAM TP. */
++#define LSQUIC_DF_MAX_DATAGRAM_FRAME_SIZE 0
++
+ /** Assume optimistic NAT by default. */
+ #define LSQUIC_DF_OPTIMISTIC_NAT 1
+
+@@ -737,6 +746,9 @@ struct lsquic_engine_settings {
+      */
+     unsigned        es_cc_algo;
+
++    /** Initial congestion window in bytes. */
++    unsigned        es_init_cwnd_bytes;
++
+     /**
+      * Congestion controller RTT threshold in microseconds.
+      *
+@@ -939,6 +951,9 @@ struct lsquic_engine_settings {
+      */
+     int             es_allow_migration;
+
++    /** Active connection ID limit transport parameter. */
++    unsigned        es_active_connection_id_limit;
++
+     /**
+      * Amount of time, in seconds, after which the server token included in
+      * a stateless retry expires.  If set to zero, the default value is
+@@ -1047,6 +1062,9 @@ struct lsquic_engine_settings {
+      */
+     int             es_datagrams;
+
++    /** Maximum DATAGRAM frame size transport parameter. */
++    unsigned        es_max_datagram_frame_size;
++
+     /**
+      * If set to true, changes in peer port are assumed to be due to a
+      * benign NAT rebinding and path characteristics -- MTU, RTT, and
+@@ -2119,6 +2137,40 @@ lsquic_global_cleanup (void);
+ enum lsquic_version
+ lsquic_conn_quic_version (const lsquic_conn_t *c);
+
++#define LSQUIC_NEGOTIATED_ALPN_MAX 16
++
++/** Post-handshake peer transport parameters and negotiated TLS state. */
++struct lsquic_conn_negotiated
++{
++    uint32_t quic_version;
++    uint16_t tls_version;
++    uint16_t tls_cipher_suite;
++    uint16_t tls_key_exchange_group;
++    uint16_t tls_peer_signature_algorithm;
++    uint8_t  tls_peer_certificate_present;
++    uint8_t  tls_peer_certificate_verified;
++    uint8_t  disable_active_migration;
++    uint8_t  alpn_len;
++    unsigned char alpn[LSQUIC_NEGOTIATED_ALPN_MAX];
++    uint64_t max_idle_timeout;
++    uint64_t max_udp_payload_size;
++    uint64_t initial_max_data;
++    uint64_t initial_max_stream_data_bidi_local;
++    uint64_t initial_max_stream_data_bidi_remote;
++    uint64_t initial_max_stream_data_uni;
++    uint64_t initial_max_streams_bidi;
++    uint64_t initial_max_streams_uni;
++    uint64_t ack_delay_exponent;
++    uint64_t max_ack_delay;
++    uint64_t active_connection_id_limit;
++    uint64_t max_datagram_frame_size;
++    unsigned connection_id_len;
++};
++
++int
++lsquic_conn_get_negotiated (const lsquic_conn_t *,
++                            struct lsquic_conn_negotiated *);
++
+ /* Return keysize or -1 on error */
+ int
+ lsquic_conn_crypto_keysize (const lsquic_conn_t *c);
+diff --git a/src/liblsquic/lsquic_bbr.c b/src/liblsquic/lsquic_bbr.c
+index d9387b4b91fc106b6e97e7465884f0f7eea3e84a..270e6f87f7aa4c93004e19c19b83db8a1f4fd1d7 100644
+--- a/src/liblsquic/lsquic_bbr.c
++++ b/src/liblsquic/lsquic_bbr.c
+@@ -181,8 +181,8 @@ init_bbr (struct lsquic_bbr *bbr)
+     bbr->bbr_aggregation_epoch_start_time = 0;
+     bbr->bbr_min_rtt = 0;
+     bbr->bbr_min_rtt_timestamp = 0;
+-    bbr->bbr_init_cwnd = kInitialCongestionWindow * kDefaultTCPMSS;
+-    bbr->bbr_cwnd = kInitialCongestionWindow * kDefaultTCPMSS;
++    bbr->bbr_init_cwnd = bbr->bbr_conn_pub->enpub->enp_settings.es_init_cwnd_bytes;
++    bbr->bbr_cwnd = bbr->bbr_init_cwnd;
+     bbr->bbr_max_cwnd = kDefaultMaxCongestionWindowPackets * kDefaultTCPMSS;
+     bbr->bbr_min_cwnd = kDefaultMinimumCongestionWindow;
+     bbr->bbr_high_gain = kDefaultHighGain;
+diff --git a/src/liblsquic/lsquic_conn.c b/src/liblsquic/lsquic_conn.c
+index 413acf8cb315d4c3eb3d31c3b5664b239200fd1c..3c83fa752916ab11fe67bf9cae83a4c8963c8a37 100644
+--- a/src/liblsquic/lsquic_conn.c
++++ b/src/liblsquic/lsquic_conn.c
+@@ -15,8 +15,10 @@
+ #include "lsquic_packet_common.h"
+ #include "lsquic_packet_gquic.h"
+ #include "lsquic_packet_in.h"
++#include "lsquic_sizes.h"
+ #include "lsquic_str.h"
+ #include "lsquic_enc_sess.h"
++#include "lsquic_trans_params.h"
+ #include "lsquic_mm.h"
+ #include "lsquic_engine_public.h"
+ #include "lsquic_ev_log.h"
+@@ -93,6 +95,49 @@ lsquic_conn_quic_version (const lsquic_conn_t *lconn)
+ }
+
+
++int
++lsquic_conn_get_negotiated (const lsquic_conn_t *lconn,
++                            struct lsquic_conn_negotiated *negotiated)
++{
++    const struct transport_params *params;
++    const lsquic_cid_t *cid;
++
++    if (!negotiated || !(lconn->cn_flags & LSCONN_IETF)
++            || !(lconn->cn_flags & LSCONN_HANDSHAKE_DONE)
++            || !lconn->cn_enc_session
++            || lconn->cn_esf.i->esfi_get_negotiated_tls(
++                                    lconn->cn_enc_session, negotiated) != 0)
++        return -1;
++    params = lconn->cn_esf.i->esfi_get_peer_transport_params(
++                                                    lconn->cn_enc_session);
++    if (!params)
++        return -1;
++    negotiated->quic_version = lconn->cn_version == LSQVER_I001 ? 1 : 0;
++    negotiated->max_idle_timeout = params->tp_max_idle_timeout;
++    negotiated->max_udp_payload_size = params->tp_max_udp_payload_size;
++    negotiated->initial_max_data = params->tp_init_max_data;
++    negotiated->initial_max_stream_data_bidi_local
++                                = params->tp_init_max_stream_data_bidi_local;
++    negotiated->initial_max_stream_data_bidi_remote
++                                = params->tp_init_max_stream_data_bidi_remote;
++    negotiated->initial_max_stream_data_uni
++                                = params->tp_init_max_stream_data_uni;
++    negotiated->initial_max_streams_bidi = params->tp_init_max_streams_bidi;
++    negotiated->initial_max_streams_uni = params->tp_init_max_streams_uni;
++    negotiated->ack_delay_exponent = params->tp_ack_delay_exponent;
++    negotiated->max_ack_delay = params->tp_max_ack_delay;
++    negotiated->active_connection_id_limit
++                                = params->tp_active_connection_id_limit;
++    negotiated->max_datagram_frame_size
++                        = params->tp_numerics[TPI_MAX_DATAGRAM_FRAME_SIZE];
++    negotiated->disable_active_migration
++                        = !!(params->tp_set & (1 << TPI_DISABLE_ACTIVE_MIGRATION));
++    cid = lsquic_conn_id(lconn);
++    negotiated->connection_id_len = cid ? cid->len : 0;
++    return 0;
++}
++
++
+ enum lsquic_crypto_ver
+ lsquic_conn_crypto_ver (const lsquic_conn_t *lconn)
+ {
+diff --git a/src/liblsquic/lsquic_cubic.c b/src/liblsquic/lsquic_cubic.c
+index 39981531520af87deb7b89af666eec334bbe24f8..25324cd1acb1357412b7b3574e0e716d01adde9c 100644
+--- a/src/liblsquic/lsquic_cubic.c
++++ b/src/liblsquic/lsquic_cubic.c
+@@ -13,6 +13,7 @@
+ #include <vc_compat.h>
+ #endif
+
++#include "lsquic.h"
+ #include "lsquic_int_types.h"
+ #include "lsquic_types.h"
+ #include "lsquic_hash.h"
+@@ -25,6 +26,8 @@
+ #include "lsquic_stream.h"
+ #include "lsquic_rtt.h"
+ #include "lsquic_conn_public.h"
++#include "lsquic_mm.h"
++#include "lsquic_engine_public.h"
+ #include "lsquic_packet_common.h"
+ #include "lsquic_packet_out.h"
+ #include "lsquic_cubic.h"
+@@ -44,9 +47,9 @@ static void
+ cubic_reset (struct lsquic_cubic *cubic)
+ {
+     memset(cubic, 0, offsetof(struct lsquic_cubic, cu_conn));
+-    cubic->cu_cwnd          = 32 * TCP_MSS;
+-    cubic->cu_last_max_cwnd = 32 * TCP_MSS;
+-    cubic->cu_tcp_cwnd      = 32 * TCP_MSS;
++    cubic->cu_cwnd          = cubic->cu_init_cwnd;
++    cubic->cu_last_max_cwnd = cubic->cu_init_cwnd;
++    cubic->cu_tcp_cwnd      = cubic->cu_init_cwnd;
+ }
+
+
+@@ -118,6 +121,7 @@ static void
+ lsquic_cubic_init (void *cong_ctl, const struct lsquic_conn_public *conn_pub)
+ {
+     struct lsquic_cubic *const cubic = cong_ctl;
++    cubic->cu_init_cwnd = conn_pub->enpub->enp_settings.es_init_cwnd_bytes;
+     cubic_reset(cubic);
+     cubic->cu_ssthresh = 10000 * TCP_MSS; /* Emulate "unbounded" slow start */
+     cubic->cu_conn  = conn_pub->lconn;
+diff --git a/src/liblsquic/lsquic_cubic.h b/src/liblsquic/lsquic_cubic.h
+index 716f19671e1cabd6e1f3bc83381b718ef5e3ddd2..da071404df37863ae9f3ac722eaf193526431665 100644
+--- a/src/liblsquic/lsquic_cubic.h
++++ b/src/liblsquic/lsquic_cubic.h
+@@ -21,6 +21,7 @@ struct lsquic_cubic {
+     unsigned long   cu_ssthresh;
+     const struct lsquic_conn
+                    *cu_conn;            /* Used for logging */
++    unsigned long   cu_init_cwnd;
+     const struct lsquic_rtt_stats
+                    *cu_rtt_stats;
+     enum cubic_flags {
+diff --git a/src/liblsquic/lsquic_enc_sess.h b/src/liblsquic/lsquic_enc_sess.h
+index dcf67ef99f7add197c1f5ccb8e9cf8681e6036e2..a7e834f25782b8249139b70bada6389e0a31998b 100644
+--- a/src/liblsquic/lsquic_enc_sess.h
++++ b/src/liblsquic/lsquic_enc_sess.h
+@@ -18,6 +18,7 @@ struct ssl_st;
+ struct sockaddr;
+ struct conn_cid_elem;
+ struct lsquic_engine_settings;
++struct lsquic_conn_negotiated;
+ enum lsquic_version;
+
+ #define DNONC_LENGTH 32
+@@ -277,6 +278,10 @@ struct enc_session_funcs_iquic
+     struct ssl_st *
+     (*esfi_get_ssl) (enc_session_t *);
+
++    int
++    (*esfi_get_negotiated_tls) (enc_session_t *,
++                                struct lsquic_conn_negotiated *);
++
+     struct transport_params *
+     (*esfi_get_peer_transport_params) (enc_session_t *);
+
+diff --git a/src/liblsquic/lsquic_enc_sess_ietf.c b/src/liblsquic/lsquic_enc_sess_ietf.c
+index 3a909e962f8a2b377173e3e5bbf1d71305457b08..471c3e89517378144d878ca4586f9ce347f3cf22 100644
+--- a/src/liblsquic/lsquic_enc_sess_ietf.c
++++ b/src/liblsquic/lsquic_enc_sess_ietf.c
+@@ -278,6 +278,8 @@ struct enc_sess_iquic
+     struct {
+         const char *cipher_name;
+         int         alg_bits;
++        struct lsquic_conn_negotiated
++                    negotiated;
+     }                    esi_cached_info;
+     /* Secrets are kept for key rotation */
+     unsigned char        esi_traffic_secrets[2][EVP_MAX_KEY_LENGTH];
+@@ -627,7 +629,8 @@ gen_trans_params (struct enc_sess_iquic *enc_sess, unsigned char *buf,
+                             = TP_DEF_ACK_DELAY_EXP;
+     params.tp_max_idle_timeout = settings->es_idle_timeout * 1000;
+     params.tp_max_ack_delay = TP_DEF_MAX_ACK_DELAY;
+-    params.tp_active_connection_id_limit = MAX_IETF_CONN_DCIDS;
++    params.tp_active_connection_id_limit
++                            = settings->es_active_connection_id_limit;
+     params.tp_set |= (1 << TPI_INIT_MAX_DATA)
+                   |  (1 << TPI_INIT_MAX_STREAM_DATA_BIDI_LOCAL)
+                   |  (1 << TPI_INIT_MAX_STREAM_DATA_BIDI_REMOTE)
+@@ -667,10 +670,14 @@ gen_trans_params (struct enc_sess_iquic *enc_sess, unsigned char *buf,
+     {
+         if (params.tp_set & (1 << TPI_MAX_UDP_PAYLOAD_SIZE))
+             params.tp_numerics[TPI_MAX_DATAGRAM_FRAME_SIZE]
+-                                            = params.tp_max_udp_payload_size;
++                = settings->es_max_datagram_frame_size
++                ? settings->es_max_datagram_frame_size
++                : params.tp_max_udp_payload_size;
+         else
+             params.tp_numerics[TPI_MAX_DATAGRAM_FRAME_SIZE]
+-                                            = TP_DEF_MAX_UDP_PAYLOAD_SIZE;
++                = settings->es_max_datagram_frame_size
++                ? settings->es_max_datagram_frame_size
++                : TP_DEF_MAX_UDP_PAYLOAD_SIZE;
+         params.tp_set |= 1 << TPI_MAX_DATAGRAM_FRAME_SIZE;
+     }
+
+@@ -2842,11 +2849,63 @@ iquic_esfi_get_ssl (enc_session_t *enc_session_p)
+ }
+
+
++static int
++read_negotiated_tls (SSL *ssl, struct lsquic_conn_negotiated *negotiated)
++{
++    const SSL_CIPHER *cipher;
++    const unsigned char *alpn;
++    unsigned alpn_len;
++    X509 *peer;
++
++    memset(negotiated, 0, sizeof(*negotiated));
++    cipher = SSL_get_current_cipher(ssl);
++    if (!cipher)
++        return -1;
++    negotiated->tls_version = SSL_version(ssl);
++    negotiated->tls_cipher_suite = SSL_CIPHER_get_id(cipher) & 0xFFFF;
++    negotiated->tls_key_exchange_group = SSL_get_curve_id(ssl);
++    negotiated->tls_peer_signature_algorithm
++                                    = SSL_get_peer_signature_algorithm(ssl);
++    peer = SSL_get_peer_certificate(ssl);
++    negotiated->tls_peer_certificate_present = peer != NULL;
++    negotiated->tls_peer_certificate_verified = peer != NULL
++                                      && SSL_get_verify_result(ssl) == X509_V_OK;
++    if (peer)
++        X509_free(peer);
++    SSL_get0_alpn_selected(ssl, &alpn, &alpn_len);
++    if (alpn_len > sizeof(negotiated->alpn))
++        return -1;
++    negotiated->alpn_len = alpn_len;
++    if (alpn_len)
++        memcpy(negotiated->alpn, alpn, alpn_len);
++    return 0;
++}
++
++
++static int
++iquic_esfi_get_negotiated_tls (enc_session_t *enc_session_p,
++                                struct lsquic_conn_negotiated *negotiated)
++{
++    struct enc_sess_iquic *const enc_sess = enc_session_p;
++
++    if (enc_sess->esi_ssl)
++        return read_negotiated_tls(enc_sess->esi_ssl, negotiated);
++    if (enc_sess->esi_flags & ESI_CACHED_INFO)
++    {
++        *negotiated = enc_sess->esi_cached_info.negotiated;
++        return 0;
++    }
++    return -1;
++}
++
++
+ const struct enc_session_funcs_iquic lsquic_enc_session_iquic_ietf_v1 =
+ {
+     .esfi_create_client  = iquic_esfi_create_client,
+     .esfi_destroy        = iquic_esfi_destroy,
+     .esfi_get_ssl        = iquic_esfi_get_ssl,
++    .esfi_get_negotiated_tls
++                         = iquic_esfi_get_negotiated_tls,
+     .esfi_get_peer_transport_params
+                          = iquic_esfi_get_peer_transport_params,
+     .esfi_reset_dcid     = iquic_esfi_reset_dcid,
+@@ -2908,6 +2967,8 @@ cache_info (struct enc_sess_iquic *enc_sess)
+     cipher = SSL_get_current_cipher(enc_sess->esi_ssl);
+     enc_sess->esi_cached_info.cipher_name = SSL_CIPHER_get_name(cipher);
+     SSL_CIPHER_get_bits(cipher, &enc_sess->esi_cached_info.alg_bits);
++    (void) read_negotiated_tls(enc_sess->esi_ssl,
++                              &enc_sess->esi_cached_info.negotiated);
+     enc_sess->esi_flags |= ESI_CACHED_INFO;
+ }
+
+@@ -3519,7 +3580,8 @@ lsquic_enc_sess_ietf_gen_quic_ctx (
+                             = TP_DEF_ACK_DELAY_EXP;
+     params.tp_max_idle_timeout = settings->es_idle_timeout * 1000;
+     params.tp_max_ack_delay = TP_DEF_MAX_ACK_DELAY;
+-    params.tp_active_connection_id_limit = MAX_IETF_CONN_DCIDS;
++    params.tp_active_connection_id_limit
++                            = settings->es_active_connection_id_limit;
+     params.tp_set |= (1 << TPI_INIT_MAX_DATA)
+                   |  (1 << TPI_INIT_MAX_STREAM_DATA_BIDI_LOCAL)
+                   |  (1 << TPI_INIT_MAX_STREAM_DATA_BIDI_REMOTE)
+@@ -3559,10 +3621,14 @@ lsquic_enc_sess_ietf_gen_quic_ctx (
+     {
+         if (params.tp_set & (1 << TPI_MAX_UDP_PAYLOAD_SIZE))
+             params.tp_numerics[TPI_MAX_DATAGRAM_FRAME_SIZE]
+-                                            = params.tp_max_udp_payload_size;
++                = settings->es_max_datagram_frame_size
++                ? settings->es_max_datagram_frame_size
++                : params.tp_max_udp_payload_size;
+         else
+             params.tp_numerics[TPI_MAX_DATAGRAM_FRAME_SIZE]
+-                                            = TP_DEF_MAX_UDP_PAYLOAD_SIZE;
++                = settings->es_max_datagram_frame_size
++                ? settings->es_max_datagram_frame_size
++                : TP_DEF_MAX_UDP_PAYLOAD_SIZE;
+         params.tp_set |= 1 << TPI_MAX_DATAGRAM_FRAME_SIZE;
+     }
+
+diff --git a/src/liblsquic/lsquic_engine.c b/src/liblsquic/lsquic_engine.c
+index ea3b0133114c7f68d7775e3621be102abe098271..a68ece8eaec903bc9bed34515b0540812e8d0164 100644
+--- a/src/liblsquic/lsquic_engine.c
++++ b/src/liblsquic/lsquic_engine.c
+@@ -390,6 +390,7 @@ lsquic_engine_init_settings (struct lsquic_engine_settings *settings,
+     settings->es_mtu_probe_timer = LSQUIC_DF_MTU_PROBE_TIMER;
+     settings->es_dplpmtud        = LSQUIC_DF_DPLPMTUD;
+     settings->es_cc_algo         = LSQUIC_DF_CC_ALGO;
++    settings->es_init_cwnd_bytes = LSQUIC_DF_INIT_CWND_BYTES;
+     settings->es_cc_rtt_thresh   = LSQUIC_DF_CC_RTT_THRESH;
+     settings->es_enable_bw_sampler = LSQUIC_DF_ENABLE_BW_SAMPLER;
+     settings->es_optimistic_nat  = LSQUIC_DF_OPTIMISTIC_NAT;
+@@ -408,6 +409,10 @@ lsquic_engine_init_settings (struct lsquic_engine_settings *settings,
+     settings->es_check_tp_sanity = LSQUIC_DF_CHECK_TP_SANITY;
+     settings->es_amp_factor      = LSQUIC_DF_AMP_FACTOR;
+     settings->es_send_verneg     = LSQUIC_DF_SEND_VERNEG;
++    settings->es_active_connection_id_limit
++                              = LSQUIC_DF_ACTIVE_CONNECTION_ID_LIMIT;
++    settings->es_max_datagram_frame_size
++                              = LSQUIC_DF_MAX_DATAGRAM_FRAME_SIZE;
+ }
+
+
+@@ -3600,4 +3605,3 @@ lsquic_engine_retire_cid (struct lsquic_engine_public *enpub,
+     conn->cn_cces_mask &= ~(1u << cce_idx);
+     LSQ_DEBUGC("retire CID %"CID_FMT, CID_BITS(&cce->cce_cid));
+ }
+-
+QUICPERF_NEGOTIATED_SETTINGS_PATCH
+if git -C "$source_dir" apply --check "$settings_patch_file"; then
+  git -C "$source_dir" apply "$settings_patch_file"
+elif git -C "$source_dir" apply --reverse --check "$settings_patch_file"; then
+  :
+else
+  echo "quicperf negotiated-settings patch does not match pinned source" >&2
+  exit 1
+fi
+source_index="$DEPO_BUILD_DIR/quicperf-source.index"
+rm -f "$source_index"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" read-tree HEAD
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$settings_patch_file"
+test "$(GIT_INDEX_FILE="$source_index" git -C "$source_dir" write-tree)" = "a1255d6f70df5d69cd0f016e515af579bbc2136c"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" diff --quiet --no-ext-diff -- .
+cmake --build "$DEPO_BUILD_DIR" --parallel "$(nproc)"
+EOF
 TARGET lsquic::lsquic STATIC lib/liblsquic.a INTERFACE include/lsquic
 LINK lsquic::lsquic boringssl::ssl boringssl::crypto zlib::zlib

@@ -1,0 +1,27 @@
+{
+  "protocol_version": 1,
+  "messages": {
+    "HELLO": {"id": 1, "required": {"role": [1, 3], "build_id": [2, 4], "control_version": [3, 1]}},
+    "CAPABILITIES": {"id": 2, "required": {"library": [4, 3], "build_id": [2, 4], "protocol_version": [5, 1], "roles": [6, 3], "backends": [7, 3], "scenarios": [8, 3], "capabilities": [9, 3], "effective_features": [10, 3]}},
+    "CONFIG": {"id": 3, "required": {"trial_id": [11, 4], "cell_id": [12, 4], "config_json": [13, 3]}},
+    "BOUND": {"id": 4, "required": {"trial_id": [11, 4], "udp_port": [14, 1]}},
+    "READY": {"id": 5, "required": {"trial_id": [11, 4], "pid": [15, 1], "backend": [16, 3], "raw_now_ns": [17, 1]}},
+    "ARM": {"id": 6, "required": {"trial_id": [11, 4], "warmup_start_raw_ns": [18, 1], "measurement_start_raw_ns": [19, 1], "measurement_end_raw_ns": [20, 1], "trace_epoch_raw_ns": [21, 1]}},
+    "ARMED": {"id": 7, "required": {"trial_id": [11, 4], "raw_now_ns": [17, 1]}},
+    "MEASUREMENT_STARTED": {"id": 8, "required": {"trial_id": [11, 4], "raw_now_ns": [17, 1]}},
+    "PROGRESS": {"id": 9, "required": {"trial_id": [11, 4], "event_index": [22, 1], "raw_now_ns": [17, 1], "validated_units": [23, 1], "blocked": [24, 5]}},
+    "MEASUREMENT_STOPPED": {"id": 10, "required": {"trial_id": [11, 4], "raw_now_ns": [17, 1]}},
+    "COMPLETION_ACK": {"id": 11, "required": {"trial_id": [11, 4], "counters_json": [25, 3]}},
+    "RESULT": {"id": 12, "required": {"trial_id": [11, 4], "result_json": [26, 3]}},
+    "UNSUPPORTED": {"id": 13, "required": {"trial_id": [11, 4], "reason": [27, 3]}},
+    "ERROR": {"id": 14, "required": {"error_code": [28, 1], "reason": [27, 3]}},
+    "RESET": {"id": 15, "required": {"trial_id": [11, 4]}},
+    "RESET_ACK": {"id": 16, "required": {"trial_id": [11, 4], "live_connections": [29, 1], "live_streams": [30, 1], "live_tickets": [31, 1], "work_inventory": [32, 1]}},
+    "SHUTDOWN": {"id": 17, "required": {}},
+    "SHUTDOWN_ACK": {"id": 18, "required": {}},
+    "EXERCISE": {"id": 19, "required": {"trial_id": [11, 4], "exercise_deadline_raw_ns": [33, 1]}},
+    "EXERCISED": {"id": 20, "required": {"trial_id": [11, 4], "live_connections": [29, 1], "live_streams": [30, 1], "live_tickets": [31, 1], "work_inventory": [32, 1]}},
+    "ARM_REJECTED": {"id": 21, "required": {"trial_id": [11, 4], "raw_now_ns": [17, 1], "reason": [27, 3]}}
+  },
+  "optional_fields": {"diagnostic": [32769, 3]}
+}

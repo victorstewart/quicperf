@@ -94,12 +94,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "base64"
-version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
-
-[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -686,16 +680,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
 
 [[package]]
-name = "http"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3ba2a386d7f85a81f119ad7498ebe444d2e22c2af0b86b069416ace48b3311a"
-dependencies = [
- "bytes",
- "itoa",
-]
-
-[[package]]
 name = "id-arena"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -861,7 +845,6 @@ dependencies = [
 [[package]]
 name = "mtu"
 version = "0.4.1"
-source = "git+https://github.com/victorstewart/neqo.git?branch=quicperf-c-abi#f21a27d5a0aef1be7516dcf2ddd7d966406a8091"
 dependencies = [
  "cfg_aliases",
  "libc",
@@ -872,7 +855,6 @@ dependencies = [
 [[package]]
 name = "neqo-common"
 version = "0.28.1"
-source = "git+https://github.com/victorstewart/neqo.git?branch=quicperf-c-abi#f21a27d5a0aef1be7516dcf2ddd7d966406a8091"
 dependencies = [
  "enum-map",
  "env_logger",
@@ -884,42 +866,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "neqo-http3"
-version = "0.28.1"
-source = "git+https://github.com/victorstewart/neqo.git?branch=quicperf-c-abi#f21a27d5a0aef1be7516dcf2ddd7d966406a8091"
-dependencies = [
- "enumset",
- "http",
- "log",
- "neqo-common",
- "neqo-qpack",
- "neqo-transport",
- "nss-rs",
- "qlog",
- "rustc-hash",
- "sfv",
- "strum",
- "thiserror",
-]
-
-[[package]]
-name = "neqo-qpack"
-version = "0.28.1"
-source = "git+https://github.com/victorstewart/neqo.git?branch=quicperf-c-abi#f21a27d5a0aef1be7516dcf2ddd7d966406a8091"
-dependencies = [
- "log",
- "neqo-common",
- "neqo-transport",
- "qlog",
- "rustc-hash",
- "static_assertions",
- "thiserror",
-]
-
-[[package]]
 name = "neqo-transport"
 version = "0.28.1"
-source = "git+https://github.com/victorstewart/neqo.git?branch=quicperf-c-abi#f21a27d5a0aef1be7516dcf2ddd7d966406a8091"
 dependencies = [
  "enum-map",
  "enumset",
@@ -949,7 +897,6 @@ dependencies = [
 [[package]]
 name = "noq-proto"
 version = "1.0.0-rc.0"
-source = "git+https://github.com/victorstewart/noq.git?branch=quicperf-c-abi#e2130abf4e47e3a3566f5dad30a99954a8f0772d"
 dependencies = [
  "aes-gcm",
  "bytes",
@@ -976,7 +923,6 @@ dependencies = [
 [[package]]
 name = "nss-rs"
 version = "0.11.0"
-source = "git+https://github.com/mozilla/nss-rs?rev=0.11.0#07994e820280efb40d42d41ee9558817c6859a58"
 dependencies = [
  "bindgen",
  "enum-map",
@@ -1120,13 +1066,11 @@ dependencies = [
  "rustls-pemfile",
  "s2n-quic",
  "s2n-quic-core",
- "test-fixture 0.28.1",
 ]
 
 [[package]]
 name = "quinn-proto"
 version = "0.12.0"
-source = "git+https://github.com/victorstewart/quinn.git?branch=quicperf-c-abi#2d35538c2bfe9115bf9ec3ee097f56f7e4325b30"
 dependencies = [
  "bytes",
  "fastbloom",
@@ -1262,26 +1206,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ref-cast"
-version = "1.0.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f354300ae66f76f1c85c5f84693f0ce81d747e2c3f21a45fef496d89c960bf7d"
-dependencies = [
- "ref-cast-impl",
-]
-
-[[package]]
-name = "ref-cast-impl"
-version = "1.0.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7186006dcb21920990093f30e3dea63b7d6e977bf1256be20c3563a5db070da"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "regex"
 version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1395,7 +1319,6 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 [[package]]
 name = "s2n-codec"
 version = "0.80.0"
-source = "git+https://github.com/victorstewart/s2n-quic.git?branch=quicperf-c-abi#15175edba353f79e2dc4b9b4fa3786f36d30ebf1"
 dependencies = [
  "byteorder",
  "bytes",
@@ -1405,7 +1328,6 @@ dependencies = [
 [[package]]
 name = "s2n-quic"
 version = "1.80.0"
-source = "git+https://github.com/victorstewart/s2n-quic.git?branch=quicperf-c-abi#15175edba353f79e2dc4b9b4fa3786f36d30ebf1"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -1427,7 +1349,6 @@ dependencies = [
 [[package]]
 name = "s2n-quic-core"
 version = "0.80.0"
-source = "git+https://github.com/victorstewart/s2n-quic.git?branch=quicperf-c-abi#15175edba353f79e2dc4b9b4fa3786f36d30ebf1"
 dependencies = [
  "atomic-waker",
  "byteorder",
@@ -1447,7 +1368,6 @@ dependencies = [
 [[package]]
 name = "s2n-quic-crypto"
 version = "0.80.0"
-source = "git+https://github.com/victorstewart/s2n-quic.git?branch=quicperf-c-abi#15175edba353f79e2dc4b9b4fa3786f36d30ebf1"
 dependencies = [
  "aws-lc-rs",
  "cfg-if",
@@ -1460,7 +1380,6 @@ dependencies = [
 [[package]]
 name = "s2n-quic-platform"
 version = "0.80.0"
-source = "git+https://github.com/victorstewart/s2n-quic.git?branch=quicperf-c-abi#15175edba353f79e2dc4b9b4fa3786f36d30ebf1"
 dependencies = [
  "cfg-if",
  "futures",
@@ -1474,7 +1393,6 @@ dependencies = [
 [[package]]
 name = "s2n-quic-rustls"
 version = "0.80.0"
-source = "git+https://github.com/victorstewart/s2n-quic.git?branch=quicperf-c-abi#15175edba353f79e2dc4b9b4fa3786f36d30ebf1"
 dependencies = [
  "bytes",
  "rustls",
@@ -1487,7 +1405,6 @@ dependencies = [
 [[package]]
 name = "s2n-quic-transport"
 version = "0.80.0"
-source = "git+https://github.com/victorstewart/s2n-quic.git?branch=quicperf-c-abi#15175edba353f79e2dc4b9b4fa3786f36d30ebf1"
 dependencies = [
  "bytes",
  "futures-channel",
@@ -1583,17 +1500,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sfv"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d471eaefb14f4b30032525bdb124b36e55ba9cb1292080e06f1a236cd10fe87"
-dependencies = [
- "base64",
- "indexmap",
- "ref-cast",
-]
-
-[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1684,29 +1590,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "test-fixture"
-version = "0.1.0"
-source = "git+https://github.com/mozilla/nss-rs?rev=0.11.0#07994e820280efb40d42d41ee9558817c6859a58"
-dependencies = [
- "log",
- "nss-rs",
-]
-
-[[package]]
-name = "test-fixture"
-version = "0.28.1"
-source = "git+https://github.com/victorstewart/neqo.git?branch=quicperf-c-abi#f21a27d5a0aef1be7516dcf2ddd7d966406a8091"
-dependencies = [
- "log",
- "neqo-common",
- "neqo-http3",
- "neqo-transport",
- "nss-rs",
- "qlog",
- "test-fixture 0.1.0",
 ]
 
 [[package]]

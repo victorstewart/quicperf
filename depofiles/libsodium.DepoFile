@@ -1,7 +1,7 @@
 NAME libsodium
-VERSION 1.0.22-quicperf2
+VERSION 1.0.22-quicperf3
 SYSTEM_LIBS ALLOW
-SOURCE URL https://download.libsodium.org/libsodium/releases/libsodium-1.0.22.tar.gz
+SOURCE GIT https://github.com/jedisct1/libsodium.git 77e1ce5d6dee871c49ef211222ba18ef0c486bda
 BUILD_SYSTEM AUTOCONF
 AUTOCONF_CONFIGURE ./configure --prefix="${DEPO_PREFIX}" --disable-shared --enable-static
 AUTOCONF_BUILD make -j$(nproc)

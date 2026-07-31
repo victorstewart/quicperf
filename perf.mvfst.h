@@ -897,8 +897,20 @@ private:
     return settings;
   }
 
+  void injectTransportTime(void) const
+  {
+    const uint64_t nowUs = timeNowUs();
+    if (nowUs > UINT64_MAX / 1000 ||
+        !quic::Clock::setNowRawNanoseconds(nowUs * 1000))
+    {
+      fprintf(stderr, "mvfst rejected caller-supplied monotonic time\n");
+      abort();
+    }
+  }
+
   void driveEvents(void)
   {
+    injectTransportTime();
     flushPendingSocketWrites();
     for (int i = 0; i < 4; ++i)
     {
@@ -939,6 +951,7 @@ private:
 
   quic::NetworkData networkDataFromPacket(UDPContext *msg)
   {
+    injectTransportTime();
     auto packetBuffer = folly::IOBuf::copyBuffer(msg->buffer(), msg->msg_len);
     quic::ReceivedUdpPacket packet(std::move(packetBuffer));
     packet.timings.receiveTimePoint = quic::Clock::now();
@@ -1049,6 +1062,7 @@ private:
       return *found->second;
     }
 
+    injectTransportTime();
     auto owned = std::make_unique<ServerConn>();
     owned->peer = mvfstSocketAddressFromSockaddr(msg->address());
     owned->handler = std::make_unique<MvfstHandler>();
@@ -1642,8 +1656,7 @@ private:
       runServerGenericDurationConnections();
       return;
     }
-    const uint64_t targetStreams =
-        static_cast<uint64_t>(benchmarkServerTargetConnections) * benchmarkGenericStreamsPerConnection();
+    const uint64_t targetStreams = benchmarkGenericServerTargetStreams();
     uint64_t completed = 0;
     while (completed < targetStreams)
     {
@@ -2194,6 +2207,7 @@ private:
 
   void startClientConnection(struct sockaddr *address)
   {
+    injectTransportTime();
     auto socket = std::make_unique<MvfstNetworkSocket<mode>>(networkHub, quicEventBase);
     socket->registerOwnerSlot(&clientNetworkSocket);
     clientHandler = std::make_unique<MvfstHandler>();
@@ -2203,7 +2217,7 @@ private:
         clientContext,
         0);
     clientHandler->setSocket(client);
-    client->setHostname("localhost");
+    client->setHostname(benchmarkTlsHostname);
     client->addNewPeerAddress(mvfstSocketAddressFromSockaddr(address));
     client->setTransportSettings(transportSettings());
     client->setEarlyDataAppParamsHandler(&earlyDataAppParams);
@@ -2802,7 +2816,7 @@ public:
       {
         if (pskCache)
         {
-          auto psk = pskCache->getPsk("localhost");
+          auto psk = pskCache->getPsk(benchmarkTlsHostname);
           if (psk.has_value())
           {
             state.session.assign({'m', 'v', 'f', 's', 't', '-', 'p', 's', 'k'});
@@ -2830,7 +2844,7 @@ public:
       {
         return false;
       }
-      pskCache->putPsk("localhost", *psk);
+      pskCache->putPsk(benchmarkTlsHostname, *psk);
       importedResumption = true;
       importedZeroRtt = enableZeroRtt;
       resumedObserved = false;

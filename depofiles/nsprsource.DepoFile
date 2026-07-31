@@ -1,0 +1,7 @@
+NAME nsprsource
+VERSION 4.39-0190cb6
+SYSTEM_LIBS ALLOW
+SOURCE GIT https://github.com/mozilla/nspr.git 0190cb6d941d9209b3d0be90b5fd40c9b6cfaaa5
+BUILD_SYSTEM MANUAL
+STAGE_TREE SOURCE . share/nspr
+TARGET nsprsource::source INTERFACE share/nspr

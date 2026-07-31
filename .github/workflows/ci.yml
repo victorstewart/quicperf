@@ -1,0 +1,71 @@
+name: review verification
+
+on:
+  push:
+    branches:
+      - publication/v2.3-review
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Provenance and review diff sanity
+        run: |
+          test "$(git rev-parse 33b2e8bdf94b1aae8f3a764da8f1274192d2690c^)" = \
+            181c6d99d178a1055f32ea843d5f7abba20b266a
+          test "$(git rev-parse 33b2e8bdf94b1aae8f3a764da8f1274192d2690c^{tree})" = \
+            a72228525e2f09fabd0b01cee4888e201a376ef4
+          git diff --check 33b2e8bdf94b1aae8f3a764da8f1274192d2690c..HEAD
+      - name: Python syntax
+        run: python -m compileall -q quicperf_harness tests tools
+      - name: Retained Python tests
+        run: |
+          python -m unittest \
+            tests.test_picoperf_congestion_profile \
+            tests.test_quicperf_window_contract \
+            tests.test_v2_amd_stability \
+            tests.test_v2_canonical \
+            tests.test_v2_capability_matrix \
+            tests.test_v2_dependency_patches \
+            tests.test_v2_documentation_policy \
+            tests.test_v2_health \
+            tests.test_v2_host_policy \
+            tests.test_v2_interoperability \
+            tests.test_v2_journal \
+            tests.test_v2_journal_faults \
+            tests.test_v2_planner \
+            tests.test_v2_preflight \
+            tests.test_v2_protocol \
+            tests.test_v2_publication \
+            tests.test_v2_qualification \
+            tests.test_v2_qualification_commands \
+            tests.test_v2_qualification_runner \
+            tests.test_v2_spec_identity \
+            tests.test_v2_statistical_simulation \
+            tests.test_v2_statistics \
+            tests.test_v2_suite \
+            tests.test_v2_validity
+      - name: Privileged live-process attestation tests
+        run: sudo "$(command -v python)" -m unittest tests.test_v2_supervisor_paths
+      - name: Frozen V2.3 profile and timing plan
+        run: tools/quicperfctl suite plan
+      - name: Compact result identity and checksums
+        run: python tools/publish-v2-3-results.py --repo-root . --check-bundle
+      - name: Documentation links
+        run: python tools/check-doc-links.py --repo-root .
+      - name: Qualification boundary
+        run: |
+          echo "CI verifies deterministic code and publication artifacts."
+          echo "It does not reproduce physical host qualification or benchmark data."

@@ -1,53 +1,977 @@
 NAME xquic
-VERSION 1.9.2-quicperf1
+VERSION 1.9.2-quicperf12
 SYSTEM_LIBS ALLOW
 DEPENDS boringssl VERSION main-beddb58-pic
 SOURCE GIT https://github.com/alibaba/xquic.git 64b8df3ac3f64111eb9e00be1a952ba5b07144bb
 BUILD_SYSTEM CMAKE
-CMAKE_DEFINE SSL_TYPE=boringssl
-CMAKE_DEFINE SSL_INC_PATH=${dep:boringssl}/include
-CMAKE_DEFINE "SSL_LIB_PATH=${dep:boringssl}/lib/libssl.a;${dep:boringssl}/lib/libcrypto.a"
-CMAKE_DEFINE XQC_ENABLE_TESTING=OFF
-CMAKE_DEFINE XQC_SUPPORT_SENDMMSG_BUILD=ON
-CMAKE_DEFINE XQC_ENABLE_BBR2=ON
+CMAKE_CONFIGURE_SH <<'EOF'
+set -eu
+source_dir="$DEPO_SOURCE_DIR"
+patch_file="$DEPO_BUILD_DIR/quicperf-dependency.patch"
+patch_file_2="$DEPO_BUILD_DIR/quicperf-treatment.patch"
+patch_file_3="$DEPO_BUILD_DIR/quicperf-buffer.patch"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "64b8df3ac3f64111eb9e00be1a952ba5b07144bb"
+test "$(git -C "$source_dir" rev-parse 'HEAD^{tree}')" = "3a75f6494f3e220462406fbc8b0e2fa7d1cea922"
+cat > "$patch_file" <<'QUICPERF_DEPENDENCY_PATCH'
+diff --git a/include/xquic/xquic.h b/include/xquic/xquic.h
+index 89a12df..21e810b 100644
+--- a/include/xquic/xquic.h
++++ b/include/xquic/xquic.h
+@@ -1585,6 +1585,7 @@ typedef struct xqc_conn_stats_s {
+     /** initial value = 0 */
+     uint64_t            inflight_bytes; 
+     xqc_0rtt_flag_t     early_data_flag;
++    xqc_bool_t          session_reused;
+     uint32_t            recv_count;
+     int                 spurious_loss_detect_on;
+     int                 conn_err;
+@@ -1861,6 +1862,15 @@ xqc_int_t xqc_conn_close_with_error(xqc_connection_t *conn, uint64_t err_code);
+ XQC_EXPORT_PUBLIC_API
+ xqc_int_t xqc_conn_get_errno(xqc_connection_t *conn);
+ 
++/** Send an application CONNECTION_CLOSE with the exact error code. */
++XQC_EXPORT_PUBLIC_API
++xqc_int_t xqc_conn_close_application(xqc_connection_t *conn, uint64_t err_code);
++
++/** Return the peer application CONNECTION_CLOSE code when one was received. */
++XQC_EXPORT_PUBLIC_API
++xqc_bool_t xqc_conn_peer_close_error(xqc_connection_t *conn, uint64_t *err_code,
++    uint64_t *reason_length);
++
+ 
+ /**
+  * Get ssl handler of specified connection
+@@ -2018,6 +2028,20 @@ xqc_stream_id_t xqc_stream_id(xqc_stream_t *stream);
+ XQC_EXPORT_PUBLIC_API
+ xqc_int_t xqc_stream_close(xqc_stream_t *stream);
+ 
++/** Send RESET_STREAM with the exact application error code. */
++XQC_EXPORT_PUBLIC_API
++xqc_int_t xqc_stream_reset(xqc_stream_t *stream, uint64_t err_code);
++
++/** Send STOP_SENDING with the exact application error code. */
++XQC_EXPORT_PUBLIC_API
++xqc_int_t xqc_stream_stop_sending(xqc_stream_t *stream, uint64_t err_code);
++
++/** Return receive-side terminal facts retained by the transport. */
++XQC_EXPORT_PUBLIC_API
++xqc_int_t xqc_stream_peer_terminal(xqc_stream_t *stream, xqc_bool_t *fin,
++    xqc_bool_t *reset_stream, uint64_t *reset_error,
++    xqc_bool_t *stop_sending, uint64_t *stop_error);
++
+ /**
+  * Recv data in stream.
+  * @return bytes read, -XQC_EAGAIN try next time, <0 for error
+@@ -2280,4 +2304,3 @@ xqc_conn_settings_t xqc_conn_get_conn_settings_template(xqc_conn_settings_type_t
+ #endif
+ 
+ #endif /* _XQUIC_H_INCLUDED_ */
+-
+diff --git a/src/common/xqc_random.c b/src/common/xqc_random.c
+index f4c48ea..f5e474d 100644
+--- a/src/common/xqc_random.c
++++ b/src/common/xqc_random.c
+@@ -125,6 +125,11 @@ xqc_get_random(xqc_random_generator_t *rand_gen, u_char *buf, size_t need_len)
+ 
+             total_read += bytes_read;
+         }
++
++        if (rand_gen->rand_fd != -1) {
++            close(rand_gen->rand_fd);
++            rand_gen->rand_fd = -1;
++        }
+  
+         if (total_read < need_len) {
+             xqc_log(rand_gen->log, XQC_LOG_WARN,
+@@ -144,4 +149,4 @@ xqc_get_random(xqc_random_generator_t *rand_gen, u_char *buf, size_t need_len)
+     assert(result);
+ #endif
+     return XQC_OK;
+-}
+\ No newline at end of file
++}
+diff --git a/src/tls/xqc_tls.c b/src/tls/xqc_tls.c
+index 9d78c0f..10b32d6 100644
+--- a/src/tls/xqc_tls.c
++++ b/src/tls/xqc_tls.c
+@@ -717,6 +717,12 @@ xqc_tls_is_early_data_accepted(xqc_tls_t *tls)
+         ? XQC_TLS_EARLY_DATA_ACCEPT : XQC_TLS_EARLY_DATA_REJECT;
+ }
+ 
++xqc_bool_t
++xqc_tls_is_resumption(xqc_tls_t *tls)
++{
++    return tls != NULL ? tls->resumption : XQC_FALSE;
++}
++
+ xqc_bool_t
+ xqc_tls_is_ready_to_send_early_data(xqc_tls_t *tls)
+ {
+diff --git a/src/tls/xqc_tls.h b/src/tls/xqc_tls.h
+index 3ddf2c8..b71dae7 100644
+--- a/src/tls/xqc_tls.h
++++ b/src/tls/xqc_tls.h
+@@ -175,6 +175,11 @@ xqc_bool_t xqc_tls_is_ready_to_send_early_data(xqc_tls_t *tls);
+  */
+ xqc_tls_early_data_accept_t xqc_tls_is_early_data_accepted(xqc_tls_t *tls);
+ 
++/**
++ * @brief check whether this client connection installed a session ticket
++ */
++xqc_bool_t xqc_tls_is_resumption(xqc_tls_t *tls);
++
+ /**
+  * @brief get crypto aead tag length
+  */
+diff --git a/src/transport/xqc_conn.c b/src/transport/xqc_conn.c
+index 91442d3..54b162c 100644
+--- a/src/transport/xqc_conn.c
++++ b/src/transport/xqc_conn.c
+@@ -3198,6 +3198,36 @@ xqc_conn_get_errno(xqc_connection_t *conn)
+     return conn->conn_err;
+ }
+ 
++xqc_int_t
++xqc_conn_close_application(xqc_connection_t *conn, uint64_t err_code)
++{
++    if (conn == NULL) {
++        return -XQC_EPARAM;
++    }
++    if (conn->conn_state >= XQC_CONN_STATE_DRAINING) {
++        return XQC_OK;
++    }
++    conn->conn_err = err_code;
++    conn->local_application_close = XQC_TRUE;
++    XQC_CONN_CLOSE_MSG(conn, "local application close");
++    xqc_conn_closing(conn);
++    return xqc_conn_close(conn->engine, &conn->scid_set.user_scid);
++}
++
++xqc_bool_t
++xqc_conn_peer_close_error(xqc_connection_t *conn, uint64_t *err_code,
++    uint64_t *reason_length)
++{
++    if (conn == NULL || err_code == NULL || reason_length == NULL
++        || conn->peer_application_close_received == XQC_FALSE)
++    {
++        return XQC_FALSE;
++    }
++    *err_code = conn->peer_application_close_error;
++    *reason_length = conn->peer_application_close_reason_length;
++    return XQC_TRUE;
++}
++
+ void *
+ xqc_conn_get_ssl(xqc_connection_t *conn)
+ {
+@@ -3660,6 +3687,7 @@ xqc_conn_get_stats_internal(xqc_connection_t *conn, xqc_conn_stats_t *conn_stats
+ 
+     conn_stats->conn_err = (int)conn->conn_err;
+     conn_stats->early_data_flag = XQC_0RTT_NONE;
++    conn_stats->session_reused = conn->tls ? xqc_tls_is_resumption(conn->tls) : XQC_FALSE;
+     conn_stats->enable_multipath = conn->enable_multipath;
+     conn_stats->enable_fec = conn->conn_settings.fec_params.fec_encoder_scheme ? 1 : 0;
+     conn_stats->spurious_loss_detect_on = conn->conn_settings.spurious_loss_detect_on;
+diff --git a/src/transport/xqc_conn.h b/src/transport/xqc_conn.h
+index f8905e4..26afd99 100644
+--- a/src/transport/xqc_conn.h
++++ b/src/transport/xqc_conn.h
+@@ -380,6 +380,10 @@ struct xqc_connection_s {
+ 
+     uint64_t                        conn_err;
+     const char                     *conn_close_msg;
++    xqc_bool_t                      local_application_close;
++    xqc_bool_t                      peer_application_close_received;
++    uint64_t                        peer_application_close_error;
++    uint64_t                        peer_application_close_reason_length;
+ 
+     /* for multi-path */
+     xqc_multipath_mode_t            enable_multipath;
+diff --git a/src/transport/xqc_frame.c b/src/transport/xqc_frame.c
+index 3e6bb1f..d5828d1 100644
+--- a/src/transport/xqc_frame.c
++++ b/src/transport/xqc_frame.c
+@@ -1094,8 +1094,11 @@ xqc_process_conn_close_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
+ {
+     xqc_int_t ret;
+     uint64_t err_code;
++    uint64_t reason_length;
++    xqc_bool_t is_application;
+ 
+-    ret = xqc_parse_conn_close_frame(packet_in, &err_code, conn);
++    ret = xqc_parse_conn_close_frame(packet_in, &err_code, &is_application,
++                                     &reason_length, conn);
+     if (ret != XQC_OK) {
+         xqc_log(conn->log, XQC_LOG_ERROR,
+                 "|xqc_parse_conn_close_frame error|");
+@@ -1105,6 +1108,11 @@ xqc_process_conn_close_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
+     if (conn->conn_close_recv_time == 0) {
+         conn->conn_close_recv_time = xqc_monotonic_timestamp();
+     }
++    if (is_application) {
++        conn->peer_application_close_received = XQC_TRUE;
++        conn->peer_application_close_error = err_code;
++        conn->peer_application_close_reason_length = reason_length;
++    }
+ 
+     if (err_code) {
+         xqc_log(conn->log, XQC_LOG_ERROR,
+@@ -1163,6 +1171,8 @@ xqc_process_reset_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
+         }
+     }
+     stream->stream_err = err_code;
++    stream->peer_reset_received = XQC_TRUE;
++    stream->peer_reset_error = err_code;
+ 
+     XQC_STREAM_CLOSE_MSG(stream, "remote reset");
+ 
+@@ -1169,13 +1179,8 @@ xqc_process_reset_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
+     xqc_log(conn->log, XQC_LOG_DEBUG, "|stream_id:%ui|stream_state_recv:%d|stream_state_send:%d|",
+             stream->stream_id, stream->stream_state_recv, stream->stream_state_send);
+QUICPERF_EMPTY_CONTEXT
+     xqc_stream_closing(stream, err_code);
+QUICPERF_EMPTY_CONTEXT
+-    if (stream->stream_state_send < XQC_SEND_STREAM_ST_RESET_SENT) {
+-        xqc_send_queue_drop_stream_frame_packets(conn, stream_id);
+-        xqc_write_reset_stream_to_packet(conn, stream, err_code, stream->stream_send_offset);
+-    }
+-
+     if (stream->stream_state_recv < XQC_RECV_STREAM_ST_RESET_RECVD) {
+         xqc_stream_recv_state_update(stream, XQC_RECV_STREAM_ST_RESET_RECVD);
+         if (stream->stream_stats.peer_reset_time == 0) {
+@@ -1223,6 +1228,9 @@ xqc_process_stop_sending_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
+         }
+     }
+ 
++    stream->peer_stop_sending_received = XQC_TRUE;
++    stream->peer_stop_sending_error = err_code;
++
+     /*
+      * An endpoint that receives a STOP_SENDING frame
+      * MUST send a RESET_STREAM frame if the stream is in the Ready or Send
+diff --git a/src/transport/xqc_frame_parser.c b/src/transport/xqc_frame_parser.c
+index 59358a1..0085b5e 100644
+--- a/src/transport/xqc_frame_parser.c
++++ b/src/transport/xqc_frame_parser.c
+@@ -1280,16 +1280,18 @@ xqc_gen_conn_close_frame(xqc_packet_out_t *packet_out,
+ 
+ 
+ xqc_int_t
+-xqc_parse_conn_close_frame(xqc_packet_in_t *packet_in, uint64_t *err_code, xqc_connection_t *conn)
++xqc_parse_conn_close_frame(xqc_packet_in_t *packet_in, uint64_t *err_code,
++    xqc_bool_t *is_application, uint64_t *reason_length, xqc_connection_t *conn)
+ {
+     unsigned char *p = packet_in->pos;
+     const unsigned char *end = packet_in->last;
+     const unsigned char first_byte = *p++;
+ 
+     int vlen;
+-    uint64_t reason_len;
+     uint64_t frame_type;
+ 
++    *is_application = first_byte == 0x1d;
++
+     vlen = xqc_vint_read(p, end, err_code);
+     if (vlen < 0) {
+         return -XQC_EVINTREAD;
+@@ -1304,14 +1306,14 @@ xqc_parse_conn_close_frame(xqc_packet_in_t *packet_in, uint64_t *err_code, xqc_c
+         p += vlen;
+     }
+ 
+-    vlen = xqc_vint_read(p, end, &reason_len);
++    vlen = xqc_vint_read(p, end, reason_length);
+     if (vlen < 0) {
+         return -XQC_EVINTREAD;
+     }
+     p += vlen;
+ 
+     /* TODO: get reason string */
+-    p += reason_len;
++    p += *reason_length;
+ 
+     packet_in->pos = p;
+ 
+diff --git a/src/transport/xqc_frame_parser.h b/src/transport/xqc_frame_parser.h
+index 17e14ea..ca16285 100644
+--- a/src/transport/xqc_frame_parser.h
++++ b/src/transport/xqc_frame_parser.h
+@@ -73,7 +73,8 @@ xqc_int_t xqc_parse_ack_frame(xqc_packet_in_t *packet_in, xqc_connection_t *conn
+ 
+ ssize_t xqc_gen_conn_close_frame(xqc_packet_out_t *packet_out, uint64_t err_code, int is_app, int frame_type);
+ 
+-xqc_int_t xqc_parse_conn_close_frame(xqc_packet_in_t *packet_in, uint64_t *err_code, xqc_connection_t *conn);
++xqc_int_t xqc_parse_conn_close_frame(xqc_packet_in_t *packet_in, uint64_t *err_code,
++    xqc_bool_t *is_application, uint64_t *reason_length, xqc_connection_t *conn);
+ 
+ ssize_t xqc_gen_reset_stream_frame(xqc_packet_out_t *packet_out, xqc_stream_id_t stream_id,
+     uint64_t err_code, uint64_t final_size);
+diff --git a/src/transport/xqc_packet_out.c b/src/transport/xqc_packet_out.c
+index b564cc9..caacb92 100644
+--- a/src/transport/xqc_packet_out.c
++++ b/src/transport/xqc_packet_out.c
+@@ -795,7 +795,8 @@ xqc_write_conn_close_to_packet(xqc_connection_t *conn, uint64_t err_code)
+         return -XQC_EWRITE_PKT;
+     }
+QUICPERF_EMPTY_CONTEXT
+-    ret = xqc_gen_conn_close_frame(packet_out, err_code, err_code >= H3_NO_ERROR ? 1:0, 0);
++    ret = xqc_gen_conn_close_frame(packet_out, err_code,
++        conn->local_application_close || err_code >= H3_NO_ERROR, 0);
+     if (ret < 0) {
+         xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_gen_conn_close_frame error|");
+         goto error;
+diff --git a/src/transport/xqc_stream.c b/src/transport/xqc_stream.c
+index 6d73dbd..65af90e 100644
+--- a/src/transport/xqc_stream.c
++++ b/src/transport/xqc_stream.c
+@@ -962,6 +962,70 @@ xqc_stream_close(xqc_stream_t *stream)
+     return XQC_OK;
+ }
+ 
++xqc_int_t
++xqc_stream_reset(xqc_stream_t *stream, uint64_t err_code)
++{
++    if (stream == NULL) {
++        return -XQC_EPARAM;
++    }
++    xqc_connection_t *conn = stream->stream_conn;
++    if (stream->stream_state_send >= XQC_SEND_STREAM_ST_RESET_SENT
++        || conn->conn_state >= XQC_CONN_STATE_CLOSING)
++    {
++        return XQC_OK;
++    }
++    xqc_send_queue_drop_stream_frame_packets(conn, stream->stream_id);
++    xqc_int_t ret = xqc_write_reset_stream_to_packet(
++        conn, stream, err_code, stream->stream_send_offset);
++    if (ret < 0) {
++        return ret;
++    }
++    XQC_STREAM_CLOSE_MSG(stream, "local reset");
++    xqc_stream_shutdown_write(stream);
++    xqc_engine_remove_wakeup_queue(conn->engine, conn);
++    xqc_engine_add_active_queue(conn->engine, conn);
++    xqc_engine_conn_logic(conn->engine, conn);
++    return XQC_OK;
++}
++
++xqc_int_t
++xqc_stream_stop_sending(xqc_stream_t *stream, uint64_t err_code)
++{
++    if (stream == NULL) {
++        return -XQC_EPARAM;
++    }
++    xqc_connection_t *conn = stream->stream_conn;
++    if (conn->conn_state >= XQC_CONN_STATE_CLOSING) {
++        return XQC_OK;
++    }
++    xqc_int_t ret = xqc_write_stop_sending_to_packet(conn, stream, err_code);
++    if (ret < 0) {
++        return ret;
++    }
++    xqc_engine_remove_wakeup_queue(conn->engine, conn);
++    xqc_engine_add_active_queue(conn->engine, conn);
++    xqc_engine_conn_logic(conn->engine, conn);
++    return XQC_OK;
++}
++
++xqc_int_t
++xqc_stream_peer_terminal(xqc_stream_t *stream, xqc_bool_t *fin,
++    xqc_bool_t *reset_stream, uint64_t *reset_error,
++    xqc_bool_t *stop_sending, uint64_t *stop_error)
++{
++    if (stream == NULL || fin == NULL || reset_stream == NULL || reset_error == NULL
++        || stop_sending == NULL || stop_error == NULL)
++    {
++        return -XQC_EPARAM;
++    }
++    *fin = stream->stream_stats.peer_fin_rcv_time != 0;
++    *reset_stream = stream->peer_reset_received;
++    *reset_error = stream->peer_reset_error;
++    *stop_sending = stream->peer_stop_sending_received;
++    *stop_error = stream->peer_stop_sending_error;
++    return XQC_OK;
++}
++
+ xqc_int_t
+ xqc_insert_passive_stream_hash(xqc_connection_t *conn, int64_t cur_max_sid, xqc_stream_id_t stream_id)
+ {
+diff --git a/src/transport/xqc_stream.h b/src/transport/xqc_stream.h
+index c721c3c..dad2ede 100644
+--- a/src/transport/xqc_stream.h
++++ b/src/transport/xqc_stream.h
+@@ -136,6 +136,10 @@ struct xqc_stream_s {
+     xqc_recv_stream_state_t stream_state_recv;
+     xqc_usec_t              stream_close_time;
+     uint64_t                stream_err;
++    xqc_bool_t              peer_reset_received;
++    uint64_t                peer_reset_error;
++    xqc_bool_t              peer_stop_sending_received;
++    uint64_t                peer_stop_sending_error;
+     const char             *stream_close_msg;
+ 
+     struct {
+@@ -299,4 +303,3 @@ xqc_bool_t xqc_is_stream_finished(xqc_stream_t *stream);
+ 
+ void xqc_record_stream_state(xqc_stream_t *stream);
+ #endif /* _XQC_STREAM_H_INCLUDED_ */
+-
+
+QUICPERF_DEPENDENCY_PATCH
+sed -i 's/^QUICPERF_EMPTY_CONTEXT$/ /' "$patch_file"
+if git -C "$source_dir" apply --check "$patch_file"; then
+  git -C "$source_dir" apply "$patch_file"
+elif git -C "$source_dir" apply --reverse --check "$patch_file"; then
+  :
+else
+  echo "quicperf dependency patch does not match pinned source" >&2
+  exit 1
+fi
+cat > "$patch_file_2" <<'QUICPERF_TREATMENT_PATCH'
+diff --git a/include/xquic/xquic.h b/include/xquic/xquic.h
+index 21e810b..9b381de 100644
+--- a/include/xquic/xquic.h
++++ b/include/xquic/xquic.h
+@@ -890,6 +890,7 @@ typedef enum {
+ typedef struct xqc_cc_params_s {
+     uint32_t    customize_on;
+     uint32_t    init_cwnd;
++    uint64_t    init_cwnd_bytes;
+     uint32_t    min_cwnd;
+     uint32_t    expect_bw;
+     uint32_t    max_expect_bw;
+@@ -1467,6 +1468,17 @@ typedef struct xqc_conn_settings_s {
+      */
+     uint32_t                    init_recv_window;
+ 
++    /** exact initial connection and per-stream receive credit */
++    uint64_t                    initial_max_data;
++    uint64_t                    initial_max_stream_data;
++
++    /** batch MAX_STREAMS updates after this many peer streams close */
++    uint64_t                    stream_credit_replenish_below;
++
++    /** local transport parameters not otherwise configurable */
++    uint64_t                    ack_delay_exponent;
++    uint64_t                    active_connection_id_limit;
++
+     /**
+      * initial flow control value
+      */
+@@ -1964,6 +1976,10 @@ XQC_EXPORT_PUBLIC_API
+ xqc_conn_public_remote_trans_settings_t 
+ xqc_conn_get_public_remote_trans_settings(xqc_connection_t *conn);
+ 
++/** Return the negotiated QUIC wire version. */
++XQC_EXPORT_PUBLIC_API
++uint32_t xqc_conn_get_quic_version(xqc_connection_t *conn);
++
+ /**
+  * @brief set public remote transport settings
+  */
+diff --git a/include/xquic/xquic_typedef.h b/include/xquic/xquic_typedef.h
+index 604c2a7..bcd57f1 100644
+--- a/include/xquic/xquic_typedef.h
++++ b/include/xquic/xquic_typedef.h
+@@ -250,13 +250,37 @@ typedef enum xqc_conn_settings_type_e {
+     XQC_CONN_SETTINGS_LOW_DELAY     = 1,
+ } xqc_conn_settings_type_t;
+ 
++typedef enum xqc_congestion_control_type_e {
++    XQC_CONGESTION_CONTROL_UNKNOWN = 0,
++    XQC_CONGESTION_CONTROL_CUBIC   = 1,
++    XQC_CONGESTION_CONTROL_BBR     = 2,
++} xqc_congestion_control_type_t;
++
+ typedef struct xqc_conn_public_local_trans_settings_s {
+     uint16_t max_datagram_frame_size;
+     uint8_t  datagram_redundancy;
++    xqc_congestion_control_type_t congestion_control;
++    uint64_t initial_congestion_window_bytes;
++    uint64_t stream_credit_replenish_below;
++    uint8_t ack_frequency_extension;
++    uint8_t source_connection_id_length;
++    uint8_t destination_connection_id_length;
+ } xqc_conn_public_local_trans_settings_t;
+ 
+ typedef struct xqc_conn_public_remote_trans_settings_s {
+     uint16_t max_datagram_frame_size;
++    uint64_t max_idle_timeout;
++    uint64_t max_udp_payload_size;
++    uint64_t max_data;
++    uint64_t max_stream_data_bidi_local;
++    uint64_t max_stream_data_bidi_remote;
++    uint64_t max_stream_data_uni;
++    uint64_t max_streams_bidi;
++    uint64_t max_streams_uni;
++    uint64_t ack_delay_exponent;
++    uint64_t max_ack_delay;
++    uint8_t disable_active_migration;
++    uint64_t active_connection_id_limit;
+ } xqc_conn_public_remote_trans_settings_t;
+ 
+ typedef struct xqc_stream_settings_s {
+diff --git a/src/congestion_control/xqc_bbr.c b/src/congestion_control/xqc_bbr.c
+index c6d1263..a3f1d12 100644
+--- a/src/congestion_control/xqc_bbr.c
++++ b/src/congestion_control/xqc_bbr.c
+@@ -286,12 +286,14 @@ xqc_bbr_init(void *cong_ctl, xqc_sample_t *sampler, xqc_cc_params_t cc_params)
+     bbr->ignore_app_limit = XQC_FALSE;
+ 
+     if (cc_params.customize_on) {
+-        cc_params.init_cwnd *= XQC_BBR_MAX_DATAGRAMSIZE;
++        uint64_t init_cwnd = cc_params.init_cwnd_bytes != 0
++            ? cc_params.init_cwnd_bytes
++            : cc_params.init_cwnd * XQC_BBR_MAX_DATAGRAMSIZE;
+         cc_params.min_cwnd *= XQC_BBR_MAX_DATAGRAMSIZE;
+         bbr->initial_congestion_window =
+-            cc_params.init_cwnd >= XQC_BBR_MIN_WINDOW 
+-            && cc_params.init_cwnd <= XQC_BBR_MAX_WINDOW 
+-            ? cc_params.init_cwnd : XQC_BBR_INITIAL_WINDOW;
++            init_cwnd >= XQC_BBR_MIN_WINDOW
++            && init_cwnd <= XQC_BBR_MAX_WINDOW
++            ? init_cwnd : XQC_BBR_INITIAL_WINDOW;
+         bbr->min_cwnd = cc_params.min_cwnd >= XQC_BBR_MIN_WINDOW 
+             && cc_params.min_cwnd <= XQC_BBR_MAX_WINDOW 
+             ? cc_params.min_cwnd : xqc_bbr_min_cwnd;
+diff --git a/src/congestion_control/xqc_cubic.c b/src/congestion_control/xqc_cubic.c
+index 66e81fe..a8f01d7 100644
+--- a/src/congestion_control/xqc_cubic.c
++++ b/src/congestion_control/xqc_cubic.c
+@@ -127,10 +127,12 @@ xqc_cubic_init(void *cong_ctl, xqc_send_ctl_t *ctl_ctx, xqc_cc_params_t cc_param
+ 
+     if (cc_params.customize_on) {
+         cc_params.min_cwnd *= XQC_CUBIC_MSS;
+-        cc_params.init_cwnd *= XQC_CUBIC_MSS;
++        uint64_t init_cwnd = cc_params.init_cwnd_bytes != 0
++            ? cc_params.init_cwnd_bytes
++            : cc_params.init_cwnd * XQC_CUBIC_MSS;
+         cubic->init_cwnd =
+-                cc_params.init_cwnd >= XQC_CUBIC_MIN_WIN && cc_params.init_cwnd <= XQC_CUBIC_MAX_INIT_WIN ?
+-                cc_params.init_cwnd : XQC_CUBIC_INIT_WIN;
++                init_cwnd >= XQC_CUBIC_MIN_WIN && init_cwnd <= XQC_CUBIC_MAX_INIT_WIN ?
++                init_cwnd : XQC_CUBIC_INIT_WIN;
+         cubic->min_cwnd = 
+                 cc_params.min_cwnd >= XQC_CUBIC_MIN_WIN && cc_params.min_cwnd <= XQC_CUBIC_MAX_MIN_WIN ?
+                 cc_params.min_cwnd : XQC_CUBIC_MIN_WIN;
+diff --git a/src/tls/xqc_tls.c b/src/tls/xqc_tls.c
+index 10b32d6..2dccd34 100644
+--- a/src/tls/xqc_tls.c
++++ b/src/tls/xqc_tls.c
+@@ -8,6 +8,7 @@
+ #include "xqc_ssl_cbs.h"
+ #include "xqc_crypto.h"
+ #include "src/common/xqc_common.h"
++#include "src/common/xqc_time.h"
+ #include <openssl/rand.h>
+ #include <openssl/hmac.h>
+ 
+@@ -75,7 +76,7 @@ SSL_QUIC_METHOD xqc_ssl_quic_method;
+ xqc_bool_t
+ xqc_tls_check_session_ticket_timeout(SSL_SESSION *session)
+ {
+-    uint32_t now = (uint32_t)time(NULL);
++    uint32_t now = (uint32_t)(xqc_realtime_timestamp() / 1000000);
+     uint32_t session_time = SSL_get_time(session);
+     if (session_time > now) {
+         return XQC_FALSE;
+@@ -1026,10 +1027,6 @@ xqc_ssl_cert_verify_cb(int ok, X509_STORE_CTX *store_ctx)
+     unsigned char *certs_array[XQC_MAX_VERIFY_DEPTH] = {0};
+     size_t certs_len[XQC_MAX_VERIFY_DEPTH] = {0};
+ 
+-    if (ok == XQC_SSL_SUCCESS) {
+-        return XQC_SSL_SUCCESS;
+-    }
+-
+     SSL *ssl = X509_STORE_CTX_get_ex_data(store_ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
+     if (ssl == NULL) {
+         return XQC_SSL_FAIL;
+@@ -1040,8 +1037,13 @@ xqc_ssl_cert_verify_cb(int ok, X509_STORE_CTX *store_ctx)
+         return XQC_SSL_FAIL;
+     }
+ 
++    if (ok == XQC_SSL_SUCCESS && tls->cbs->cert_verify_cb == NULL) {
++        return XQC_SSL_SUCCESS;
++    }
++
+     int err_code = X509_STORE_CTX_get_error(store_ctx);
+-    if (err_code != X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
++    if (ok != XQC_SSL_SUCCESS
++        && err_code != X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
+         && err_code != X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
+         && !((tls->cert_verify_flag & XQC_TLS_CERT_FLAG_ALLOW_SELF_SIGNED) != 0
+              && XQC_TLS_SELF_SIGNED_CERT(err_code)))
+diff --git a/src/transport/xqc_conn.c b/src/transport/xqc_conn.c
+index 54b162c..74e1208 100644
+--- a/src/transport/xqc_conn.c
++++ b/src/transport/xqc_conn.c
+@@ -187,6 +187,11 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
+     engine->default_conn_settings.recv_rate_bytes_per_sec = settings->recv_rate_bytes_per_sec;
+     engine->default_conn_settings.enable_stream_rate_limit = settings->enable_stream_rate_limit;
+     engine->default_conn_settings.init_recv_window = settings->init_recv_window;
++    engine->default_conn_settings.initial_max_data = settings->initial_max_data;
++    engine->default_conn_settings.initial_max_stream_data = settings->initial_max_stream_data;
++    engine->default_conn_settings.stream_credit_replenish_below = settings->stream_credit_replenish_below;
++    engine->default_conn_settings.ack_delay_exponent = settings->ack_delay_exponent;
++    engine->default_conn_settings.active_connection_id_limit = settings->active_connection_id_limit;
+     engine->default_conn_settings.initial_rtt = settings->initial_rtt;
+     engine->default_conn_settings.initial_pto_duration = settings->initial_pto_duration;
+     engine->default_conn_settings.disable_send_mmsg = settings->disable_send_mmsg;
+@@ -518,17 +523,26 @@ xqc_conn_init_trans_settings(xqc_connection_t *conn)
+             ls->max_streams_uni = XQC_DEFAULT_MAX_STREAMS;
+         } 
+     }
+-    ls->max_stream_data_bidi_remote = XQC_MAX_RECV_WINDOW;
+-    ls->max_stream_data_uni = XQC_MAX_RECV_WINDOW;
+-    
+-    if (conn->conn_settings.enable_stream_rate_limit) {
++    if (conn->conn_settings.initial_max_stream_data) {
++        ls->max_stream_data_bidi_local = conn->conn_settings.initial_max_stream_data;
++        ls->max_stream_data_bidi_remote = conn->conn_settings.initial_max_stream_data;
++        ls->max_stream_data_uni = conn->conn_settings.initial_max_stream_data;
++
++    } else if (conn->conn_settings.enable_stream_rate_limit) {
+         ls->max_stream_data_bidi_local = conn->conn_settings.init_recv_window;
++        ls->max_stream_data_bidi_remote = XQC_MAX_RECV_WINDOW;
++        ls->max_stream_data_uni = XQC_MAX_RECV_WINDOW;
+ 
+     } else {
+         ls->max_stream_data_bidi_local = XQC_MAX_RECV_WINDOW;
++        ls->max_stream_data_bidi_remote = XQC_MAX_RECV_WINDOW;
++        ls->max_stream_data_uni = XQC_MAX_RECV_WINDOW;
+     }
+ 
+-    if (conn->conn_settings.is_interop_mode) {
++    if (conn->conn_settings.initial_max_data) {
++        ls->max_data = conn->conn_settings.initial_max_data;
++
++    } else if (conn->conn_settings.is_interop_mode) {
+         ls->max_data = 1024 * 1024;
+         
+     } else {
+@@ -548,7 +562,9 @@ xqc_conn_init_trans_settings(xqc_connection_t *conn)
+ 
+     ls->max_udp_payload_size = conn->conn_settings.max_udp_payload_size;
+ 
+-    ls->active_connection_id_limit = XQC_CONN_ACTIVE_CID_LIMIT;
++    ls->active_connection_id_limit = conn->conn_settings.active_connection_id_limit
++        ? conn->conn_settings.active_connection_id_limit
++        : XQC_CONN_ACTIVE_CID_LIMIT;
+ 
+     ls->enable_multipath = conn->conn_settings.enable_multipath;
+     
+@@ -560,6 +576,9 @@ xqc_conn_init_trans_settings(xqc_connection_t *conn)
+     ls->disable_active_migration = ls->enable_multipath ? 0 : 1;
+ 
+     ls->max_ack_delay = conn->conn_settings.max_ack_delay;
++    ls->ack_delay_exponent = conn->conn_settings.ack_delay_exponent
++        ? conn->conn_settings.ack_delay_exponent
++        : XQC_DEFAULT_ACK_DELAY_EXPONENT;
+ 
+     /* init local conn options */
+     for (i = 0, co_bytes = 0; i < XQC_CO_STR_MAX_LEN; i++) {
+@@ -6965,7 +6984,27 @@ xqc_conn_public_local_trans_settings_t
+ xqc_conn_get_public_local_trans_settings(xqc_connection_t *conn)
+ {
+     xqc_conn_public_local_trans_settings_t settings;
++    memset(&settings, 0, sizeof(settings));
+     settings.max_datagram_frame_size = conn->local_settings.max_datagram_frame_size;
++    settings.stream_credit_replenish_below = conn->conn_settings.stream_credit_replenish_below;
++    /* This pinned XQUIC revision does not implement the RFC ACK_FREQUENCY
++     * extension. Its adaptive_ack_frequency setting is a local ACK policy,
++     * not negotiated extension support. */
++    settings.ack_frequency_extension = 0;
++    if (conn->conn_initial_path != NULL) {
++        settings.source_connection_id_length = conn->conn_initial_path->path_scid.cid_len;
++        settings.destination_connection_id_length = conn->conn_initial_path->path_dcid.cid_len;
++        xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
++        if (send_ctl != NULL) {
++            settings.initial_congestion_window_bytes = send_ctl->ctl_initial_cwnd;
++            if (send_ctl->ctl_cong_callback->xqc_cong_ctl_init == xqc_cubic_cb.xqc_cong_ctl_init) {
++                settings.congestion_control = XQC_CONGESTION_CONTROL_CUBIC;
++
++            } else if (send_ctl->ctl_cong_callback->xqc_cong_ctl_init_bbr == xqc_bbr_cb.xqc_cong_ctl_init_bbr) {
++                settings.congestion_control = XQC_CONGESTION_CONTROL_BBR;
++            }
++        }
++    }
+     return settings;
+ }
+ 
+@@ -6994,10 +7033,29 @@ xqc_conn_public_remote_trans_settings_t
+ xqc_conn_get_public_remote_trans_settings(xqc_connection_t *conn)
+ {
+     xqc_conn_public_remote_trans_settings_t settings;
++    memset(&settings, 0, sizeof(settings));
+     settings.max_datagram_frame_size = conn->remote_settings.max_datagram_frame_size;
++    settings.max_idle_timeout = conn->remote_settings.max_idle_timeout;
++    settings.max_udp_payload_size = conn->remote_settings.max_udp_payload_size;
++    settings.max_data = conn->remote_settings.max_data;
++    settings.max_stream_data_bidi_local = conn->remote_settings.max_stream_data_bidi_local;
++    settings.max_stream_data_bidi_remote = conn->remote_settings.max_stream_data_bidi_remote;
++    settings.max_stream_data_uni = conn->remote_settings.max_stream_data_uni;
++    settings.max_streams_bidi = conn->remote_settings.max_streams_bidi;
++    settings.max_streams_uni = conn->remote_settings.max_streams_uni;
++    settings.ack_delay_exponent = conn->remote_settings.ack_delay_exponent;
++    settings.max_ack_delay = conn->remote_settings.max_ack_delay;
++    settings.disable_active_migration = conn->remote_settings.disable_active_migration;
++    settings.active_connection_id_limit = conn->remote_settings.active_connection_id_limit;
+     return settings;
+ }
+ 
++uint32_t
++xqc_conn_get_quic_version(xqc_connection_t *conn)
++{
++    return conn == NULL ? 0 : xqc_proto_version_value[conn->version];
++}
++
+ /**
+  * @brief set public remote transport settings
+  */
+diff --git a/src/transport/xqc_conn.h b/src/transport/xqc_conn.h
+index 26afd99..d0aee48 100644
+--- a/src/transport/xqc_conn.h
++++ b/src/transport/xqc_conn.h
+@@ -37,7 +37,7 @@
+ /* maximum accumulated number of xqc_engine_packet_process */
+ #define XQC_MAX_PACKET_PROCESS_BATCH 100
+ 
+-#define XQC_MAX_RECV_WINDOW (16 * 1024 * 1024)
++#define XQC_MAX_RECV_WINDOW (64 * 1024 * 1024)
+ 
+ #define XQC_MP_SETTINGS_STR_LEN (30)
+ 
+diff --git a/src/transport/xqc_frame.c b/src/transport/xqc_frame.c
+index d5828d1..251b38e 100644
+--- a/src/transport/xqc_frame.c
++++ b/src/transport/xqc_frame.c
+@@ -1371,6 +1371,14 @@ xqc_process_streams_blocked_frame(xqc_connection_t *conn, xqc_packet_in_t *packe
+             return -XQC_EIGNORE_PKT;
+         }
+ 
++        if (conn->conn_settings.stream_credit_replenish_below > 0
++            && conn->conn_flow_ctl.fc_max_streams_bidi_recv_wind
++                - conn->conn_flow_ctl.fc_max_streams_bidi_can_recv
++                < conn->conn_settings.stream_credit_replenish_below)
++        {
++            return XQC_OK;
++        }
++
+         new_max_streams = conn->conn_flow_ctl.fc_max_streams_bidi_recv_wind;
+         conn->conn_flow_ctl.fc_max_streams_bidi_can_recv = new_max_streams;
+ 
+@@ -1389,6 +1397,14 @@ xqc_process_streams_blocked_frame(xqc_connection_t *conn, xqc_packet_in_t *packe
+             return -XQC_EIGNORE_PKT;
+         }
+ 
++        if (conn->conn_settings.stream_credit_replenish_below > 0
++            && conn->conn_flow_ctl.fc_max_streams_uni_recv_wind
++                - conn->conn_flow_ctl.fc_max_streams_uni_can_recv
++                < conn->conn_settings.stream_credit_replenish_below)
++        {
++            return XQC_OK;
++        }
++
+         new_max_streams = conn->conn_flow_ctl.fc_max_streams_uni_recv_wind;
+         conn->conn_flow_ctl.fc_max_streams_uni_can_recv = new_max_streams;
+     }
+diff --git a/src/transport/xqc_send_ctl.c b/src/transport/xqc_send_ctl.c
+index 4d9a841..bf2b831 100644
+--- a/src/transport/xqc_send_ctl.c
++++ b/src/transport/xqc_send_ctl.c
+@@ -171,6 +171,8 @@ xqc_send_ctl_create(xqc_path_ctx_t *path)
+     } else {
+         send_ctl->ctl_cong_callback->xqc_cong_ctl_init(send_ctl->ctl_cong, send_ctl, conn->conn_settings.cc_params);
+     }
++    send_ctl->ctl_initial_cwnd =
++        send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd(send_ctl->ctl_cong);
+ 
+     xqc_pacing_init(&send_ctl->ctl_pacing, conn->conn_settings.pacing_on, send_ctl);
+ 
+@@ -1930,4 +1932,4 @@ xqc_send_ctl_set_next_pn_for_packet(xqc_connection_t *conn, xqc_pn_ctl_t *pn_ctl
+         }
+         pn_ctl->ctl_packet_number[packet_out->po_pkt.pkt_pns] = packet_out->po_pkt.pkt_num + 1;
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/transport/xqc_send_ctl.h b/src/transport/xqc_send_ctl.h
+index f35baf8..e44e47a 100644
+--- a/src/transport/xqc_send_ctl.h
++++ b/src/transport/xqc_send_ctl.h
+@@ -148,6 +148,7 @@ typedef struct xqc_send_ctl_s {
+     const
+     xqc_cong_ctrl_callback_t    *ctl_cong_callback;
+     void                        *ctl_cong;
++    uint64_t                    ctl_initial_cwnd;
+ 
+     xqc_pacing_t                ctl_pacing;
+ 
+diff --git a/src/transport/xqc_stream.c b/src/transport/xqc_stream.c
+index 65af90e..21132c0 100644
+--- a/src/transport/xqc_stream.c
++++ b/src/transport/xqc_stream.c
+@@ -503,8 +503,10 @@ xqc_stream_do_create_flow_ctl(xqc_connection_t *conn, xqc_stream_id_t stream_id,
+                 XQC_CONN_ERR(conn, TRA_STREAM_LIMIT_ERROR);
+                 return -XQC_EPROTO;
+             }
+-            /* increase max streams */
+-            if (((stream_id >> 2) + conn->local_settings.max_streams_bidi/2) >= conn->conn_flow_ctl.fc_max_streams_bidi_can_recv
++            /* Preserve the legacy half-window update only when no explicit
++             * retired-stream batching threshold is configured. */
++            if (conn->conn_settings.stream_credit_replenish_below == 0
++                && ((stream_id >> 2) + conn->local_settings.max_streams_bidi/2) >= conn->conn_flow_ctl.fc_max_streams_bidi_can_recv
+                 && conn->conn_flow_ctl.fc_max_streams_bidi_can_recv < conn->conn_flow_ctl.fc_max_streams_bidi_recv_wind)
+             {
+                 conn->conn_flow_ctl.fc_max_streams_bidi_can_recv = conn->conn_flow_ctl.fc_max_streams_bidi_recv_wind; 
+@@ -518,8 +520,10 @@ xqc_stream_do_create_flow_ctl(xqc_connection_t *conn, xqc_stream_id_t stream_id,
+                 XQC_CONN_ERR(conn, TRA_STREAM_LIMIT_ERROR);
+                 return -XQC_EPROTO;
+             }
+-            /* increase max streams */
+-            if (((stream_id >> 2) + conn->local_settings.max_streams_uni/2) >= conn->conn_flow_ctl.fc_max_streams_uni_can_recv
++            /* Preserve the legacy half-window update only when no explicit
++             * retired-stream batching threshold is configured. */
++            if (conn->conn_settings.stream_credit_replenish_below == 0
++                && ((stream_id >> 2) + conn->local_settings.max_streams_uni/2) >= conn->conn_flow_ctl.fc_max_streams_uni_can_recv
+                 && conn->conn_flow_ctl.fc_max_streams_uni_can_recv < conn->conn_flow_ctl.fc_max_streams_uni_recv_wind)
+             {
+                 conn->conn_flow_ctl.fc_max_streams_uni_can_recv = conn->conn_flow_ctl.fc_max_streams_uni_recv_wind;
+@@ -830,8 +834,10 @@ xqc_destroy_stream(xqc_stream_t *stream)
+         if (stream->stream_conn->conn_flow_ctl.fc_max_streams_bidi_recv_wind < XQC_MAX_STREAMS) {
+             stream->stream_conn->conn_flow_ctl.fc_max_streams_bidi_recv_wind++;
+         }
+-        if ((stream->stream_conn->max_stream_id_bidi_remote + 1) >=
+-                stream->stream_conn->conn_flow_ctl.fc_max_streams_bidi_can_recv)
++        uint64_t replenish = stream->stream_conn->conn_settings.stream_credit_replenish_below;
++        if (replenish == 0
++            || stream->stream_conn->conn_flow_ctl.fc_max_streams_bidi_recv_wind
++                - stream->stream_conn->conn_flow_ctl.fc_max_streams_bidi_can_recv >= replenish)
+         {
+             stream->stream_conn->conn_flow_ctl.fc_max_streams_bidi_can_recv =
+                 stream->stream_conn->conn_flow_ctl.fc_max_streams_bidi_recv_wind;
+@@ -847,8 +853,10 @@ xqc_destroy_stream(xqc_stream_t *stream)
+         if (stream->stream_conn->conn_flow_ctl.fc_max_streams_uni_recv_wind < XQC_MAX_STREAMS) {
+             stream->stream_conn->conn_flow_ctl.fc_max_streams_uni_recv_wind++;
+         }
+-        if (((stream->stream_conn->max_stream_id_uni_remote >> 2) + 1) >=
+-                stream->stream_conn->conn_flow_ctl.fc_max_streams_uni_can_recv)
++        uint64_t replenish = stream->stream_conn->conn_settings.stream_credit_replenish_below;
++        if (replenish == 0
++            || stream->stream_conn->conn_flow_ctl.fc_max_streams_uni_recv_wind
++                - stream->stream_conn->conn_flow_ctl.fc_max_streams_uni_can_recv >= replenish)
+         { 
+             stream->stream_conn->conn_flow_ctl.fc_max_streams_uni_can_recv =
+                 stream->stream_conn->conn_flow_ctl.fc_max_streams_uni_recv_wind;
+QUICPERF_TREATMENT_PATCH
+cat > "$patch_file_3" <<'QUICPERF_BUFFER_PATCH'
+diff --git a/include/xquic/xquic.h b/include/xquic/xquic.h
+index 9b381de..c3c4f2d 100644
+--- a/include/xquic/xquic.h
++++ b/include/xquic/xquic.h
+@@ -1980,6 +1980,11 @@ xqc_conn_get_public_remote_trans_settings(xqc_connection_t *conn);
+ XQC_EXPORT_PUBLIC_API
+ uint32_t xqc_conn_get_quic_version(xqc_connection_t *conn);
+ 
++/** Return retained and not-yet-handed-off send-queue packet counts. */
++XQC_EXPORT_PUBLIC_API
++xqc_int_t xqc_conn_get_send_queue_state(xqc_connection_t *conn,
++    uint64_t *packets_used, uint64_t *packets_max, uint64_t *unsent_packets);
++
+ /**
+  * @brief set public remote transport settings
+  */
+@@ -2009,6 +2014,10 @@ xqc_stream_direction_t xqc_stream_get_direction(xqc_stream_t *strm);
+ XQC_EXPORT_PUBLIC_API
+ void xqc_stream_set_user_data(xqc_stream_t *stream, void *user_data);
+ 
++/** Select the transport's high-priority packet queue for this stream. */
++XQC_EXPORT_PUBLIC_API
++void xqc_stream_set_high_priority(xqc_stream_t *stream, xqc_bool_t high_priority);
++
+ 
+ XQC_EXPORT_PUBLIC_API
+ xqc_int_t xqc_stream_update_settings(xqc_stream_t *stream, 
+diff --git a/src/transport/xqc_conn.c b/src/transport/xqc_conn.c
+index 74e1208..5954c67 100644
+--- a/src/transport/xqc_conn.c
++++ b/src/transport/xqc_conn.c
+@@ -7056,6 +7056,22 @@ xqc_conn_get_quic_version(xqc_connection_t *conn)
+     return conn == NULL ? 0 : xqc_proto_version_value[conn->version];
+ }
+ 
++xqc_int_t
++xqc_conn_get_send_queue_state(xqc_connection_t *conn, uint64_t *packets_used,
++    uint64_t *packets_max, uint64_t *unsent_packets)
++{
++    if (conn == NULL || conn->conn_send_queue == NULL || packets_used == NULL
++        || packets_max == NULL || unsent_packets == NULL)
++    {
++        return -XQC_EPARAM;
++    }
++
++    *packets_used = conn->conn_send_queue->sndq_packets_used;
++    *packets_max = conn->conn_send_queue->sndq_packets_used_max;
++    *unsent_packets = xqc_send_queue_get_unsent_packets_num(conn->conn_send_queue);
++    return XQC_OK;
++}
++
+ /**
+  * @brief set public remote transport settings
+  */
+diff --git a/src/transport/xqc_stream.c b/src/transport/xqc_stream.c
+index 21132c0..e9e9332 100644
+--- a/src/transport/xqc_stream.c
++++ b/src/transport/xqc_stream.c
+@@ -688,6 +688,12 @@ xqc_stream_set_priority(xqc_stream_t *stream, xqc_stream_priority_t priority)
+     stream->stream_priority = priority;
+ }
+ 
++void
++xqc_stream_set_high_priority(xqc_stream_t *stream, xqc_bool_t high_priority)
++{
++    stream->stream_priority = high_priority ? XQC_STREAM_PRI_HIGH : XQC_STREAM_PRI_NORMAL;
++}
++
+ void
+ xqc_stream_set_user_data(xqc_stream_t *stream, void *user_data)
+ {
+QUICPERF_BUFFER_PATCH
+if git -C "$source_dir" apply --check "$patch_file_2"; then
+  git -C "$source_dir" apply "$patch_file_2"
+elif git -C "$source_dir" apply --reverse --check "$patch_file_2"; then
+  :
+else
+  echo "quicperf treatment patch does not match pinned source" >&2
+  exit 1
+fi
+if git -C "$source_dir" apply --check "$patch_file_3"; then
+  git -C "$source_dir" apply "$patch_file_3"
+elif git -C "$source_dir" apply --reverse --check "$patch_file_3"; then
+  :
+else
+  echo "quicperf buffer patch does not match pinned source" >&2
+  exit 1
+fi
+source_index="$DEPO_BUILD_DIR/quicperf-source.index"
+rm -f "$source_index"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" read-tree HEAD
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file_2"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file_3"
+test "$(GIT_INDEX_FILE="$source_index" git -C "$source_dir" write-tree)" = "d35bb5a75cf16523eae5bb584fe7f9ec9f5d7b6a"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" diff --quiet --no-ext-diff -- .
+cmake -S "$source_dir" -B "$DEPO_BUILD_DIR" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$DEPO_PREFIX" \
+  -DCMAKE_INSTALL_LIBDIR=lib \
+  -DSSL_TYPE=boringssl \
+  "-DSSL_INC_PATH=${dep:boringssl}/include" \
+  "-DSSL_LIB_PATH=${dep:boringssl}/lib/libssl.a;${dep:boringssl}/lib/libcrypto.a" \
+  -DXQC_ENABLE_TESTING=OFF \
+  -DXQC_SUPPORT_SENDMMSG_BUILD=ON \
+  -DXQC_ENABLE_BBR2=ON
+EOF
 CMAKE_BUILD_SH <<'EOF'
-python3 - <<'PY'
-import os
-from pathlib import Path
-
-root = Path(os.environ["DEPO_SOURCE_DIR"])
-
-def replace_once(relative, old, new):
-    path = root / relative
-    text = path.read_text()
-    if new in text:
-        return
-    if old not in text:
-        raise SystemExit(f"missing xquic patch anchor in {relative}")
-    path.write_text(text.replace(old, new, 1))
-
-replace_once(
-    "include/xquic/xquic.h",
-    "    xqc_0rtt_flag_t     early_data_flag;\n    uint32_t            recv_count;\n",
-    "    xqc_0rtt_flag_t     early_data_flag;\n    xqc_bool_t          session_reused;\n    uint32_t            recv_count;\n",
-)
-replace_once(
-    "src/tls/xqc_tls.h",
-    "xqc_tls_early_data_accept_t xqc_tls_is_early_data_accepted(xqc_tls_t *tls);\n\n/**\n * @brief get crypto aead tag length\n",
-    "xqc_tls_early_data_accept_t xqc_tls_is_early_data_accepted(xqc_tls_t *tls);\n\n/**\n * @brief check whether this client connection installed a session ticket\n */\nxqc_bool_t xqc_tls_is_resumption(xqc_tls_t *tls);\n\n/**\n * @brief get crypto aead tag length\n",
-)
-replace_once(
-    "src/tls/xqc_tls.c",
-    "xqc_tls_is_ready_to_send_early_data(xqc_tls_t *tls)\n{\n    if (tls->resumption == XQC_FALSE) {\n",
-    "xqc_tls_is_resumption(xqc_tls_t *tls)\n{\n    return tls != NULL ? tls->resumption : XQC_FALSE;\n}\n\nxqc_bool_t\nxqc_tls_is_ready_to_send_early_data(xqc_tls_t *tls)\n{\n    if (tls->resumption == XQC_FALSE) {\n",
-)
-replace_once(
-    "src/transport/xqc_conn.c",
-    "    conn_stats->early_data_flag = XQC_0RTT_NONE;\n    conn_stats->enable_multipath = conn->enable_multipath;\n",
-    "    conn_stats->early_data_flag = XQC_0RTT_NONE;\n    conn_stats->session_reused = conn->tls ? xqc_tls_is_resumption(conn->tls) : XQC_FALSE;\n    conn_stats->enable_multipath = conn->enable_multipath;\n",
-)
-PY
-cmake --build . --parallel "$(nproc)"
+cmake --build "$DEPO_BUILD_DIR" --parallel "$(nproc)"
 EOF
 STAGE_FILE BUILD libxquic-static.a lib/libxquic.a
 STAGE_TREE SOURCE include include

@@ -1,0 +1,320 @@
+NAME quinnsource
+VERSION quicperf-c-abi-2d35538-quicperf6
+SYSTEM_LIBS ALLOW
+SOURCE GIT https://github.com/victorstewart/quinn.git 2d35538c2bfe9115bf9ec3ee097f56f7e4325b30
+BUILD_SYSTEM MANUAL
+MANUAL_BUILD_SH <<'EOF'
+set -eu
+source_dir="$DEPO_SOURCE_DIR"
+patch_file="$DEPO_BUILD_DIR/quicperf-dependency.patch"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "2d35538c2bfe9115bf9ec3ee097f56f7e4325b30"
+test "$(git -C "$source_dir" rev-parse 'HEAD^{tree}')" = "5cf7194c2b4b4bf8ed3732030ab5e558f51e5008"
+cat > "$patch_file" <<'QUICPERF_DEPENDENCY_PATCH'
+diff --git a/quinn-proto/src/connection/mod.rs b/quinn-proto/src/connection/mod.rs
+--- a/quinn-proto/src/connection/mod.rs
++++ b/quinn-proto/src/connection/mod.rs
+@@ -1680,6 +1680,7 @@ impl Connection {
+             "PTO fired"
+         );
+
++        self.stats.recovery_wakeups = self.stats.recovery_wakeups.saturating_add(1);
+         let count = match self.path.in_flight.ack_eliciting {
+             // A PTO when we're not expecting any ACKs must be due to handshake anti-amplification
+             // deadlock preventions
+diff --git a/quinn-proto/src/connection/stats.rs b/quinn-proto/src/connection/stats.rs
+--- a/quinn-proto/src/connection/stats.rs
++++ b/quinn-proto/src/connection/stats.rs
+@@ -173,4 +173,6 @@ pub struct ConnectionStats {
+     pub frame_rx: FrameStats,
+     /// Statistics related to the current transmission path
+     pub path: PathStats,
++    /// Number of processed PTO expirations that scheduled loss-recovery probes.
++    pub recovery_wakeups: u64,
+ }
+QUICPERF_DEPENDENCY_PATCH
+if git -C "$source_dir" apply --check "$patch_file"; then
+  git -C "$source_dir" apply "$patch_file"
+elif git -C "$source_dir" apply --reverse --check "$patch_file"; then
+  :
+else
+  echo "quicperf dependency patch does not match pinned source" >&2
+  exit 1
+fi
+settings_patch_file="$DEPO_BUILD_DIR/quicperf-negotiated-settings.patch"
+cat > "$settings_patch_file" <<'QUICPERF_NEGOTIATED_SETTINGS_PATCH'
+diff --git a/quinn-proto/src/config/transport.rs b/quinn-proto/src/config/transport.rs
+index 3f66400fc8c6575ab50e6cd28f337622df774a3d..34627ba86223dc9bf2e59a4ca2021c67a45f95c7 100644
+--- a/quinn-proto/src/config/transport.rs
++++ b/quinn-proto/src/config/transport.rs
+@@ -43,0 +44,2 @@ pub struct TransportConfig {
++    pub(crate) quicperf_active_connection_id_limit: VarInt,
++    pub(crate) quicperf_disable_active_migration: bool,
+@@ -246,0 +249,14 @@ impl TransportConfig {
++    /// Set the active connection ID limit sent in transport parameters.
++    #[doc(hidden)]
++    pub fn quicperf_active_connection_id_limit(&mut self, value: VarInt) -> &mut Self {
++        self.quicperf_active_connection_id_limit = value;
++        self
++    }
++
++    /// Set whether active migration is disabled in transport parameters.
++    #[doc(hidden)]
++    pub fn quicperf_disable_active_migration(&mut self, value: bool) -> &mut Self {
++        self.quicperf_disable_active_migration = value;
++        self
++    }
++
+@@ -387,0 +404,2 @@ impl Default for TransportConfig {
++            quicperf_active_connection_id_limit: 2u32.into(),
++            quicperf_disable_active_migration: false,
+@@ -425,0 +444,2 @@ impl fmt::Debug for TransportConfig {
++            quicperf_active_connection_id_limit,
++            quicperf_disable_active_migration,
+@@ -455,0 +476,8 @@ impl fmt::Debug for TransportConfig {
++            .field(
++                "quicperf_active_connection_id_limit",
++                quicperf_active_connection_id_limit,
++            )
++            .field(
++                "quicperf_disable_active_migration",
++                quicperf_disable_active_migration,
++            )
+diff --git a/quinn-proto/src/connection/mod.rs b/quinn-proto/src/connection/mod.rs
+index ffd30f631c64b69c7db02777e7182b55ce13589f..b399c34ee848fff59ad8a969888aec31153fd26e 100644
+--- a/quinn-proto/src/connection/mod.rs
++++ b/quinn-proto/src/connection/mod.rs
+@@ -243,0 +244,22 @@ pub struct Connection {
++/// Peer transport parameters retained after the handshake for quicperf audit.
++#[doc(hidden)]
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct QuicperfNegotiatedTransport {
++    pub quic_version: u32,
++    pub max_idle_timeout: u64,
++    pub max_udp_payload_size: u64,
++    pub initial_max_data: u64,
++    pub initial_max_stream_data_bidi_local: u64,
++    pub initial_max_stream_data_bidi_remote: u64,
++    pub initial_max_stream_data_uni: u64,
++    pub initial_max_streams_bidi: u64,
++    pub initial_max_streams_uni: u64,
++    pub ack_delay_exponent: u64,
++    pub max_ack_delay: u64,
++    pub disable_active_migration: bool,
++    pub active_connection_id_limit: u64,
++    pub max_datagram_frame_size: u64,
++    pub ack_frequency: bool,
++    pub connection_id_len: usize,
++}
++
+@@ -1301,0 +1324,38 @@ impl Connection {
++    /// Return the peer's retained post-handshake transport parameters.
++    #[doc(hidden)]
++    pub fn quicperf_negotiated_transport(&self) -> QuicperfNegotiatedTransport {
++        QuicperfNegotiatedTransport {
++            quic_version: self.version,
++            max_idle_timeout: self.peer_params.max_idle_timeout.into_inner(),
++            max_udp_payload_size: self.peer_params.max_udp_payload_size.into_inner(),
++            initial_max_data: self.peer_params.initial_max_data.into_inner(),
++            initial_max_stream_data_bidi_local: self
++                .peer_params
++                .initial_max_stream_data_bidi_local
++                .into_inner(),
++            initial_max_stream_data_bidi_remote: self
++                .peer_params
++                .initial_max_stream_data_bidi_remote
++                .into_inner(),
++            initial_max_stream_data_uni: self
++                .peer_params
++                .initial_max_stream_data_uni
++                .into_inner(),
++            initial_max_streams_bidi: self.peer_params.initial_max_streams_bidi.into_inner(),
++            initial_max_streams_uni: self.peer_params.initial_max_streams_uni.into_inner(),
++            ack_delay_exponent: self.peer_params.ack_delay_exponent.into_inner(),
++            max_ack_delay: self.peer_params.max_ack_delay.into_inner(),
++            disable_active_migration: self.peer_params.disable_active_migration,
++            active_connection_id_limit: self.peer_params.active_connection_id_limit.into_inner(),
++            max_datagram_frame_size: self
++                .peer_params
++                .max_datagram_frame_size
++                .map_or(0, VarInt::into_inner),
++            ack_frequency: self.peer_params.min_ack_delay.is_some(),
++            connection_id_len: self
++                .peer_params
++                .initial_src_cid
++                .map_or(0, |cid| cid.len()),
++        }
++    }
++
+diff --git a/quinn-proto/src/crypto/rustls.rs b/quinn-proto/src/crypto/rustls.rs
+index bdabf9f4a0acb810bfd786543440b96169bfe96f..63fe63e87fb9b76c79735b6bea5cccc47b917c08 100644
+--- a/quinn-proto/src/crypto/rustls.rs
++++ b/quinn-proto/src/crypto/rustls.rs
+@@ -9 +8,0 @@ pub use rustls::Error;
+-#[cfg(feature = "__rustls-post-quantum-test")]
+@@ -70 +69,2 @@ impl crypto::Session for TlsSession {
+-            #[cfg(feature = "__rustls-post-quantum-test")]
++            protocol_version: self.inner.protocol_version(),
++            cipher_suite: self.inner.negotiated_cipher_suite().map(|suite| suite.suite()),
+@@ -74,2 +74 @@ impl crypto::Session for TlsSession {
+-                .expect("key exchange group is negotiated")
+-                .name(),
++                .map(|kx| kx.name()),
+@@ -267,0 +267,4 @@ pub struct HandshakeData {
++    /// The negotiated TLS protocol version.
++    pub protocol_version: Option<rustls::ProtocolVersion>,
++    /// The negotiated TLS cipher suite.
++    pub cipher_suite: Option<rustls::CipherSuite>,
+@@ -269,2 +272 @@ pub struct HandshakeData {
+-    #[cfg(feature = "__rustls-post-quantum-test")]
+-    pub negotiated_key_exchange_group: NamedGroup,
++    pub negotiated_key_exchange_group: Option<NamedGroup>,
+diff --git a/quinn-proto/src/lib.rs b/quinn-proto/src/lib.rs
+index 5982b69033db7e1d366e05074fdf32098509976a..cfafc1f25efe0c4495b5456939fc7b52a72de1b9 100644
+--- a/quinn-proto/src/lib.rs
++++ b/quinn-proto/src/lib.rs
+@@ -48,0 +49 @@ pub use crate::connection::{
++    QuicperfNegotiatedTransport,
+diff --git a/quinn-proto/src/transport_parameters.rs b/quinn-proto/src/transport_parameters.rs
+index d1ddfbe9535bb2fea16bdf44bc3c96eec9ce7aa0..7a153d98b7c9e656bc1b4c2aa21cffc52ea99c1d 100644
+--- a/quinn-proto/src/transport_parameters.rs
++++ b/quinn-proto/src/transport_parameters.rs
+@@ -22 +21,0 @@ use crate::{
+-    cid_queue::CidQueue,
+@@ -148 +147 @@ impl TransportParameters {
+-        cid_gen: &dyn ConnectionIdGenerator,
++        _cid_gen: &dyn ConnectionIdGenerator,
+@@ -163,7 +162,3 @@ impl TransportParameters {
+-            disable_active_migration: server_config.is_some_and(|c| !c.migration),
+-            active_connection_id_limit: if cid_gen.cid_len() == 0 {
+-                2 // i.e. default, i.e. unsent
+-            } else {
+-                CidQueue::LEN as u32
+-            }
+-            .into(),
++            disable_active_migration: config.quicperf_disable_active_migration
++                || server_config.is_some_and(|c| !c.migration),
++            active_connection_id_limit: config.quicperf_active_connection_id_limit,
+@@ -174,3 +169,3 @@ impl TransportParameters {
+-            min_ack_delay: Some(
+-                VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap(),
+-            ),
++            min_ack_delay: config.ack_frequency_config.as_ref().map(|_| {
++                VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap()
++            }),
+QUICPERF_NEGOTIATED_SETTINGS_PATCH
+if git -C "$source_dir" apply --unidiff-zero --check "$settings_patch_file"; then
+  git -C "$source_dir" apply --unidiff-zero "$settings_patch_file"
+elif git -C "$source_dir" apply --unidiff-zero --reverse --check "$settings_patch_file"; then
+  :
+else
+  echo "quicperf negotiated-settings patch does not match pinned source" >&2
+  exit 1
+fi
+flow_control_patch_file="$DEPO_BUILD_DIR/quicperf-flow-control-counters.patch"
+cat > "$flow_control_patch_file" <<'QUICPERF_FLOW_CONTROL_PATCH'
+diff --git a/quinn-proto/src/connection/mod.rs b/quinn-proto/src/connection/mod.rs
+index b399c34e..c39e4b03 100644
+--- a/quinn-proto/src/connection/mod.rs
++++ b/quinn-proto/src/connection/mod.rs
+@@ -1359,6 +1359,12 @@ impl Connection {
+         }
+     }
+
++    /// Return cumulative native flow-control block decisions.
++    #[doc(hidden)]
++    pub fn quicperf_flow_control_blocked_events(&self) -> (u64, u64) {
++        self.streams.quicperf_flow_control_blocked_events()
++    }
++
+     /// Whether the connection is in the process of being established
+     ///
+     /// If this returns `false`, the connection may be either established or closed, signaled by the
+diff --git a/quinn-proto/src/connection/streams/mod.rs b/quinn-proto/src/connection/streams/mod.rs
+index 6e771076..980d5de4 100644
+--- a/quinn-proto/src/connection/streams/mod.rs
++++ b/quinn-proto/src/connection/streams/mod.rs
+@@ -260,11 +260,25 @@ impl<'a> SendStream<'a> {
+                 stream.connection_blocked = true;
+                 self.state.connection_blocked.push(self.id);
+             }
++            if self.state.max_data == self.state.data_sent {
++                self.state.flow_control_blocked_events =
++                    self.state.flow_control_blocked_events.saturating_add(1);
++            }
+             return Err(WriteError::Blocked);
+         }
+
+         let was_pending = stream.is_pending();
+-        let written = stream.write(source, limit)?;
++        let written = match stream.write(source, limit) {
++            Ok(written) => written,
++            Err(WriteError::Blocked) => {
++                self.state.stream_flow_control_blocked_events = self
++                    .state
++                    .stream_flow_control_blocked_events
++                    .saturating_add(1);
++                return Err(WriteError::Blocked);
++            }
++            Err(error) => return Err(error),
++        };
+         self.state.data_sent += written.bytes as u64;
+         self.state.unacked_data += written.bytes as u64;
+         trace!(stream = %self.id, "wrote {} bytes", written.bytes);
+diff --git a/quinn-proto/src/connection/streams/state.rs b/quinn-proto/src/connection/streams/state.rs
+index ee063afd..91d02e1e 100644
+--- a/quinn-proto/src/connection/streams/state.rs
++++ b/quinn-proto/src/connection/streams/state.rs
+@@ -127,6 +127,10 @@ pub struct StreamsState {
+     ///
+     /// Note this may be less than `unacked_data` if the user has set a new value.
+     pub(super) send_window: u64,
++    /// Writes rejected by the peer's connection-level flow-control limit.
++    pub(super) flow_control_blocked_events: u64,
++    /// Writes rejected by the peer's stream-level flow-control limit.
++    pub(super) stream_flow_control_blocked_events: u64,
+     /// Configured upper bound for how much unacked data the peer can send us per stream
+     pub(super) stream_receive_window: u64,
+
+@@ -178,6 +182,8 @@ impl StreamsState {
+             data_recvd: 0,
+             unacked_data: 0,
+             send_window,
++            flow_control_blocked_events: 0,
++            stream_flow_control_blocked_events: 0,
+             stream_receive_window: stream_receive_window.into(),
+             initial_max_stream_data_uni: 0u32.into(),
+             initial_max_stream_data_bidi_local: 0u32.into(),
+@@ -786,6 +792,13 @@ impl StreamsState {
+             .min(self.send_window.saturating_sub(self.unacked_data))
+     }
+
++    pub(crate) fn quicperf_flow_control_blocked_events(&self) -> (u64, u64) {
++        (
++            self.flow_control_blocked_events,
++            self.stream_flow_control_blocked_events,
++        )
++    }
++
+     /// Yield stream events
+     pub(crate) fn poll(&mut self) -> Option<StreamEvent> {
+         if let Some(dir) = Dir::iter().find(|&i| mem::replace(&mut self.opened[i as usize], false))
+QUICPERF_FLOW_CONTROL_PATCH
+if git -C "$source_dir" apply --check "$flow_control_patch_file"; then
+  git -C "$source_dir" apply "$flow_control_patch_file"
+elif git -C "$source_dir" apply --reverse --check "$flow_control_patch_file"; then
+  :
+else
+  echo "quicperf flow-control-counter patch does not match pinned source" >&2
+  exit 1
+fi
+source_index="$DEPO_BUILD_DIR/quicperf-source.index"
+rm -f "$source_index"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" read-tree HEAD
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --unidiff-zero --cached "$settings_patch_file"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$flow_control_patch_file"
+test "$(GIT_INDEX_FILE="$source_index" git -C "$source_dir" write-tree)" = "9557a169aaef0fa5a8ebc30ef1b7c8e5ddcf9e10"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" diff --quiet --no-ext-diff -- .
+EOF
+STAGE_TREE SOURCE . share/quinn
+TARGET quinnsource::source INTERFACE share/quinn

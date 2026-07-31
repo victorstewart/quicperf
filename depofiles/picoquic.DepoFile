@@ -1,5 +1,5 @@
 NAME picoquic
-VERSION master-2b1e14d
+VERSION master-2b1e14d-quicperf7
 SYSTEM_LIBS ALLOW
 DEPENDS openssl VERSION 4.0.0
 DEPENDS picotls VERSION master-7c32032
@@ -18,5 +18,99 @@ CMAKE_DEFINE BUILD_HTTP=OFF
 CMAKE_DEFINE BUILD_PQBENCH=OFF
 CMAKE_DEFINE BUILD_LOGREADER=OFF
 CMAKE_DEFINE BUILD_LOGLIB=OFF
+CMAKE_BUILD_SH <<'EOF'
+set -eu
+source_dir="$DEPO_SOURCE_DIR"
+patch_file="$DEPO_BUILD_DIR/quicperf-dependency.patch"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "2b1e14d5a46532eadf691edef5bd747da6de6557"
+test "$(git -C "$source_dir" rev-parse 'HEAD^{tree}')" = "dab41d2b8d0abe5caa6ebe859d57663dc01b83f1"
+cat > "$patch_file" <<'QUICPERF_DEPENDENCY_PATCH'
+diff --git a/picoquic/picoquic_internal.h b/picoquic/picoquic_internal.h
+index b4a109c..8a0db93 100644
+--- a/picoquic/picoquic_internal.h
++++ b/picoquic/picoquic_internal.h
+@@ -90,2 +90,2 @@ extern "C" {
+-#define PICOQUIC_CWIN_INITIAL (10 * PICOQUIC_MAX_PACKET_SIZE)
++#define PICOQUIC_CWIN_INITIAL 13500
+ #define PICOQUIC_CWIN_MINIMUM (2 * PICOQUIC_MAX_PACKET_SIZE)
+diff --git a/picoquic/frames.c b/picoquic/frames.c
+index 57412e4..ceaf70b 100644
+--- a/picoquic/frames.c
++++ b/picoquic/frames.c
+@@ -1680,6 +1680,7 @@ uint8_t * picoquic_format_data_blocked_frame(picoquic_cnx_t * cnx, uint8_t* byte
+         (bytes = picoquic_frames_varint_encode(bytes, bytes_max, cnx->maxdata_remote)) != NULL) {
+         *is_pure_ack = 0;
+         cnx->sent_blocked_frame = 1;
++        cnx->nb_data_blocked_sent++;
+     }
+     else {
+         *more_data = 1;
+@@ -1700,6 +1701,7 @@ uint8_t * picoquic_format_stream_data_blocked_frame(uint8_t* bytes,
+     {
+         *is_pure_ack = 0;
+         stream->stream_data_blocked_sent = 1;
++        stream->cnx->nb_stream_data_blocked_sent++;
+     }
+     else {
+         *more_data = 1;
+diff --git a/picoquic/picoquic_internal.h b/picoquic/picoquic_internal.h
+index b4a109c..1fee627 100644
+--- a/picoquic/picoquic_internal.h
++++ b/picoquic/picoquic_internal.h
+@@ -1419,6 +1419,8 @@ typedef struct st_picoquic_cnx_t {
+     uint64_t nb_packets_sent;
+     uint64_t nb_packets_logged;
+     uint64_t nb_retransmission_total;
++    uint64_t nb_data_blocked_sent;
++    uint64_t nb_stream_data_blocked_sent;
+     uint64_t nb_preemptive_repeat;
+     uint64_t nb_spurious;
+     uint64_t nb_crypto_key_rotations;
+
+diff --git a/picoquic/sender.c b/picoquic/sender.c
+index a8d577c..2d48a3f 100644
+--- a/picoquic/sender.c
++++ b/picoquic/sender.c
+@@ -339,7 +339,7 @@ int picoquic_open_flow_control(picoquic_cnx_t* cnx, uint64_t stream_id, uint64_t
+     size_t consumed = 0;
+     PICOQUIC_THREAD_CHECK(cnx->quic);
+ 
+-    if (cnx->cnx_state == picoquic_state_ready && cnx->quic->max_data_limit == 0){
++    if (cnx->cnx_state == picoquic_state_ready){
+         /* Only send the update in ready state, so that the misc frame is not picked by the
+          * wrong transport context.
+          * TODO: find way to queue the update so it is only sent as 0RTT or 1RTT packet.
+@@ -355,7 +355,9 @@ int picoquic_open_flow_control(picoquic_cnx_t* cnx, uint64_t stream_id, uint64_t
+ 
+             if (max_required > stream->maxdata_local) {
+                 uint8_t* bytes_next = picoquic_format_max_stream_data_frame(cnx, stream, buffer + consumed, bytes_max, &more_data, &is_pure_ack, max_required);
+-                bytes_next = picoquic_format_max_data_frame(cnx, bytes_next, bytes_max, &more_data, &is_pure_ack, expected_data_size);
++                if (cnx->quic->max_data_limit == 0) {
++                    bytes_next = picoquic_format_max_data_frame(cnx, bytes_next, bytes_max, &more_data, &is_pure_ack, expected_data_size);
++                }
+                 if ((length = bytes_next - buffer) > 0) {
+                     ret = picoquic_queue_misc_frame(cnx, buffer, length, is_pure_ack,
+                         picoquic_packet_context_application);
+
+QUICPERF_DEPENDENCY_PATCH
+if git -C "$source_dir" apply --check "$patch_file"; then
+  git -C "$source_dir" apply "$patch_file"
+elif git -C "$source_dir" apply --reverse --check "$patch_file"; then
+  :
+else
+  echo "quicperf dependency patch does not match pinned source" >&2
+  exit 1
+fi
+source_index="$DEPO_BUILD_DIR/quicperf-source.index"
+rm -f "$source_index"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" read-tree HEAD
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" apply --cached "$patch_file"
+test "$(GIT_INDEX_FILE="$source_index" git -C "$source_dir" write-tree)" = "0ce55ad875fb43ea394cdd1ed92c215d2ff1e015"
+GIT_INDEX_FILE="$source_index" git -C "$source_dir" diff --quiet --no-ext-diff -- .
+cmake --build "$DEPO_BUILD_DIR" --parallel "$(nproc)"
+EOF
+STAGE_FILE SOURCE picoquic/picoquic_internal.h include/picoquic_internal.h
+STAGE_FILE SOURCE picoquic/picohash.h include/picohash.h
+STAGE_FILE SOURCE picoquic/picosplay.h include/picosplay.h
 TARGET picoquic::picoquic STATIC lib/libpicoquic-core.a INTERFACE include
 LINK picoquic::picoquic picotls::picotls openssl

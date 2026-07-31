@@ -15,7 +15,6 @@ loss_recovery_bytes="${QUICPERF_LOSS_RECOVERY_TEST_BYTES:-67108864}"
 multistream_download_bytes="${QUICPERF_MULTISTREAM_DOWNLOAD_TEST_BYTES:-67108864}"
 multistream_upload_bytes="${QUICPERF_MULTISTREAM_UPLOAD_TEST_BYTES:-67108864}"
 timeout_s="${QUICPERF_TIMEOUT:-180s}"
-server_start_delay="${QUICPERF_SERVER_START_DELAY:-0.5}"
 server_ready_timeout="${QUICPERF_SERVER_READY_TIMEOUT:-5}"
 server_stop_timeout="${QUICPERF_SERVER_STOP_TIMEOUT:-10s}"
 idle_resource_sample_interval="${QUICPERF_IDLE_RESOURCE_SAMPLE_INTERVAL:-0.01}"
@@ -35,6 +34,12 @@ network_path_helper="$root/tools/quicperf_network_path.py"
 path_variation="${QUICPERF_PATH_VARIATION:-1}"
 path_time_scale="${QUICPERF_PATH_TIME_SCALE:-1.0}"
 max_client_threads=16
+client_cpu_list="${QUICPERF_CLIENT_CPU_LIST:-}"
+
+if [[ -n "${QUICPERF_SERVER_START_DELAY+x}" ]]; then
+  echo "quicperf_preflight status=failed reason=removed_option option=QUICPERF_SERVER_START_DELAY replacement=server_ready_protocol"
+  exit 4
+fi
 
 timeout_for_scenario() {
   local scenario="$1"
@@ -129,7 +134,15 @@ PY
 read -r server_cpu server_core < <(select_server_cpu)
 
 out_dir="${QUICPERF_OUT_DIR:-$root/.run/quicperf-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
-mkdir -p "$out_dir"
+if [[ -e "$out_dir" ]]; then
+  allowed_existing="${QUICPERF_ALLOW_EXISTING_OUT_DIR:-}"
+  if [[ -z "$allowed_existing" ]] || find "$out_dir" -mindepth 1 -maxdepth 1 ! -name "$allowed_existing" -print -quit | grep -q .; then
+    echo "quicperf_preflight status=failed reason=reused_output_directory path=$out_dir"
+    exit 4
+  fi
+else
+  mkdir -p "$out_dir"
+fi
 run_meta_path="$out_dir/run-meta.tsv"
 printf 'run_label\tphase\tbinary\tscenario\tnetwork\tpath_profile\tclient_threads\tserver_connections\tstatus\treason\tstarted_utc\tended_utc\tduration_sec\tserver_log\tclient_log\trun_order\n' >"$run_meta_path"
 
@@ -157,6 +170,7 @@ append_run_meta() {
 }
 
 declare -a active_path_states=()
+declare -a active_server_pids=()
 
 cleanup_path_state() {
   local state="$1"
@@ -171,9 +185,37 @@ cleanup_all_paths() {
   done
 }
 
-trap cleanup_all_paths EXIT
-trap 'cleanup_all_paths; exit 130' INT
-trap 'cleanup_all_paths; exit 143' TERM
+cleanup_all_servers() {
+  local pid
+  for pid in "${active_server_pids[@]:-}"; do
+    [[ -n "$pid" ]] || continue
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  for _ in {1..20}; do
+    local alive=0
+    for pid in "${active_server_pids[@]:-}"; do
+      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        alive=1
+      fi
+    done
+    (( alive == 0 )) && break
+    sleep 0.05
+  done
+  for pid in "${active_server_pids[@]:-}"; do
+    [[ -n "$pid" ]] || continue
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
+}
+
+cleanup_all() {
+  cleanup_all_servers
+  cleanup_all_paths
+}
+
+trap cleanup_all EXIT
+trap 'cleanup_all; exit 130' INT
+trap 'cleanup_all; exit 143' TERM
 
 setup_path_profile() {
   local profile="$1"
@@ -181,10 +223,7 @@ setup_path_profile() {
   local state="$3"
   local env_path="$4"
   local log_path="$5"
-  local -a args=(setup --profile "$profile" --run-id "$run_id" --state "$state" --trace-time-scale "$path_time_scale")
-  if [[ "$path_variation" != "1" ]]; then
-    args+=(--no-variation)
-  fi
+  local -a args=(setup --profile "$profile" --run-id "$run_id" --state "$state" --trace-time-scale "$path_time_scale" --no-variation)
   if ! "$network_path_helper" "${args[@]}" >"$env_path" 2>"$log_path"; then
     return 1
   fi
@@ -299,6 +338,19 @@ print("\n".join(items))
 ')
 fi
 
+missing_binaries=()
+for configured_bin in "${binaries[@]}"; do
+  candidate="$configured_bin"
+  [[ "$candidate" = /* ]] || candidate="$bin_dir/$candidate"
+  if [[ ! -x "$candidate" ]]; then
+    missing_binaries+=("$configured_bin")
+  fi
+done
+if (( ${#missing_binaries[@]} > 0 )); then
+  echo "quicperf_preflight status=failed reason=missing_or_nonexecutable_binaries binaries=\"${missing_binaries[*]}\""
+  exit 4
+fi
+
 for path_profile in $path_profiles; do
   if ! "$network_path_helper" show "$path_profile" >/dev/null; then
     echo "quicperf_run_result path_profile=$path_profile status=invalid_path_profile"
@@ -335,7 +387,7 @@ if [[ -n "${QUICPERF_CLIENT_BASE_PORT:-}" ]]; then
 elif [[ -n "$port_slot_offset" ]]; then
   client_port_policy="slot_offset:$port_slot_offset"
 fi
-echo "quicperf_run out_dir=$out_dir bytes=$default_bytes multistream_download_bytes=$multistream_download_bytes multistream_upload_bytes=$multistream_upload_bytes bidi_bytes=$bidi_bytes flow_control_bytes=$flow_control_bytes loss_recovery_bytes=$loss_recovery_bytes repeat=$repeat warmup=$warmup scenarios=\"$scenarios\" networks=\"$networks\" path_profiles=\"$path_profiles\" build_profile=$build_profile window_profile=$window_profile congestion_profile=$congestion_profile tls_verify_mode=$tls_verify_mode tls_cert_profile=$tls_cert_profile randomize_order=$randomize_order random_seed=$random_seed port_policy=$port_policy client_port_policy=$client_port_policy outlier_gate_mode=$outlier_gate_mode outlier_spread_ratio=$outlier_spread_ratio server_cpu=$server_cpu server_core=$server_core server_cpu_policy=pinned_low_noise_physical_core client_cpu_policy=unpinned server_start_delay=$server_start_delay server_ready_timeout=$server_ready_timeout server_stop_timeout=$server_stop_timeout"
+echo "quicperf_run out_dir=$out_dir bytes=$default_bytes multistream_download_bytes=$multistream_download_bytes multistream_upload_bytes=$multistream_upload_bytes bidi_bytes=$bidi_bytes flow_control_bytes=$flow_control_bytes loss_recovery_bytes=$loss_recovery_bytes repeat=$repeat warmup=$warmup scenarios=\"$scenarios\" networks=\"$networks\" path_profiles=\"$path_profiles\" build_profile=$build_profile window_profile=$window_profile congestion_profile=$congestion_profile tls_verify_mode=$tls_verify_mode tls_cert_profile=$tls_cert_profile randomize_order=$randomize_order random_seed=$random_seed port_policy=$port_policy client_port_policy=$client_port_policy outlier_gate_mode=$outlier_gate_mode outlier_spread_ratio=$outlier_spread_ratio server_cpu=$server_cpu server_core=$server_core server_cpu_policy=pinned_low_noise_physical_core client_cpu_policy=unpinned server_ready_timeout=$server_ready_timeout server_stop_timeout=$server_stop_timeout"
 run_failed=0
 run_ordinal=0
 declare -A used_auto_ports=()
@@ -524,6 +576,7 @@ for bin in "${binaries[@]}"; do
     fi
 
     for network in $networks; do
+      client_network="${QUICPERF_CLIENT_NETWORK:-$network}"
       case "$network" in
         syscall|iouring) ;;
         gso_gro|udp_gso_gro)
@@ -595,6 +648,18 @@ for bin in "${binaries[@]}"; do
 	          run_failed=1
 	          break
 	        fi
+	        if [[ "${QUICPERF_PATH_TRACE_STEPS:-0}" =~ ^[0-9]+$ ]] &&
+	           (( QUICPERF_PATH_TRACE_STEPS > 1 )) && [[ "$path_variation" == "1" ]]; then
+	          run_ended_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	          run_end_ns="$(date +%s%N)"
+	          duration_ns=$((run_end_ns - run_start_ns))
+	          duration_sec="$(printf '%s.%09d' $((duration_ns / 1000000000)) $((duration_ns % 1000000000)))"
+	          cleanup_path_state "$path_state"
+	          append_run_meta "$run_label" "$attempt_phase" "$name" "$scenario" "$network" "$path_profile" "$client_threads" "$server_connections" "path_failed" "dynamic_trace_requires_v2_global_barrier" "$run_started_utc" "$run_ended_utc" "$duration_sec" "$server_log" "$client_log" "$run_ordinal"
+	          echo "quicperf_run_result binary=$name scenario=$scenario network=$network path_profile=$path_profile run=$run_label status=path_failed reason=dynamic_trace_requires_v2_global_barrier"
+	          run_failed=1
+	          break
+	        fi
 	        server_address_arg="$QUICPERF_SERVER_ADDRESS"
 	        server_local_address="$QUICPERF_SERVER_ADDRESS"
 	        server_remote_address="$QUICPERF_CLIENT_ADDRESS"
@@ -606,9 +671,13 @@ for bin in "${binaries[@]}"; do
 	          server_prefix=(ip netns exec "$QUICPERF_SERVER_NAMESPACE")
 	          client_prefix=(ip netns exec "$QUICPERF_CLIENT_NAMESPACE")
 	        fi
+	        if [[ -n "$client_cpu_list" ]]; then
+	          client_prefix+=(taskset -c "$client_cpu_list")
+	        fi
 
 	        QUICPERF_SCENARIO="$scenario" QUICPERF_TEST_BYTES="$bytes" QUICPERF_SERVER_PORT="$server_port" QUICPERF_BUILD_PROFILE="$build_profile" QUICPERF_WINDOW_PROFILE="$window_profile" QUICPERF_CONGESTION_PROFILE="$congestion_profile" QUICPERF_TLS_VERIFY_MODE="$tls_verify_mode" QUICPERF_TLS_CERT_PROFILE="$tls_cert_profile" QUICPERF_NETWORK_PROFILE="$network" QUICPERF_PATH_PROFILE="$path_profile" QUICPERF_PATH_RTT_US="$QUICPERF_PATH_RTT_US" QUICPERF_PATH_DOWNLINK_BPS="$QUICPERF_PATH_DOWNLINK_BPS" QUICPERF_PATH_UPLINK_BPS="$QUICPERF_PATH_UPLINK_BPS" QUICPERF_PATH_MAX_RATE_BPS="$QUICPERF_PATH_MAX_RATE_BPS" QUICPERF_LOCAL_ADDRESS="$server_local_address" QUICPERF_REMOTE_ADDRESS="$server_remote_address" QUICPERF_SERVER_CONNECTIONS="$server_connections" "${server_prefix[@]}" taskset -c "$server_cpu" "$bin" server "$network" "$server_address_arg" "$scenario" >"$server_log" 2>&1 &
 	        server_pid=$!
+	        active_server_pids+=("$server_pid")
 	        set +e
 	        wait_for_server_ready "$server_pid" "$server_log" "$server_ready_timeout"
 	        server_ready_status=$?
@@ -675,7 +744,7 @@ for bin in "${binaries[@]}"; do
         fi
 
         set +e
-        QUICPERF_SCENARIO="$scenario" QUICPERF_TEST_BYTES="$bytes" QUICPERF_SERVER_PORT="$server_port" QUICPERF_CLIENT_THREADS="$client_threads" QUICPERF_CLIENT_BASE_PORT="$client_base_port" QUICPERF_BUILD_PROFILE="$build_profile" QUICPERF_WINDOW_PROFILE="$window_profile" QUICPERF_CONGESTION_PROFILE="$congestion_profile" QUICPERF_TLS_VERIFY_MODE="$tls_verify_mode" QUICPERF_TLS_CERT_PROFILE="$tls_cert_profile" QUICPERF_NETWORK_PROFILE="$network" QUICPERF_PATH_PROFILE="$path_profile" QUICPERF_PATH_RTT_US="$QUICPERF_PATH_RTT_US" QUICPERF_PATH_DOWNLINK_BPS="$QUICPERF_PATH_DOWNLINK_BPS" QUICPERF_PATH_UPLINK_BPS="$QUICPERF_PATH_UPLINK_BPS" QUICPERF_PATH_MAX_RATE_BPS="$QUICPERF_PATH_MAX_RATE_BPS" QUICPERF_LOCAL_ADDRESS="$client_local_address" QUICPERF_REMOTE_ADDRESS="$client_remote_address" QUICPERF_SERVER_CONNECTIONS="$server_connections" timeout "$scenario_timeout_s" "${client_prefix[@]}" "$bin" client "$network" "$server_address_arg" "$scenario" >"$client_log" 2>&1
+        QUICPERF_SCENARIO="$scenario" QUICPERF_TEST_BYTES="$bytes" QUICPERF_SERVER_PORT="$server_port" QUICPERF_CLIENT_THREADS="$client_threads" QUICPERF_CLIENT_BASE_PORT="$client_base_port" QUICPERF_BUILD_PROFILE="$build_profile" QUICPERF_WINDOW_PROFILE="$window_profile" QUICPERF_CONGESTION_PROFILE="$congestion_profile" QUICPERF_TLS_VERIFY_MODE="$tls_verify_mode" QUICPERF_TLS_CERT_PROFILE="$tls_cert_profile" QUICPERF_NETWORK_PROFILE="$client_network" QUICPERF_PATH_PROFILE="$path_profile" QUICPERF_PATH_RTT_US="$QUICPERF_PATH_RTT_US" QUICPERF_PATH_DOWNLINK_BPS="$QUICPERF_PATH_DOWNLINK_BPS" QUICPERF_PATH_UPLINK_BPS="$QUICPERF_PATH_UPLINK_BPS" QUICPERF_PATH_MAX_RATE_BPS="$QUICPERF_PATH_MAX_RATE_BPS" QUICPERF_LOCAL_ADDRESS="$client_local_address" QUICPERF_REMOTE_ADDRESS="$client_remote_address" QUICPERF_SERVER_CONNECTIONS="$server_connections" timeout "$scenario_timeout_s" "${client_prefix[@]}" "$bin" client "$client_network" "$server_address_arg" "$scenario" >"$client_log" 2>&1
         client_status=$?
         if [[ -n "$idle_rss_sampler_pid" ]]; then
           kill "$idle_rss_sampler_pid" 2>/dev/null || true
@@ -717,12 +786,28 @@ for bin in "${binaries[@]}"; do
         fi
 
         server_status=complete
+        server_wait_status=0
         if ! timeout "$server_stop_timeout" tail --pid="$server_pid" -f /dev/null >/dev/null 2>&1; then
           kill "$server_pid" 2>/dev/null || true
           wait "$server_pid" 2>/dev/null || true
           server_status=stopped_after_client
         else
+          set +e
           wait "$server_pid"
+          server_wait_status=$?
+          set -e
+        fi
+        if (( server_wait_status != 0 )); then
+          run_ended_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          run_end_ns="$(date +%s%N)"
+          duration_ns=$((run_end_ns - run_start_ns))
+          duration_sec="$(printf '%s.%09d' $((duration_ns / 1000000000)) $((duration_ns % 1000000000)))"
+          snapshot_path_profile "$path_state" "$path_snapshot"
+          cleanup_path_state "$path_state"
+          append_run_meta "$run_label" "$attempt_phase" "$name" "$scenario" "$network" "$path_profile" "$client_threads" "$server_connections" "server_failed" "exit_$server_wait_status" "$run_started_utc" "$run_ended_utc" "$duration_sec" "$server_log" "$client_log" "$run_ordinal"
+          echo "quicperf_run_result binary=$name scenario=$scenario network=$network path_profile=$path_profile run=$run_label status=server_failed reason=exit_$server_wait_status"
+          run_failed=1
+          break
         fi
         thread_failure_reason=""
         if ! require_thread_log client harness_ready "$client_threads" "$client_log"; then
@@ -752,8 +837,8 @@ for bin in "${binaries[@]}"; do
             run_end_ns="$(date +%s%N)"
             duration_ns=$((run_end_ns - run_start_ns))
             duration_sec="$(printf '%s.%09d' $((duration_ns / 1000000000)) $((duration_ns % 1000000000)))"
-            append_run_meta "$run_label" "$attempt_phase" "$name" "$scenario" "$network" "$client_threads" "$server_connections" "client_failed" "missing_idle_result_line" "$run_started_utc" "$run_ended_utc" "$duration_sec" "$server_log" "$client_log" "$run_ordinal"
-            echo "quicperf_run_result binary=$name scenario=$scenario network=$network run=$run_label status=client_failed reason=missing_idle_result_line"
+            append_run_meta "$run_label" "$attempt_phase" "$name" "$scenario" "$network" "$path_profile" "$client_threads" "$server_connections" "client_failed" "missing_idle_result_line" "$run_started_utc" "$run_ended_utc" "$duration_sec" "$server_log" "$client_log" "$run_ordinal"
+            echo "quicperf_run_result binary=$name scenario=$scenario network=$network path_profile=$path_profile run=$run_label status=client_failed reason=missing_idle_result_line"
             sed "s/^/client: /" "$client_log"
             sed "s/^/server: /" "$server_log"
             run_failed=1

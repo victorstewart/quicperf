@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use quicperf or its V2.3 dataset, cite this software and the campaign ID."
+title: "quicperf"
+type: software
+authors:
+  - family-names: Stewart
+    given-names: Victor
+license: Apache-2.0
+version: "2.3"
+date-released: 2026-07-30
+repository-code: "https://github.com/victorstewart/quicperf"
+url: "https://victorstewart.github.io/quicperf/"
+abstract: "Publication-grade QUIC server benchmark across 12 implementations using shared I/O, fixed treatment, and paired inference."
+keywords:
+  - QUIC
+  - benchmark
+  - io_uring
+  - networking
+  - TLS
+preferred-citation:
+  type: dataset
+  title: "quicperf V2.3 fixed-treatment QUIC server benchmark"
+  authors:
+    - family-names: Stewart
+      given-names: Victor
+  year: 2026
+  version: "ca3fc47654e15b3c42a79c6c24a6477952e3a37ac8fc01ee2e8b85ce7d2d5492"
+  license: CC-BY-4.0
+  repository-code: "https://github.com/victorstewart/quicperf"
