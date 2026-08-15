@@ -48,7 +48,7 @@ sessions yielding 24 raw rows and 12 paired superblocks, and exact 4,096
 common-sign max-absolute-t inference.
 
 Capacity, memory, tail, symmetric, all-confirmatory, syscall treatment, scout,
-adaptive selection, legacy translation, unqualified-host fallback, and
+adaptive selection, legacy translation, unqualified-host diagnostic fallback, and
 outcome-dependent rescheduling are not publication paths. `tools/run-benchmarks.sh`
 and syscall are developer diagnostics only; diagnostic or scout samples never
 enter publication statistics, rankings, or tables.
@@ -119,6 +119,7 @@ change needs a recorded profile artifact, expected mechanism, same-build A/B,
 p50 delta, and accept/reject decision; if profiles are diffuse, examine stream
 lifecycle, receive scheduling, packetization, and allocation.
 
-Unavailable physical gates are `NOT_RUN`, never passed. Never claim an
-unobserved check passed or use `publication_qualified` until every deterministic
-and physical gate passes for the exact identity.
+Unavailable physical gates are `NOT_RUN`, never passed. Continue deterministic
+implementation work when possible. Never claim an unobserved check passed or use
+`publication_qualified` until every deterministic and physical gate passes for
+the exact identity.
